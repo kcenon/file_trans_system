@@ -125,3 +125,6 @@ graph_info.json
 
 # vcpkg
 vcpkg-manifest-install.log
+
+.cache/
+.npm-cache/
