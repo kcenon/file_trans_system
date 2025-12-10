@@ -1,0 +1,127 @@
+# Build directories
+build/
+cmake-build-*/
+out/
+bin/
+lib/
+*.a
+*.so
+*.so.*
+*.dylib
+*.dll
+
+# Object files
+*.o
+*.obj
+*.ko
+*.elf
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Libraries
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+_deps/
+CMakeUserPresets.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.cproject
+.settings/
+*.sublime-workspace
+*.sublime-project
+*.code-workspace
+
+# Xcode
+xcuserdata/
+*.xcworkspace
+DerivedData/
+
+# Visual Studio
+.vs/
+*.vcxproj.user
+*.ncb
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+x64/
+x86/
+Debug/
+Release/
+ipch/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Dependency directories
+vcpkg_installed/
+_deps/
+external/
+
+# Test output
+Testing/
+test_results/
+*.gcov
+*.gcda
+*.gcno
+coverage/
+coverage.info
+
+# Documentation output (generated)
+docs/html/
+docs/latex/
+docs/xml/
+doxygen_output/
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+
+# Package files
+*.tar.gz
+*.zip
+*.7z
+
+# Conan
+conan.lock
+conanbuildinfo.*
+conaninfo.txt
+graph_info.json
+
+# vcpkg
+vcpkg-manifest-install.log
