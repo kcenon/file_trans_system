@@ -2,53 +2,161 @@
 
 This document provides detailed sequence diagrams for the key operations in **file_trans_system**.
 
-## Table of Contents
-
-1. [File Transfer Flow](#file-transfer-flow)
-2. [Protocol Handshake](#protocol-handshake)
-3. [Chunk Transfer](#chunk-transfer)
-4. [Transfer Resume](#transfer-resume)
-5. [Error Handling](#error-handling)
-6. [Pipeline Processing](#pipeline-processing)
-7. [Compression Flow](#compression-flow)
+**Version:** 2.0.0
+**Architecture:** Client-Server Model
 
 ---
 
-## File Transfer Flow
+## Table of Contents
 
-### Complete Single File Transfer
+1. [Connection Flow](#connection-flow)
+2. [Upload Flow](#upload-flow)
+3. [Download Flow](#download-flow)
+4. [File Listing](#file-listing)
+5. [Auto-Reconnection](#auto-reconnection)
+6. [Transfer Resume](#transfer-resume)
+7. [Chunk Transfer](#chunk-transfer)
+8. [Error Handling](#error-handling)
+9. [Pipeline Processing](#pipeline-processing)
+
+---
+
+## Connection Flow
+
+### Client Connection to Server
+
+```
+┌────────┐          ┌────────────┐          ┌────────────┐
+│ Client │          │  Network   │          │   Server   │
+│  App   │          │  Layer     │          │            │
+└───┬────┘          └─────┬──────┘          └─────┬──────┘
+    │                     │                       │
+    │  connect(endpoint)  │                       │
+    │────────────────────▶│                       │
+    │                     │                       │
+    │                     │  TCP/TLS connection   │
+    │                     │──────────────────────▶│
+    │                     │                       │
+    │                     │  connection accepted  │
+    │                     │◀──────────────────────│
+    │                     │                       │
+    │                     │  CONNECT              │
+    │                     │  ┌────────────────────────────────┐
+    │                     │  │ protocol_version: 0x0200      │
+    │                     │  │ capabilities: 0x0000001F      │
+    │                     │  │ client_id: <16 bytes UUID>    │
+    │                     │  └────────────────────────────────┘
+    │                     │──────────────────────▶│
+    │                     │                       │
+    │                     │                       │ Validate protocol
+    │                     │                       │ version
+    │                     │                       │─────┐
+    │                     │                       │     │
+    │                     │                       │◀────┘
+    │                     │                       │
+    │                     │  CONNECT_ACK          │
+    │                     │  ┌────────────────────────────────┐
+    │                     │  │ protocol_version: 0x0200      │
+    │                     │  │ capabilities: 0x0000001F      │
+    │                     │  │ session_id: <16 bytes UUID>   │
+    │                     │  │ max_file_size: 10GB           │
+    │                     │  │ max_chunk_size: 1MB           │
+    │                     │  └────────────────────────────────┘
+    │                     │◀──────────────────────│
+    │                     │                       │
+    │  on_connected()     │                       │
+    │◀────────────────────│                       │
+    │                     │                       │
+    │  Result<server_info>│                       │ on_client_connected()
+    │◀────────────────────│                       │
+    │                     │                       │
+    │  Connection established                     │
+    │                     │                       │
+    ▼                     ▼                       ▼
+```
+
+### Client Disconnection
+
+```
+┌────────┐          ┌────────────┐          ┌────────────┐
+│ Client │          │  Network   │          │   Server   │
+└───┬────┘          └─────┬──────┘          └─────┬──────┘
+    │                     │                       │
+    │  disconnect()       │                       │
+    │────────────────────▶│                       │
+    │                     │                       │
+    │                     │  Wait for active      │
+    │                     │  transfers to complete│
+    │                     │─────┐                 │
+    │                     │     │                 │
+    │                     │◀────┘                 │
+    │                     │                       │
+    │                     │  DISCONNECT           │
+    │                     │  ┌────────────────────────────────┐
+    │                     │  │ reason: client_initiated      │
+    │                     │  └────────────────────────────────┘
+    │                     │──────────────────────▶│
+    │                     │                       │
+    │                     │                       │ on_client_disconnected()
+    │                     │                       │
+    │                     │  close connection     │
+    │                     │◀──────────────────────│
+    │                     │                       │
+    │  on_disconnected()  │                       │
+    │◀────────────────────│                       │
+    │                     │                       │
+    ▼                     ▼                       ▼
+```
+
+---
+
+## Upload Flow
+
+### Complete Upload (Client → Server)
 
 ```
 ┌────────┐          ┌────────────┐          ┌────────────┐          ┌────────┐
-│ Client │          │   Sender   │          │  Receiver  │          │ Server │
+│ Client │          │  Client    │          │   Server   │          │ Server │
 │  App   │          │  Pipeline  │          │  Pipeline  │          │  App   │
 └───┬────┘          └─────┬──────┘          └─────┬──────┘          └───┬────┘
     │                     │                       │                     │
-    │  send_file(path)    │                       │                     │
+    │  upload_file(local, remote)                 │                     │
     │────────────────────▶│                       │                     │
     │                     │                       │                     │
-    │                     │    HANDSHAKE_REQ      │                     │
+    │                     │  UPLOAD_REQUEST       │                     │
+    │                     │  ┌──────────────────────────────────────┐   │
+    │                     │  │ filename: "report.pdf"              │   │
+    │                     │  │ file_size: 104857600                │   │
+    │                     │  │ file_hash: <sha256>                 │   │
+    │                     │  │ chunk_count: 400                    │   │
+    │                     │  │ chunk_size: 262144                  │   │
+    │                     │  │ compression: adaptive               │   │
+    │                     │  └──────────────────────────────────────┘   │
     │                     │──────────────────────▶│                     │
     │                     │                       │                     │
-    │                     │    HANDSHAKE_RESP     │  on_transfer_request()
-    │                     │◀──────────────────────│─────────────────────▶│
+    │                     │                       │  on_upload_request()│
+    │                     │                       │────────────────────▶│
     │                     │                       │                     │
-    │                     │                       │   return true       │
+    │                     │                       │  return true (accept)
     │                     │                       │◀────────────────────│
     │                     │                       │                     │
-    │                     │   TRANSFER_REQUEST    │                     │
-    │                     │──────────────────────▶│                     │
+    │                     │                       │  Create temp file   │
+    │                     │                       │─────┐               │
+    │                     │                       │     │               │
+    │                     │                       │◀────┘               │
     │                     │                       │                     │
-    │                     │   TRANSFER_ACCEPT     │                     │
+    │                     │  UPLOAD_ACCEPT        │                     │
+    │                     │  ┌──────────────────────────────────────┐   │
+    │                     │  │ transfer_id: <uuid>                 │   │
+    │                     │  └──────────────────────────────────────┘   │
     │                     │◀──────────────────────│                     │
     │                     │                       │                     │
     │                     │                       │                     │
     │                     │    CHUNK_DATA [0]     │                     │
     │                     │──────────────────────▶│                     │
-    │  on_progress(10%)   │                       │                     │
+    │  on_progress(0.25%) │                       │                     │
     │◀────────────────────│    CHUNK_ACK [0]      │                     │
-    │                     │◀──────────────────────│  on_progress(10%)   │
-    │                     │                       │─────────────────────▶│
+    │                     │◀──────────────────────│                     │
     │                     │                       │                     │
     │                     │    CHUNK_DATA [1..N]  │                     │
     │                     │ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ▶│                     │
@@ -56,313 +164,421 @@ This document provides detailed sequence diagrams for the key operations in **fi
     │  on_progress(100%)  │   CHUNK_ACK [1..N]    │                     │
     │◀────────────────────│◀─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─│                     │
     │                     │                       │                     │
-    │                     │  TRANSFER_COMPLETE    │                     │
+    │                     │  UPLOAD_COMPLETE      │                     │
     │                     │──────────────────────▶│                     │
     │                     │                       │                     │
-    │                     │                       │ verify SHA-256      │
-    │                     │                       │───────────┐         │
-    │                     │                       │           │         │
-    │                     │                       │◀──────────┘         │
+    │                     │                       │  Verify SHA-256     │
+    │                     │                       │  Move to storage    │
+    │                     │                       │─────┐               │
+    │                     │                       │     │               │
+    │                     │                       │◀────┘               │
     │                     │                       │                     │
-    │                     │   TRANSFER_VERIFY     │                     │
-    │                     │   (verified=true)     │   on_complete()     │
-    │  Result<handle>     │◀──────────────────────│────────────────────▶│
+    │                     │  UPLOAD_VERIFY        │  on_upload_complete()
+    │                     │  (verified=true)      │────────────────────▶│
+    │  Result<transfer>   │◀──────────────────────│                     │
     │◀────────────────────│                       │                     │
     │                     │                       │                     │
     ▼                     ▼                       ▼                     ▼
 ```
 
-### Multi-File Batch Transfer
+### Upload Rejection
+
+```
+┌────────┐          ┌────────────┐          ┌────────────┐          ┌────────┐
+│ Client │          │  Network   │          │   Server   │          │ Server │
+│  App   │          │            │          │            │          │  App   │
+└───┬────┘          └─────┬──────┘          └─────┬──────┘          └───┬────┘
+    │                     │                       │                     │
+    │  upload_file(10GB_file)                     │                     │
+    │────────────────────▶│                       │                     │
+    │                     │                       │                     │
+    │                     │  UPLOAD_REQUEST       │                     │
+    │                     │  (file_size: 10GB)    │                     │
+    │                     │──────────────────────▶│                     │
+    │                     │                       │                     │
+    │                     │                       │  on_upload_request()│
+    │                     │                       │────────────────────▶│
+    │                     │                       │                     │
+    │                     │                       │  return false       │
+    │                     │                       │  (file too large)   │
+    │                     │                       │◀────────────────────│
+    │                     │                       │                     │
+    │                     │  UPLOAD_REJECT        │                     │
+    │                     │  ┌──────────────────────────────────────┐   │
+    │                     │  │ error_code: -713 (upload_rejected)  │   │
+    │                     │  │ reason: "File size exceeds limit"   │   │
+    │                     │  └──────────────────────────────────────┘   │
+    │                     │◀──────────────────────│                     │
+    │                     │                       │                     │
+    │  Result<error>      │                       │                     │
+    │  (-713: upload_rejected)                    │                     │
+    │◀────────────────────│                       │                     │
+    │                     │                       │                     │
+    ▼                     ▼                       ▼                     ▼
+```
+
+---
+
+## Download Flow
+
+### Complete Download (Server → Client)
+
+```
+┌────────┐          ┌────────────┐          ┌────────────┐          ┌────────┐
+│ Client │          │  Client    │          │   Server   │          │ Server │
+│  App   │          │  Pipeline  │          │  Pipeline  │          │  App   │
+└───┬────┘          └─────┬──────┘          └─────┬──────┘          └───┬────┘
+    │                     │                       │                     │
+    │  download_file(remote, local)               │                     │
+    │────────────────────▶│                       │                     │
+    │                     │                       │                     │
+    │                     │  DOWNLOAD_REQUEST     │                     │
+    │                     │  ┌──────────────────────────────────────┐   │
+    │                     │  │ filename: "report.pdf"              │   │
+    │                     │  └──────────────────────────────────────┘   │
+    │                     │──────────────────────▶│                     │
+    │                     │                       │                     │
+    │                     │                       │ on_download_request()
+    │                     │                       │────────────────────▶│
+    │                     │                       │                     │
+    │                     │                       │  return true (allow)│
+    │                     │                       │◀────────────────────│
+    │                     │                       │                     │
+    │                     │                       │  Read file metadata │
+    │                     │                       │─────┐               │
+    │                     │                       │     │               │
+    │                     │                       │◀────┘               │
+    │                     │                       │                     │
+    │                     │  DOWNLOAD_ACCEPT      │                     │
+    │                     │  ┌──────────────────────────────────────┐   │
+    │                     │  │ transfer_id: <uuid>                 │   │
+    │                     │  │ file_size: 104857600                │   │
+    │                     │  │ file_hash: <sha256>                 │   │
+    │                     │  │ chunk_count: 400                    │   │
+    │                     │  │ chunk_size: 262144                  │   │
+    │                     │  │ compression: adaptive               │   │
+    │                     │  └──────────────────────────────────────┘   │
+    │                     │◀──────────────────────│                     │
+    │                     │                       │                     │
+    │                     │  Create local file    │                     │
+    │                     │─────┐                 │                     │
+    │                     │     │                 │                     │
+    │                     │◀────┘                 │                     │
+    │                     │                       │                     │
+    │                     │    CHUNK_DATA [0]     │                     │
+    │                     │◀──────────────────────│                     │
+    │  on_progress(0.25%) │                       │                     │
+    │◀────────────────────│    CHUNK_ACK [0]      │                     │
+    │                     │──────────────────────▶│                     │
+    │                     │                       │                     │
+    │                     │    CHUNK_DATA [1..N]  │                     │
+    │                     │◀─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─│                     │
+    │                     │                       │                     │
+    │  on_progress(100%)  │   CHUNK_ACK [1..N]    │                     │
+    │◀────────────────────│─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ▶│                     │
+    │                     │                       │                     │
+    │                     │  DOWNLOAD_COMPLETE    │                     │
+    │                     │◀──────────────────────│                     │
+    │                     │                       │                     │
+    │                     │  Verify SHA-256       │                     │
+    │                     │─────┐                 │                     │
+    │                     │     │                 │                     │
+    │                     │◀────┘                 │                     │
+    │                     │                       │                     │
+    │                     │  DOWNLOAD_VERIFY      │ on_download_complete()
+    │                     │  (verified=true)      │────────────────────▶│
+    │  Result<transfer>   │──────────────────────▶│                     │
+    │◀────────────────────│                       │                     │
+    │                     │                       │                     │
+    ▼                     ▼                       ▼                     ▼
+```
+
+### Download - File Not Found
 
 ```
 ┌────────┐          ┌────────────┐          ┌────────────┐
-│ Sender │          │  Transport │          │  Receiver  │
+│ Client │          │  Network   │          │   Server   │
 └───┬────┘          └─────┬──────┘          └─────┬──────┘
     │                     │                       │
-    │  send_files([f1, f2, f3])                   │
+    │  download_file("nonexistent.pdf")           │
     │────────────────────▶│                       │
     │                     │                       │
-    │                     │   TRANSFER_REQUEST    │
-    │                     │   (file_count=3)      │
+    │                     │  DOWNLOAD_REQUEST     │
+    │                     │  (filename: "nonexistent.pdf")
     │                     │──────────────────────▶│
     │                     │                       │
-    │                     │   TRANSFER_ACCEPT     │
+    │                     │                       │  Check storage
+    │                     │                       │  File not found
+    │                     │                       │─────┐
+    │                     │                       │     │
+    │                     │                       │◀────┘
+    │                     │                       │
+    │                     │  DOWNLOAD_REJECT      │
+    │                     │  ┌──────────────────────────────────────┐
+    │                     │  │ error_code: -746                    │
+    │                     │  │ (file_not_found_on_server)          │
+    │                     │  │ reason: "File does not exist"       │
+    │                     │  └──────────────────────────────────────┘
     │                     │◀──────────────────────│
     │                     │                       │
-    │                     │                       │
-    │  ╔════════════════════════════════════════════════╗
-    │  ║  File 1 Transfer                               ║
-    │  ╠════════════════════════════════════════════════╣
-    │  ║                  │                       │     ║
-    │  ║                  │  CHUNK_DATA           │     ║
-    │  ║                  │  (file_idx=0, chunk=*)│     ║
-    │  ║                  │──────────────────────▶│     ║
-    │  ║                  │                       │     ║
-    │  ║                  │  CHUNK_ACK            │     ║
-    │  ║                  │◀──────────────────────│     ║
-    │  ╚════════════════════════════════════════════════╝
-    │                     │                       │
-    │  ╔════════════════════════════════════════════════╗
-    │  ║  File 2 Transfer                               ║
-    │  ╠════════════════════════════════════════════════╣
-    │  ║                  │                       │     ║
-    │  ║                  │  CHUNK_DATA           │     ║
-    │  ║                  │  (file_idx=1, chunk=*)│     ║
-    │  ║                  │──────────────────────▶│     ║
-    │  ║                  │                       │     ║
-    │  ║                  │  CHUNK_ACK            │     ║
-    │  ║                  │◀──────────────────────│     ║
-    │  ╚════════════════════════════════════════════════╝
-    │                     │                       │
-    │  ╔════════════════════════════════════════════════╗
-    │  ║  File 3 Transfer                               ║
-    │  ╠════════════════════════════════════════════════╣
-    │  ║                  │                       │     ║
-    │  ║                  │  CHUNK_DATA           │     ║
-    │  ║                  │  (file_idx=2, chunk=*)│     ║
-    │  ║                  │──────────────────────▶│     ║
-    │  ║                  │                       │     ║
-    │  ║                  │  CHUNK_ACK            │     ║
-    │  ║                  │◀──────────────────────│     ║
-    │  ╚════════════════════════════════════════════════╝
-    │                     │                       │
-    │                     │  TRANSFER_COMPLETE    │
-    │                     │──────────────────────▶│
-    │                     │                       │
-    │                     │  TRANSFER_VERIFY      │
-    │                     │  (all_files_verified) │
-    │                     │◀──────────────────────│
+    │  Result<error>      │                       │
+    │  (-746: file_not_found_on_server)           │
+    │◀────────────────────│                       │
     │                     │                       │
     ▼                     ▼                       ▼
 ```
 
 ---
 
-## Protocol Handshake
+## File Listing
 
-### Successful Handshake
-
-```
-┌────────┐                                    ┌────────┐
-│ Sender │                                    │Receiver│
-└───┬────┘                                    └───┬────┘
-    │                                             │
-    │  HANDSHAKE_REQUEST                          │
-    │  ┌────────────────────────────────────┐     │
-    │  │ protocol_version: 0x0100           │     │
-    │  │ capabilities: 0x0000000F           │     │
-    │  │ client_id: <16 bytes UUID>         │     │
-    │  └────────────────────────────────────┘     │
-    │────────────────────────────────────────────▶│
-    │                                             │
-    │                                             │ Validate protocol
-    │                                             │ version & capabilities
-    │                                             │
-    │  HANDSHAKE_RESPONSE                         │
-    │  ┌────────────────────────────────────┐     │
-    │  │ protocol_version: 0x0100           │     │
-    │  │ capabilities: 0x0000000F           │     │
-    │  │ session_id: <16 bytes UUID>        │     │
-    │  │ max_chunk_size: 1048576            │     │
-    │  │ max_concurrent: 100                │     │
-    │  └────────────────────────────────────┘     │
-    │◀────────────────────────────────────────────│
-    │                                             │
-    │  Session established                        │
-    │                                             │
-    ▼                                             ▼
-```
-
-### Capability Flags
+### List Files on Server
 
 ```
-Capabilities (32-bit):
-┌────────────────────────────────────────────────────────────────┐
-│ Bit 0: COMPRESSION_LZ4        - LZ4 compression support        │
-│ Bit 1: COMPRESSION_LZ4_HC     - LZ4-HC compression support     │
-│ Bit 2: RESUME                 - Transfer resume support        │
-│ Bit 3: BATCH                  - Multi-file batch support       │
-│ Bit 4-7: Reserved             - Future compression algorithms  │
-│ Bit 8-15: Reserved            - Future features               │
-│ Bit 16-23: Reserved           - Protocol extensions           │
-│ Bit 24-31: Vendor-specific    - Custom implementations        │
-└────────────────────────────────────────────────────────────────┘
+┌────────┐          ┌────────────┐          ┌────────────┐
+│ Client │          │  Network   │          │   Server   │
+└───┬────┘          └─────┬──────┘          └─────┬──────┘
+    │                     │                       │
+    │  list_files("*.pdf")│                       │
+    │────────────────────▶│                       │
+    │                     │                       │
+    │                     │  LIST_REQUEST         │
+    │                     │  ┌──────────────────────────────────────┐
+    │                     │  │ pattern: "*.pdf"                    │
+    │                     │  │ offset: 0                           │
+    │                     │  │ limit: 100                          │
+    │                     │  └──────────────────────────────────────┘
+    │                     │──────────────────────▶│
+    │                     │                       │
+    │                     │                       │  Query storage
+    │                     │                       │  manager
+    │                     │                       │─────┐
+    │                     │                       │     │
+    │                     │                       │◀────┘
+    │                     │                       │
+    │                     │  LIST_RESPONSE        │
+    │                     │  ┌──────────────────────────────────────┐
+    │                     │  │ total_count: 42                     │
+    │                     │  │ returned_count: 42                  │
+    │                     │  │ files: [                            │
+    │                     │  │   {name: "report.pdf",              │
+    │                     │  │    size: 1048576,                   │
+    │                     │  │    modified: "2025-12-11T10:00:00Z"},│
+    │                     │  │   {name: "invoice.pdf", ...},       │
+    │                     │  │   ...                               │
+    │                     │  │ ]                                   │
+    │                     │  └──────────────────────────────────────┘
+    │                     │◀──────────────────────│
+    │                     │                       │
+    │  Result<vector<file_info>>                  │
+    │◀────────────────────│                       │
+    │                     │                       │
+    ▼                     ▼                       ▼
+```
+
+### Paginated Listing
+
+```
+┌────────┐          ┌────────────┐          ┌────────────┐
+│ Client │          │  Network   │          │   Server   │
+└───┬────┘          └─────┬──────┘          └─────┬──────┘
+    │                     │                       │
+    │  list_files("*", offset=0, limit=50)        │
+    │────────────────────▶│                       │
+    │                     │  LIST_REQUEST         │
+    │                     │──────────────────────▶│
+    │                     │                       │
+    │                     │  LIST_RESPONSE        │
+    │                     │  (total=200, returned=50, files[0-49])
+    │                     │◀──────────────────────│
+    │  files[0-49]        │                       │
+    │◀────────────────────│                       │
+    │                     │                       │
+    │  list_files("*", offset=50, limit=50)       │
+    │────────────────────▶│                       │
+    │                     │  LIST_REQUEST         │
+    │                     │──────────────────────▶│
+    │                     │                       │
+    │                     │  LIST_RESPONSE        │
+    │                     │  (total=200, returned=50, files[50-99])
+    │                     │◀──────────────────────│
+    │  files[50-99]       │                       │
+    │◀────────────────────│                       │
+    │                     │                       │
+    │  ... continue until all pages retrieved ... │
+    │                     │                       │
+    ▼                     ▼                       ▼
 ```
 
 ---
 
-## Chunk Transfer
+## Auto-Reconnection
 
-### Single Chunk Lifecycle
-
-```
-┌────────┐    ┌────────────┐    ┌────────────┐    ┌────────────┐    ┌────────┐
-│  File  │    │  io_read   │    │compression │    │  network   │    │Receiver│
-│  Disk  │    │   stage    │    │   stage    │    │   stage    │    │        │
-└───┬────┘    └─────┬──────┘    └─────┬──────┘    └─────┬──────┘    └───┬────┘
-    │               │                 │                 │               │
-    │  read(offset) │                 │                 │               │
-    │◀──────────────│                 │                 │               │
-    │               │                 │                 │               │
-    │  data[256KB]  │                 │                 │               │
-    │──────────────▶│                 │                 │               │
-    │               │                 │                 │               │
-    │               │  create chunk   │                 │               │
-    │               │  with header    │                 │               │
-    │               │─────┐           │                 │               │
-    │               │     │           │                 │               │
-    │               │◀────┘           │                 │               │
-    │               │                 │                 │               │
-    │               │  push to queue  │                 │               │
-    │               │────────────────▶│                 │               │
-    │               │                 │                 │               │
-    │               │                 │  adaptive check │               │
-    │               │                 │  is_compressible?               │
-    │               │                 │─────┐           │               │
-    │               │                 │     │           │               │
-    │               │                 │◀────┘           │               │
-    │               │                 │                 │               │
-    │               │                 │  LZ4 compress   │               │
-    │               │                 │─────┐           │               │
-    │               │                 │     │           │               │
-    │               │                 │◀────┘           │               │
-    │               │                 │                 │               │
-    │               │                 │  set compressed │               │
-    │               │                 │  flag           │               │
-    │               │                 │────────────────▶│               │
-    │               │                 │                 │               │
-    │               │                 │                 │  serialize    │
-    │               │                 │                 │  chunk        │
-    │               │                 │                 │─────┐         │
-    │               │                 │                 │     │         │
-    │               │                 │                 │◀────┘         │
-    │               │                 │                 │               │
-    │               │                 │                 │  CHUNK_DATA   │
-    │               │                 │                 │──────────────▶│
-    │               │                 │                 │               │
-    │               │                 │                 │  CHUNK_ACK    │
-    │               │                 │                 │◀──────────────│
-    │               │                 │                 │               │
-    ▼               ▼                 ▼                 ▼               ▼
-```
-
-### Chunk Retransmission (CRC32 Failure)
+### Reconnection After Network Failure
 
 ```
-┌────────┐                                    ┌────────┐
-│ Sender │                                    │Receiver│
-└───┬────┘                                    └───┬────┘
-    │                                             │
-    │  CHUNK_DATA [chunk_idx=42]                  │
-    │  ┌─────────────────────────────────┐        │
-    │  │ data + checksum (CRC32)         │        │
-    │  └─────────────────────────────────┘        │
-    │────────────────────────────────────────────▶│
-    │                                             │
-    │                                             │ verify CRC32
-    │                                             │─────┐
-    │                                             │     │ MISMATCH!
-    │                                             │◀────┘
-    │                                             │
-    │  CHUNK_NACK [chunk_idx=42]                  │
-    │  ┌─────────────────────────────────┐        │
-    │  │ error_code: -720                │        │
-    │  │ chunk_checksum_error            │        │
-    │  └─────────────────────────────────┘        │
-    │◀────────────────────────────────────────────│
-    │                                             │
-    │  Re-read and resend                         │
-    │                                             │
-    │  CHUNK_DATA [chunk_idx=42]                  │
-    │  ┌─────────────────────────────────┐        │
-    │  │ data + checksum (re-computed)   │        │
-    │  └─────────────────────────────────┘        │
-    │────────────────────────────────────────────▶│
-    │                                             │
-    │                                             │ verify CRC32
-    │                                             │─────┐
-    │                                             │     │ OK
-    │                                             │◀────┘
-    │                                             │
-    │  CHUNK_ACK [chunk_idx=42]                   │
-    │◀────────────────────────────────────────────│
-    │                                             │
-    ▼                                             ▼
+┌────────┐          ┌────────────┐          ┌────────────┐
+│ Client │          │  Network   │          │   Server   │
+│  App   │          │            │          │            │
+└───┬────┘          └─────┬──────┘          └─────┬──────┘
+    │                     │                       │
+    │  Connected, upload in progress              │
+    │                     │                       │
+    │  CHUNK_DATA [0-99]  │                       │
+    │────────────────────▶│──────────────────────▶│
+    │                     │                       │
+    │             ╔═══════════════════╗           │
+    │             ║  NETWORK FAILURE  ║           │
+    │             ╚═══════════════════╝           │
+    │                     │                       │
+    │                     ╳                       │
+    │                     │                       │
+    │  on_disconnected(connection_lost)           │
+    │◀────────────────────│                       │
+    │                     │                       │
+    │  on_reconnecting(attempt=1, delay=1s)       │
+    │◀────────────────────│                       │
+    │                     │                       │
+    │  ═══ Wait 1 second ═══                      │
+    │                     │                       │
+    │                     │  TCP connect          │
+    │                     │──────────────────────╳│
+    │                     │                       │
+    │  on_reconnecting(attempt=2, delay=2s)       │
+    │◀────────────────────│                       │
+    │                     │                       │
+    │  ═══ Wait 2 seconds ═══                     │
+    │                     │                       │
+    │                     │  TCP connect          │
+    │                     │──────────────────────▶│
+    │                     │                       │
+    │                     │  CONNECT              │
+    │                     │──────────────────────▶│
+    │                     │                       │
+    │                     │  CONNECT_ACK          │
+    │                     │◀──────────────────────│
+    │                     │                       │
+    │  on_reconnected()   │                       │
+    │◀────────────────────│                       │
+    │                     │                       │
+    │  Resume active transfers                    │
+    │                     │                       │
+    │                     │  RESUME_REQUEST       │
+    │                     │  (transfer_id, received_chunks)
+    │                     │──────────────────────▶│
+    │                     │                       │
+    │                     │  RESUME_RESPONSE      │
+    │                     │  (resumable, missing_chunks)
+    │                     │◀──────────────────────│
+    │                     │                       │
+    │  Continue from chunk 100                    │
+    │  CHUNK_DATA [100..N]│                       │
+    │────────────────────▶│──────────────────────▶│
+    │                     │                       │
+    ▼                     ▼                       ▼
+```
+
+### Reconnection Failure (Max Attempts Exhausted)
+
+```
+┌────────┐          ┌────────────┐
+│ Client │          │  Network   │
+│  App   │          │            │
+└───┬────┘          └─────┬──────┘
+    │                     │
+    │  Connection lost    │
+    │                     │
+    │  on_disconnected()  │
+    │◀────────────────────│
+    │                     │
+    │  on_reconnecting(1, 1s)
+    │◀────────────────────│
+    │                     │
+    │  ═══ Wait 1s ═══    │
+    │                     │
+    │  Connect attempt    ╳
+    │                     │
+    │  on_reconnecting(2, 2s)
+    │◀────────────────────│
+    │                     │
+    │  ═══ Wait 2s ═══    │
+    │                     │
+    │  Connect attempt    ╳
+    │                     │
+    │      ... continue   │
+    │                     │
+    │  on_reconnecting(10, 30s)
+    │◀────────────────────│
+    │                     │
+    │  ═══ Wait 30s ═══   │
+    │                     │
+    │  Connect attempt    ╳
+    │                     │
+    │  Max attempts reached
+    │                     │
+    │  on_reconnect_failed()
+    │◀────────────────────│
+    │                     │
+    │  Active transfers   │
+    │  marked as failed   │
+    │                     │
+    ▼                     ▼
 ```
 
 ---
 
 ## Transfer Resume
 
-### Resume After Disconnection
+### Resume After Reconnection
 
 ```
 ┌────────┐          ┌────────────┐          ┌────────┐
-│ Sender │          │  (Network) │          │Receiver│
+│ Client │          │  Network   │          │ Server │
 └───┬────┘          └─────┬──────┘          └───┬────┘
     │                     │                     │
-    │  Initial transfer started                 │
+    │  Reconnected after disconnection          │
     │                     │                     │
-    │  CHUNK_DATA [0-99]  │                     │
-    │────────────────────▶│────────────────────▶│
+    │  Has active transfer:                     │
+    │  - transfer_id: <uuid>                    │
+    │  - chunks_sent: [0-99]                    │
     │                     │                     │
-    │  CHUNK_ACK [0-99]   │                     │
-    │◀────────────────────│◀────────────────────│
-    │                     │                     │
-    │                     │                     │
-    │             ╔═══════════════════╗         │
-    │             ║  DISCONNECTION    ║         │
-    │             ╚═══════════════════╝         │
-    │                     │                     │
-    │                     ╳                     │ Save checkpoint
-    │                     │                     │ (received chunks
-    │                     │                     │  bitmap)
-    │                     │                     │
-    │  ═══ TIME PASSES ═══                      │
-    │                     │                     │
-    │  Reconnect          │                     │
-    │─────────────────────────────────────────▶ │
-    │                     │                     │
-    │  HANDSHAKE_REQUEST  │                     │
-    │────────────────────▶│────────────────────▶│
-    │                     │                     │
-    │  HANDSHAKE_RESPONSE │                     │
-    │◀────────────────────│◀────────────────────│
-    │                     │                     │
-    │  RESUME_REQUEST                           │
+    │  RESUME_REQUEST     │                     │
     │  ┌─────────────────────────────────┐      │
-    │  │ transfer_id: <original>         │      │
+    │  │ transfer_id: <uuid>             │      │
     │  │ file_hash: <sha256>             │      │
+    │  │ direction: upload               │      │
+    │  │ chunks_sent: [0-99]             │      │
     │  └─────────────────────────────────┘      │
-    │────────────────────▶│────────────────────▶│
+    │──────────────────────────────────────────▶│
     │                     │                     │
-    │                     │                     │ Check saved state
+    │                     │                     │ Check checkpoint
+    │                     │                     │ Verify file hash
     │                     │                     │─────┐
     │                     │                     │     │
     │                     │                     │◀────┘
     │                     │                     │
-    │  RESUME_RESPONSE                          │
+    │  RESUME_RESPONSE    │                     │
     │  ┌─────────────────────────────────┐      │
     │  │ status: RESUMABLE               │      │
-    │  │ received_chunks: [0-99]         │      │
-    │  │ missing_chunks: [100-4095]      │      │
-    │  │ total_chunks: 4096              │      │
+    │  │ chunks_received: [0-99]         │      │
+    │  │ chunks_missing: [100-399]       │      │
+    │  │ total_chunks: 400               │      │
     │  └─────────────────────────────────┘      │
-    │◀────────────────────│◀────────────────────│
+    │◀──────────────────────────────────────────│
     │                     │                     │
-    │  Continue from chunk 100                  │
+    │  Resume from chunk 100                    │
     │                     │                     │
-    │  CHUNK_DATA [100-4095]                    │
-    │────────────────────▶│────────────────────▶│
+    │  CHUNK_DATA [100-399]                     │
+    │─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ▶│
     │                     │                     │
-    │  CHUNK_ACK [100-4095]                     │
-    │◀────────────────────│◀────────────────────│
+    │  CHUNK_ACK [100-399]│                     │
+    │◀─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ │
     │                     │                     │
-    │  TRANSFER_COMPLETE  │                     │
-    │────────────────────▶│────────────────────▶│
+    │  UPLOAD_COMPLETE    │                     │
+    │─────────────────────────────────────────▶│
     │                     │                     │
-    │  TRANSFER_VERIFY    │                     │
-    │◀────────────────────│◀────────────────────│
+    │  UPLOAD_VERIFY      │                     │
+    │◀──────────────────────────────────────────│
     │                     │                     │
     ▼                     ▼                     ▼
 ```
@@ -375,7 +591,7 @@ RESUME_RESPONSE status values:
 ┌───────────────────────────────────────────────────────────────────────┐
 │  RESUMABLE          │  Transfer can be resumed from checkpoint        │
 ├─────────────────────┼─────────────────────────────────────────────────┤
-│  NOT_FOUND          │  Transfer ID not found on receiver              │
+│  NOT_FOUND          │  Transfer ID not found on server                │
 ├─────────────────────┼─────────────────────────────────────────────────┤
 │  FILE_CHANGED       │  Source file hash doesn't match                 │
 ├─────────────────────┼─────────────────────────────────────────────────┤
@@ -387,95 +603,166 @@ RESUME_RESPONSE status values:
 
 ---
 
+## Chunk Transfer
+
+### Single Chunk Lifecycle (Upload)
+
+```
+┌────────┐    ┌────────────┐    ┌────────────┐    ┌────────────┐    ┌────────┐
+│  File  │    │  io_read   │    │compression │    │  network   │    │ Server │
+│  Disk  │    │   stage    │    │   stage    │    │   stage    │    │        │
+└───┬────┘    └─────┬──────┘    └─────┬──────┘    └─────┬──────┘    └───┬────┘
+    │               │                 │                 │               │
+    │  read(offset) │                 │                 │               │
+    │◀──────────────│                 │                 │               │
+    │               │                 │                 │               │
+    │  data[256KB]  │                 │                 │               │
+    │──────────────▶│                 │                 │               │
+    │               │                 │                 │               │
+    │               │  Create chunk   │                 │               │
+    │               │  Calculate CRC32│                 │               │
+    │               │─────┐           │                 │               │
+    │               │     │           │                 │               │
+    │               │◀────┘           │                 │               │
+    │               │                 │                 │               │
+    │               │  Push to queue  │                 │               │
+    │               │────────────────▶│                 │               │
+    │               │                 │                 │               │
+    │               │                 │  Adaptive check │               │
+    │               │                 │  compressible?  │               │
+    │               │                 │─────┐           │               │
+    │               │                 │     │           │               │
+    │               │                 │◀────┘           │               │
+    │               │                 │                 │               │
+    │               │                 │  LZ4 compress   │               │
+    │               │                 │─────┐           │               │
+    │               │                 │     │           │               │
+    │               │                 │◀────┘           │               │
+    │               │                 │                 │               │
+    │               │                 │  Push compressed│               │
+    │               │                 │────────────────▶│               │
+    │               │                 │                 │               │
+    │               │                 │                 │  Serialize    │
+    │               │                 │                 │  CHUNK_DATA   │
+    │               │                 │                 │─────┐         │
+    │               │                 │                 │     │         │
+    │               │                 │                 │◀────┘         │
+    │               │                 │                 │               │
+    │               │                 │                 │  Send         │
+    │               │                 │                 │──────────────▶│
+    │               │                 │                 │               │
+    │               │                 │                 │  CHUNK_ACK    │
+    │               │                 │                 │◀──────────────│
+    │               │                 │                 │               │
+    ▼               ▼                 ▼                 ▼               ▼
+```
+
+### Chunk Retransmission (CRC32 Failure)
+
+```
+┌────────┐                                    ┌────────┐
+│ Client │                                    │ Server │
+└───┬────┘                                    └───┬────┘
+    │                                             │
+    │  CHUNK_DATA [chunk_idx=42]                  │
+    │  ┌─────────────────────────────────┐        │
+    │  │ data + checksum (CRC32)         │        │
+    │  └─────────────────────────────────┘        │
+    │────────────────────────────────────────────▶│
+    │                                             │
+    │                                             │ Verify CRC32
+    │                                             │─────┐
+    │                                             │     │ MISMATCH!
+    │                                             │◀────┘
+    │                                             │
+    │  CHUNK_NACK [chunk_idx=42]                  │
+    │  ┌─────────────────────────────────┐        │
+    │  │ error_code: -720                │        │
+    │  │ (chunk_checksum_error)          │        │
+    │  └─────────────────────────────────┘        │
+    │◀────────────────────────────────────────────│
+    │                                             │
+    │  Re-read and resend                         │
+    │                                             │
+    │  CHUNK_DATA [chunk_idx=42]                  │
+    │  ┌─────────────────────────────────┐        │
+    │  │ data + checksum (re-computed)   │        │
+    │  └─────────────────────────────────┘        │
+    │────────────────────────────────────────────▶│
+    │                                             │
+    │                                             │ Verify CRC32
+    │                                             │─────┐
+    │                                             │     │ OK
+    │                                             │◀────┘
+    │                                             │
+    │  CHUNK_ACK [chunk_idx=42]                   │
+    │◀────────────────────────────────────────────│
+    │                                             │
+    ▼                                             ▼
+```
+
+---
+
 ## Error Handling
 
 ### Connection Error
 
 ```
 ┌────────┐          ┌────────────┐          ┌────────┐
-│ Client │          │   Sender   │          │ Server │
+│ Client │          │  Network   │          │ Server │
+│  App   │          │            │          │        │
 └───┬────┘          └─────┬──────┘          └───┬────┘
     │                     │                     │
-    │  send_file()        │                     │
+    │  connect()          │                     │
     │────────────────────▶│                     │
     │                     │                     │
-    │                     │  connect()          │
+    │                     │  TCP connect        │
     │                     │─────────────────────╳ (Connection refused)
     │                     │                     │
     │                     │  Retry with backoff │
-    │                     │  (1s, 2s, 4s...)    │
+    │                     │  (if auto_reconnect)│
     │                     │─────────────────────╳
     │                     │                     │
     │                     │─────────────────────╳
     │                     │                     │
     │  Result<error>      │                     │
-    │  (-700: transfer_init_failed)             │
+    │  (-700: connection_failed)                │
     │◀────────────────────│                     │
     │                     │                     │
     ▼                     ▼                     ▼
 ```
 
-### Timeout Error
+### Storage Full Error
 
 ```
 ┌────────┐          ┌────────────┐          ┌────────┐
-│ Sender │          │  Transport │          │Receiver│
+│ Client │          │  Network   │          │ Server │
 └───┬────┘          └─────┬──────┘          └───┬────┘
     │                     │                     │
-    │  CHUNK_DATA         │                     │
+    │  UPLOAD_REQUEST     │                     │
+    │  (file_size: 50GB)  │                     │
     │────────────────────▶│────────────────────▶│
     │                     │                     │
-    │                     │                     │ Processing...
-    │                     │                     │ (very slow)
+    │                     │                     │ Check storage quota
+    │                     │                     │ (90GB used / 100GB quota)
+    │                     │                     │─────┐
+    │                     │                     │     │
+    │                     │                     │◀────┘
     │                     │                     │
-    │  ┌─────────────────────────────────────┐  │
-    │  │  TIMEOUT (30s default)              │  │
-    │  └─────────────────────────────────────┘  │
-    │                     │                     │
-    │  Timeout! Retry...  │                     │
-    │────────────────────▶│────────────────────▶│
-    │                     │                     │
-    │  CHUNK_ACK          │                     │
+    │  UPLOAD_REJECT      │                     │
+    │  ┌──────────────────────────────────────┐ │
+    │  │ error_code: -745 (storage_full)     │ │
+    │  │ reason: "Insufficient storage space"│ │
+    │  │ available: 10GB                     │ │
+    │  │ requested: 50GB                     │ │
+    │  └──────────────────────────────────────┘ │
     │◀────────────────────│◀────────────────────│
     │                     │                     │
+    │  Result<error>      │                     │
+    │  (-745: storage_full)                     │
+    │◀────────────────────│                     │
+    │                     │                     │
     ▼                     ▼                     ▼
-```
-
-### Transfer Rejection
-
-```
-┌────────┐          ┌────────────┐          ┌────────┐          ┌────────┐
-│ Client │          │   Sender   │          │Receiver│          │ Server │
-└───┬────┘          └─────┬──────┘          └───┬────┘          └───┬────┘
-    │                     │                     │                   │
-    │  send_file(10GB)    │                     │                   │
-    │────────────────────▶│                     │                   │
-    │                     │                     │                   │
-    │                     │  TRANSFER_REQUEST   │                   │
-    │                     │  (size=10GB)        │                   │
-    │                     │────────────────────▶│                   │
-    │                     │                     │                   │
-    │                     │                     │on_transfer_request│
-    │                     │                     │──────────────────▶│
-    │                     │                     │                   │
-    │                     │                     │  return false     │
-    │                     │                     │  (file too large) │
-    │                     │                     │◀──────────────────│
-    │                     │                     │                   │
-    │                     │  TRANSFER_REJECT    │                   │
-    │                     │  ┌──────────────────────────┐           │
-    │                     │  │ error: -703              │           │
-    │                     │  │ transfer_rejected        │           │
-    │                     │  │ reason: "size_exceeded"  │           │
-    │                     │  └──────────────────────────┘           │
-    │                     │◀────────────────────│                   │
-    │                     │                     │                   │
-    │  Result<error>      │                     │                   │
-    │  (-703: transfer_   │                     │                   │
-    │   rejected)         │                     │                   │
-    │◀────────────────────│                     │                   │
-    │                     │                     │                   │
-    ▼                     ▼                     ▼                   ▼
 ```
 
 ---
@@ -491,17 +778,13 @@ io_read    │▓▓▓▓│    │▓▓▓▓│    │▓▓▓▓│    │
 stage      │ C0 │    │ C1 │    │ C2 │    │ C3 │    │ C4 │    │ C5 │
            └────┴────┴────┴────┴────┴────┴────┴────┴────┴────┴────┘
 
-chunk_     │    │▓▓▓▓│    │▓▓▓▓│    │▓▓▓▓│    │▓▓▓▓│    │▓▓▓▓│    │
-process    │    │ C0 │    │ C1 │    │ C2 │    │ C3 │    │ C4 │    │
-           └────┴────┴────┴────┴────┴────┴────┴────┴────┴────┴────┘
+compress   │    │▓▓▓▓▓▓▓▓│    │▓▓▓▓▓▓▓▓│    │▓▓▓▓▓▓▓▓│    │▓▓▓▓▓▓▓▓│
+stage      │    │   C0   │    │   C1   │    │   C2   │    │   C3   │
+           └────┴────────┴────┴────────┴────┴────────┴────┴────────┘
 
-compress   │    │    │▓▓▓▓▓▓▓▓│    │▓▓▓▓▓▓▓▓│    │▓▓▓▓▓▓▓▓│    │    │
-stage      │    │    │   C0   │    │   C1   │    │   C2   │    │    │
-           └────┴────┴────────┴────┴────────┴────┴────────┴────┴────┘
-
-network    │    │    │    │    │▓▓▓▓▓▓▓▓▓▓▓▓│    │▓▓▓▓▓▓▓▓▓▓▓▓│    │
-stage      │    │    │    │    │     C0     │    │     C1     │    │
-           └────┴────┴────┴────┴────────────┴────┴────────────┴────┘
+network    │    │    │▓▓▓▓▓▓▓▓▓▓▓▓│    │▓▓▓▓▓▓▓▓▓▓▓▓│    │▓▓▓▓▓▓▓▓│
+send       │    │    │     C0     │    │     C1     │    │   C2   │
+           └────┴────┴────────────┴────┴────────────┴────┴────────┘
 
 Legend:
   ▓▓▓▓ = Processing chunk
@@ -526,26 +809,22 @@ T=1  read_queue:    [C0      ]     1 chunk
      compress_queue:[        ]
      send_queue:    [        ]
 
-T=2  read_queue:    [C0 C1   ]     2 chunks
-     compress_queue:[C0      ]
-     send_queue:    [        ]
-
-T=3  read_queue:    [C1 C2   ]
+T=5  read_queue:    [C1 C2   ]
      compress_queue:[C0 C1   ]
      send_queue:    [C0      ]     Network starts sending
 
-T=10 read_queue:    [████████████████]  FULL (16)
+T=20 read_queue:    [████████████████]  FULL (16)
      compress_queue:[████████████████████████████████]  FULL (32)
      send_queue:    [████████████████████████████████████████████████████████████████]  FULL (64)
-                                        ↑ Network bottleneck
+                                       ↑ Network bottleneck
 
-T=11 io_read stage BLOCKS waiting for queue space
+T=21 io_read stage BLOCKS waiting for queue space
      Memory usage stays bounded at ~32MB
      No runaway memory consumption!
 
-T=12 Network sends one chunk
+T=22 Network sends one chunk
      send_queue:    [███████████████████████████████████████████████████████████████ ]
-                                                                               ↑ Space freed
+                                                                              ↑ Space freed
 
      Compression stage can now push
      io_read stage unblocks
@@ -553,112 +832,30 @@ T=12 Network sends one chunk
 
 ---
 
-## Compression Flow
+## Heartbeat and Connection Management
 
-### Adaptive Compression Decision
-
-```
-┌────────┐          ┌────────────────┐          ┌────────────┐
-│ Chunk  │          │   Adaptive     │          │ LZ4 Engine │
-│ Data   │          │  Compression   │          │            │
-└───┬────┘          └───────┬────────┘          └─────┬──────┘
-    │                       │                         │
-    │  chunk data (256KB)   │                         │
-    │──────────────────────▶│                         │
-    │                       │                         │
-    │                       │  Sample first 4KB      │
-    │                       │─────┐                   │
-    │                       │     │                   │
-    │                       │◀────┘                   │
-    │                       │                         │
-    │                       │  Compress sample        │
-    │                       │────────────────────────▶│
-    │                       │                         │
-    │                       │  compressed_size        │
-    │                       │◀────────────────────────│
-    │                       │                         │
-    │                       │  Calculate ratio        │
-    │                       │  ratio = 4KB / compressed_size
-    │                       │─────┐                   │
-    │                       │     │                   │
-    │                       │◀────┘                   │
-    │                       │                         │
-    │  ┌─────────────────────────────────────────────────────────┐
-    │  │  if (ratio > 0.9) → SKIP compression (incompressible)   │
-    │  │  else → COMPRESS full chunk                             │
-    │  └─────────────────────────────────────────────────────────┘
-    │                       │                         │
-    │  [If compressible]    │                         │
-    │                       │  Compress full chunk    │
-    │                       │────────────────────────▶│
-    │                       │                         │
-    │                       │  compressed_data        │
-    │                       │◀────────────────────────│
-    │                       │                         │
-    │  compressed chunk     │                         │
-    │  (flags: compressed)  │                         │
-    │◀──────────────────────│                         │
-    │                       │                         │
-    │  [If incompressible]  │                         │
-    │  original chunk       │                         │
-    │  (flags: none)        │                         │
-    │◀──────────────────────│                         │
-    │                       │                         │
-    ▼                       ▼                         ▼
-```
-
-### Compression Statistics Collection
-
-```
-┌───────────────────────────────────────────────────────────────────────┐
-│                    compression_statistics                              │
-├───────────────────────────────────────────────────────────────────────┤
-│                                                                        │
-│  Per-chunk update:                                                     │
-│  ┌─────────────────────────────────────────────────────────────────┐  │
-│  │  total_raw_bytes       += original_size                         │  │
-│  │  total_compressed_bytes += compressed_size                      │  │
-│  │  compression_time_us   += elapsed_time                          │  │
-│  │  if (compressed) chunks_compressed++                            │  │
-│  │  else chunks_skipped++                                          │  │
-│  └─────────────────────────────────────────────────────────────────┘  │
-│                                                                        │
-│  Computed metrics:                                                     │
-│  ┌─────────────────────────────────────────────────────────────────┐  │
-│  │  compression_ratio() = raw_bytes / compressed_bytes             │  │
-│  │  compression_speed() = raw_bytes / compression_time_us × 1e6    │  │
-│  │  skip_rate() = chunks_skipped / (chunks_compressed + skipped)   │  │
-│  └─────────────────────────────────────────────────────────────────┘  │
-│                                                                        │
-└───────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## Keepalive and Connection Management
-
-### Keepalive Mechanism
+### Heartbeat Mechanism
 
 ```
 ┌────────┐                                    ┌────────┐
-│ Sender │                                    │Receiver│
+│ Client │                                    │ Server │
 └───┬────┘                                    └───┬────┘
     │                                             │
-    │  Active transfer in progress                │
+    │  Connection established                     │
     │                                             │
     │  ═══ No data for 15 seconds ═══             │
     │                                             │
-    │  KEEPALIVE                                  │
+    │  HEARTBEAT                                  │
     │────────────────────────────────────────────▶│
     │                                             │
-    │  KEEPALIVE                                  │
+    │  HEARTBEAT_ACK                              │
     │◀────────────────────────────────────────────│
     │                                             │
     │  Connection confirmed alive                 │
     │                                             │
     │  ═══ No data for 15 seconds ═══             │
     │                                             │
-    │  KEEPALIVE                                  │
+    │  HEARTBEAT                                  │
     │────────────────────────────────────────────▶│
     │                                             │
     │  [No response within 30s]                   │
@@ -671,4 +868,5 @@ T=12 Network sends one chunk
 
 ---
 
+*Version: 2.0.0*
 *Last updated: 2025-12-11*

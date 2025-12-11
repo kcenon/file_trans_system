@@ -2,11 +2,14 @@
 
 Complete API documentation for the **file_trans_system** library.
 
+**Version**: 2.0.0
+**Last Updated**: 2025-12-11
+
 ## Table of Contents
 
 1. [Core Classes](#core-classes)
-   - [file_sender](#file_sender)
-   - [file_receiver](#file_receiver)
+   - [file_transfer_server](#file_transfer_server)
+   - [file_transfer_client](#file_transfer_client)
    - [transfer_manager](#transfer_manager)
 2. [Data Types](#data-types)
    - [Enumerations](#enumerations)
@@ -20,22 +23,184 @@ Complete API documentation for the **file_trans_system** library.
 
 ## Core Classes
 
-### file_sender
+### file_transfer_server
 
-Primary class for sending files to remote endpoints.
+Central server class for managing file storage and client connections.
 
 #### Builder Pattern
 
 ```cpp
 namespace kcenon::file_transfer {
 
-class file_sender {
+class file_transfer_server {
 public:
     class builder {
     public:
+        // Set the storage directory for uploaded files
+        builder& with_storage_directory(const std::filesystem::path& dir);
+
+        // Set maximum number of concurrent client connections
+        builder& with_max_connections(std::size_t max_count);
+
+        // Set maximum file size allowed for uploads
+        builder& with_max_file_size(uint64_t max_size);
+
+        // Set total storage quota
+        builder& with_storage_quota(uint64_t quota);
+
         // Configure pipeline worker counts and queue sizes
         builder& with_pipeline_config(const pipeline_config& config);
 
+        // Set transport type (tcp, quic)
+        builder& with_transport(transport_type type);
+
+        // Build the server instance
+        [[nodiscard]] auto build() -> Result<file_transfer_server>;
+    };
+};
+
+}
+```
+
+#### Methods
+
+##### start() / stop()
+
+Start and stop the server.
+
+```cpp
+[[nodiscard]] auto start(const endpoint& listen_addr) -> Result<void>;
+[[nodiscard]] auto stop() -> Result<void>;
+```
+
+**Example:**
+```cpp
+auto server = file_transfer_server::builder()
+    .with_storage_directory("/data/files")
+    .with_max_connections(100)
+    .with_max_file_size(10ULL * 1024 * 1024 * 1024)  // 10GB
+    .with_storage_quota(1ULL * 1024 * 1024 * 1024 * 1024)  // 1TB
+    .build();
+
+if (server) {
+    auto result = server->start(endpoint{"0.0.0.0", 19000});
+    if (result) {
+        std::cout << "Server started on port 19000\n";
+    }
+
+    // ... server running ...
+
+    server->stop();
+}
+```
+
+##### list_stored_files()
+
+List files in the storage directory.
+
+```cpp
+[[nodiscard]] auto list_stored_files(
+    const list_options& options = {}
+) -> Result<std::vector<file_info>>;
+```
+
+**Parameters:**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `options` | `list_options` | Filtering, pagination, and sorting options |
+
+**Returns:** `Result<std::vector<file_info>>` - List of files with metadata
+
+##### delete_file()
+
+Delete a file from storage.
+
+```cpp
+[[nodiscard]] auto delete_file(const std::string& filename) -> Result<void>;
+```
+
+##### get_statistics()
+
+Get server statistics.
+
+```cpp
+[[nodiscard]] auto get_statistics() -> server_statistics;
+[[nodiscard]] auto get_storage_stats() -> storage_statistics;
+```
+
+#### Callbacks
+
+##### on_upload_request()
+
+Register callback to accept or reject upload requests.
+
+```cpp
+void on_upload_request(std::function<bool(const upload_request&)> callback);
+```
+
+**Example:**
+```cpp
+server->on_upload_request([](const upload_request& req) {
+    // Reject files larger than 1GB
+    if (req.file_size > 1ULL * 1024 * 1024 * 1024) {
+        return false;
+    }
+
+    // Reject certain file types
+    if (req.filename.ends_with(".exe")) {
+        return false;
+    }
+
+    return true;
+});
+```
+
+##### on_download_request()
+
+Register callback to accept or reject download requests.
+
+```cpp
+void on_download_request(std::function<bool(const download_request&)> callback);
+```
+
+**Example:**
+```cpp
+server->on_download_request([](const download_request& req) {
+    // Allow all downloads
+    return true;
+});
+```
+
+##### on_transfer_complete()
+
+Register callback for transfer completion events.
+
+```cpp
+void on_transfer_complete(std::function<void(const transfer_result&)> callback);
+```
+
+##### on_client_connected() / on_client_disconnected()
+
+Register callbacks for client connection events.
+
+```cpp
+void on_client_connected(std::function<void(const session_info&)> callback);
+void on_client_disconnected(std::function<void(const session_info&, disconnect_reason)> callback);
+```
+
+---
+
+### file_transfer_client
+
+Client class for connecting to a server and transferring files.
+
+#### Builder Pattern
+
+```cpp
+class file_transfer_client {
+public:
+    class builder {
+    public:
         // Set compression mode (disabled, enabled, adaptive)
         builder& with_compression(compression_mode mode);
 
@@ -45,99 +210,199 @@ public:
         // Set chunk size (64KB - 1MB, default: 256KB)
         builder& with_chunk_size(std::size_t size);
 
+        // Enable automatic reconnection
+        builder& with_auto_reconnect(bool enable);
+
+        // Configure reconnection policy
+        builder& with_reconnect_policy(const reconnect_policy& policy);
+
         // Set bandwidth limit in bytes per second (0 = unlimited)
         builder& with_bandwidth_limit(std::size_t bytes_per_second);
+
+        // Configure pipeline
+        builder& with_pipeline_config(const pipeline_config& config);
 
         // Set transport type (tcp, quic)
         builder& with_transport(transport_type type);
 
-        // Build the sender instance
-        [[nodiscard]] auto build() -> Result<file_sender>;
+        // Build the client instance
+        [[nodiscard]] auto build() -> Result<file_transfer_client>;
     };
 };
+```
 
+#### Connection Methods
+
+##### connect() / disconnect()
+
+Connect to and disconnect from a server.
+
+```cpp
+[[nodiscard]] auto connect(const endpoint& server_addr) -> Result<void>;
+[[nodiscard]] auto disconnect() -> Result<void>;
+[[nodiscard]] auto is_connected() const -> bool;
+```
+
+**Example:**
+```cpp
+auto client = file_transfer_client::builder()
+    .with_compression(compression_mode::adaptive)
+    .with_auto_reconnect(true)
+    .with_reconnect_policy(reconnect_policy{
+        .initial_delay = std::chrono::seconds(1),
+        .max_delay = std::chrono::seconds(60),
+        .multiplier = 2.0,
+        .max_attempts = 10
+    })
+    .build();
+
+if (client) {
+    auto result = client->connect(endpoint{"192.168.1.100", 19000});
+    if (result) {
+        std::cout << "Connected to server\n";
+    }
 }
 ```
 
-#### Methods
+#### Transfer Methods
 
-##### send_file()
+##### upload_file()
 
-Send a single file to a remote endpoint.
+Upload a file to the server.
 
 ```cpp
-[[nodiscard]] auto send_file(
-    const std::filesystem::path& file_path,
-    const endpoint& destination,
-    const transfer_options& options = {}
+[[nodiscard]] auto upload_file(
+    const std::filesystem::path& local_path,
+    const std::string& remote_name,
+    const upload_options& options = {}
 ) -> Result<transfer_handle>;
 ```
 
 **Parameters:**
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `file_path` | `std::filesystem::path` | Path to the file to send |
-| `destination` | `endpoint` | Remote endpoint (IP, port) |
-| `options` | `transfer_options` | Optional transfer configuration |
+| `local_path` | `std::filesystem::path` | Path to the local file to upload |
+| `remote_name` | `std::string` | Name to store the file as on server |
+| `options` | `upload_options` | Optional upload configuration |
 
 **Returns:** `Result<transfer_handle>` - Handle for tracking the transfer
 
 **Example:**
 ```cpp
-auto sender = file_sender::builder()
-    .with_compression(compression_mode::adaptive)
-    .with_chunk_size(512 * 1024)  // 512KB chunks
-    .build();
-
-if (sender) {
-    auto handle = sender->send_file(
-        "/path/to/large_file.dat",
-        endpoint{"192.168.1.100", 19000}
-    );
-
-    if (handle) {
-        std::cout << "Transfer ID: " << handle->id.to_string() << "\n";
+auto handle = client->upload_file(
+    "/local/data/report.pdf",
+    "report.pdf",
+    upload_options{
+        .compression = compression_mode::enabled,
+        .overwrite_existing = true
     }
+);
+
+if (handle) {
+    std::cout << "Upload started: " << handle->id.to_string() << "\n";
 }
 ```
 
-##### send_files()
+##### download_file()
 
-Send multiple files in a batch operation.
+Download a file from the server.
 
 ```cpp
-[[nodiscard]] auto send_files(
-    std::span<const std::filesystem::path> files,
-    const endpoint& destination,
-    const transfer_options& options = {}
-) -> Result<batch_transfer_handle>;
+[[nodiscard]] auto download_file(
+    const std::string& remote_name,
+    const std::filesystem::path& local_path,
+    const download_options& options = {}
+) -> Result<transfer_handle>;
 ```
 
 **Parameters:**
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `files` | `std::span<const path>` | List of file paths to send |
-| `destination` | `endpoint` | Remote endpoint |
-| `options` | `transfer_options` | Optional transfer configuration |
+| `remote_name` | `std::string` | Name of the file on server |
+| `local_path` | `std::filesystem::path` | Path to save the file locally |
+| `options` | `download_options` | Optional download configuration |
 
-**Returns:** `Result<batch_transfer_handle>` - Handle for tracking the batch
+**Returns:** `Result<transfer_handle>` - Handle for tracking the transfer
 
-##### cancel()
+**Example:**
+```cpp
+auto handle = client->download_file(
+    "report.pdf",
+    "/local/downloads/report.pdf"
+);
 
-Cancel an active transfer.
+if (handle) {
+    std::cout << "Download started: " << handle->id.to_string() << "\n";
+}
+```
+
+##### list_files()
+
+List files available on the server.
+
+```cpp
+[[nodiscard]] auto list_files(
+    const list_options& options = {}
+) -> Result<std::vector<file_info>>;
+```
+
+**Parameters:**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `options` | `list_options` | Filtering, pagination, and sorting options |
+
+**Returns:** `Result<std::vector<file_info>>` - List of files with metadata
+
+**Example:**
+```cpp
+auto result = client->list_files(list_options{
+    .pattern = "*.pdf",
+    .offset = 0,
+    .limit = 100,
+    .sort_by = sort_field::modified_time,
+    .sort_order = sort_order::descending
+});
+
+if (result) {
+    for (const auto& file : *result) {
+        std::cout << file.filename << " - "
+                  << file.file_size << " bytes\n";
+    }
+}
+```
+
+##### upload_files()
+
+Upload multiple files in a batch operation.
+
+```cpp
+[[nodiscard]] auto upload_files(
+    std::span<const file_upload_entry> files,
+    const upload_options& options = {}
+) -> Result<batch_transfer_handle>;
+```
+
+#### Transfer Control
+
+##### cancel() / pause() / resume()
+
+Control active transfers.
 
 ```cpp
 [[nodiscard]] auto cancel(const transfer_id& id) -> Result<void>;
-```
-
-##### pause() / resume()
-
-Pause and resume a transfer.
-
-```cpp
 [[nodiscard]] auto pause(const transfer_id& id) -> Result<void>;
 [[nodiscard]] auto resume(const transfer_id& id) -> Result<void>;
 ```
+
+##### get_transfer_status()
+
+Get status of a transfer.
+
+```cpp
+[[nodiscard]] auto get_transfer_status(const transfer_id& id) -> Result<transfer_status>;
+```
+
+#### Callbacks
 
 ##### on_progress()
 
@@ -149,7 +414,7 @@ void on_progress(std::function<void(const transfer_progress&)> callback);
 
 **Example:**
 ```cpp
-sender->on_progress([](const transfer_progress& p) {
+client->on_progress([](const transfer_progress& p) {
     double percent = 100.0 * p.bytes_transferred / p.total_bytes;
     std::cout << std::fixed << std::setprecision(1)
               << percent << "% - "
@@ -158,97 +423,28 @@ sender->on_progress([](const transfer_progress& p) {
 });
 ```
 
----
+##### on_complete()
 
-### file_receiver
-
-Primary class for receiving files from remote senders.
-
-#### Builder Pattern
+Register callback for transfer completion.
 
 ```cpp
-class file_receiver {
-public:
-    class builder {
-    public:
-        builder& with_pipeline_config(const pipeline_config& config);
-        builder& with_output_directory(const std::filesystem::path& dir);
-        builder& with_bandwidth_limit(std::size_t bytes_per_second);
-        builder& with_transport(transport_type type);
-        [[nodiscard]] auto build() -> Result<file_receiver>;
-    };
-};
-```
-
-#### Methods
-
-##### start() / stop()
-
-Start and stop the receiver.
-
-```cpp
-[[nodiscard]] auto start(const endpoint& listen_addr) -> Result<void>;
-[[nodiscard]] auto stop() -> Result<void>;
-```
-
-**Example:**
-```cpp
-auto receiver = file_receiver::builder()
-    .with_output_directory("/downloads")
-    .build();
-
-if (receiver) {
-    receiver->start(endpoint{"0.0.0.0", 19000});
-
-    // ... wait for transfers ...
-
-    receiver->stop();
-}
-```
-
-##### set_output_directory()
-
-Change the output directory at runtime.
-
-```cpp
-void set_output_directory(const std::filesystem::path& dir);
-```
-
-##### Callbacks
-
-```cpp
-// Accept or reject incoming transfers
-void on_transfer_request(std::function<bool(const transfer_request&)> callback);
-
-// Progress updates
-void on_progress(std::function<void(const transfer_progress&)> callback);
-
-// Transfer completion
 void on_complete(std::function<void(const transfer_result&)> callback);
 ```
 
-**Example:**
+##### on_error()
+
+Register callback for transfer errors.
+
 ```cpp
-receiver->on_transfer_request([](const transfer_request& req) {
-    // Check total size
-    uint64_t total_size = 0;
-    for (const auto& file : req.files) {
-        total_size += file.file_size;
-    }
+void on_error(std::function<void(const transfer_id&, const error&)> callback);
+```
 
-    // Accept if under 10GB
-    return total_size < 10ULL * 1024 * 1024 * 1024;
-});
+##### on_disconnected()
 
-receiver->on_complete([](const transfer_result& result) {
-    if (result.verified) {
-        std::cout << "Received: " << result.output_path << "\n";
-        std::cout << "Compression ratio: "
-                  << result.compression_stats.compression_ratio() << ":1\n";
-    } else {
-        std::cerr << "Transfer failed: " << result.error->message << "\n";
-    }
-});
+Register callback for disconnection events.
+
+```cpp
+void on_disconnected(std::function<void(disconnect_reason)> callback);
 ```
 
 ---
@@ -346,12 +542,54 @@ enum class transport_type {
 ```cpp
 enum class transfer_state_enum {
     pending,        // Waiting to start
-    initializing,   // Setting up connection
+    requested,      // Request sent, waiting for response
     transferring,   // Active transfer
     verifying,      // Verifying integrity
     completed,      // Successfully completed
     failed,         // Transfer failed
-    cancelled       // User cancelled
+    cancelled,      // User cancelled
+    rejected        // Server rejected request
+};
+```
+
+#### transfer_direction
+
+```cpp
+enum class transfer_direction {
+    upload,     // Client to server
+    download    // Server to client
+};
+```
+
+#### connection_state
+
+```cpp
+enum class connection_state {
+    disconnected,   // Not connected
+    connecting,     // Connection in progress
+    connected,      // Connected and ready
+    reconnecting,   // Automatic reconnection in progress
+    failed          // Connection failed permanently
+};
+```
+
+#### sort_field
+
+```cpp
+enum class sort_field {
+    name,           // Sort by filename
+    size,           // Sort by file size
+    modified_time,  // Sort by modification time
+    created_time    // Sort by creation time
+};
+```
+
+#### sort_order
+
+```cpp
+enum class sort_order {
+    ascending,
+    descending
 };
 ```
 
@@ -404,16 +642,115 @@ struct transfer_id {
 };
 ```
 
-#### transfer_options
+#### file_info
 
 ```cpp
-struct transfer_options {
+struct file_info {
+    std::string             filename;
+    uint64_t                file_size;
+    std::string             sha256_hash;
+    std::chrono::system_clock::time_point created_time;
+    std::chrono::system_clock::time_point modified_time;
+};
+```
+
+#### upload_request
+
+```cpp
+struct upload_request {
+    transfer_id             id;
+    std::string             filename;
+    uint64_t                file_size;
+    std::string             sha256_hash;
+    session_info            client;
+    compression_mode        compression;
+};
+```
+
+#### download_request
+
+```cpp
+struct download_request {
+    transfer_id             id;
+    std::string             filename;
+    session_info            client;
+    compression_mode        compression;
+};
+```
+
+#### upload_options
+
+```cpp
+struct upload_options {
     compression_mode            compression     = compression_mode::adaptive;
     compression_level           level           = compression_level::fast;
-    std::size_t                 chunk_size      = 256 * 1024;  // 256KB
+    bool                        overwrite_existing = false;
     bool                        verify_checksum = true;
     std::optional<std::size_t>  bandwidth_limit;
     std::optional<int>          priority;
+};
+```
+
+#### download_options
+
+```cpp
+struct download_options {
+    compression_mode            compression     = compression_mode::adaptive;
+    bool                        verify_checksum = true;
+    std::optional<std::size_t>  bandwidth_limit;
+    std::optional<int>          priority;
+};
+```
+
+#### list_options
+
+```cpp
+struct list_options {
+    std::string     pattern     = "*";      // Glob pattern
+    std::size_t     offset      = 0;        // Pagination offset
+    std::size_t     limit       = 1000;     // Max items to return
+    sort_field      sort_by     = sort_field::name;
+    sort_order      order       = sort_order::ascending;
+};
+```
+
+#### reconnect_policy
+
+```cpp
+struct reconnect_policy {
+    std::chrono::milliseconds   initial_delay   = std::chrono::seconds(1);
+    std::chrono::milliseconds   max_delay       = std::chrono::seconds(60);
+    double                      multiplier      = 2.0;
+    uint32_t                    max_attempts    = 10;
+    bool                        resume_transfers = true;
+};
+```
+
+#### session_info
+
+```cpp
+struct session_info {
+    session_id                  id;
+    endpoint                    remote_address;
+    std::chrono::system_clock::time_point connected_at;
+    uint64_t                    bytes_uploaded;
+    uint64_t                    bytes_downloaded;
+    std::size_t                 active_transfers;
+};
+```
+
+#### transfer_handle
+
+```cpp
+struct transfer_handle {
+    transfer_id             id;
+    transfer_direction      direction;
+
+    // Blocking wait for completion
+    [[nodiscard]] auto wait() -> Result<transfer_result>;
+
+    // Non-blocking status check
+    [[nodiscard]] auto get_status() -> transfer_status;
 };
 ```
 
@@ -422,6 +759,8 @@ struct transfer_options {
 ```cpp
 struct transfer_progress {
     transfer_id         id;
+    transfer_direction  direction;
+    std::string         filename;
     uint64_t            bytes_transferred;      // Raw bytes
     uint64_t            bytes_on_wire;          // Compressed bytes
     uint64_t            total_bytes;
@@ -440,7 +779,10 @@ struct transfer_progress {
 ```cpp
 struct transfer_result {
     transfer_id             id;
-    std::filesystem::path   output_path;
+    transfer_direction      direction;
+    std::string             filename;
+    std::filesystem::path   local_path;         // For downloads
+    std::string             stored_path;        // For uploads (on server)
     uint64_t                bytes_transferred;
     uint64_t                bytes_on_wire;
     bool                    verified;           // SHA-256 match
@@ -450,26 +792,32 @@ struct transfer_result {
 };
 ```
 
-#### file_metadata
+#### server_statistics
 
 ```cpp
-struct file_metadata {
-    std::string             filename;
-    uint64_t                file_size;
-    std::string             sha256_hash;
-    std::filesystem::perms  permissions;
-    std::chrono::system_clock::time_point modified_time;
-    bool                    compressible_hint;
+struct server_statistics {
+    std::size_t             active_connections;
+    std::size_t             total_connections;
+    std::size_t             active_uploads;
+    std::size_t             active_downloads;
+    uint64_t                total_bytes_received;
+    uint64_t                total_bytes_sent;
+    std::size_t             files_stored;
+    uint64_t                storage_used;
+    uint64_t                storage_available;
+    duration                uptime;
 };
 ```
 
-#### chunk_config
+#### storage_statistics
 
 ```cpp
-struct chunk_config {
-    std::size_t chunk_size     = 256 * 1024;    // 256KB default
-    std::size_t min_chunk_size = 64 * 1024;     // 64KB minimum
-    std::size_t max_chunk_size = 1024 * 1024;   // 1MB maximum
+struct storage_statistics {
+    std::size_t             file_count;
+    uint64_t                total_size;
+    uint64_t                quota;
+    uint64_t                available;
+    double                  usage_percent;
 };
 ```
 
@@ -660,54 +1008,64 @@ public:
 
 ## Pipeline
 
-### sender_pipeline
+### server_pipeline
 
-Multi-stage sender processing pipeline.
+Multi-stage pipeline for server-side processing.
 
 ```cpp
-class sender_pipeline {
+class server_pipeline {
+public:
+    class builder {
+    public:
+        builder& with_config(const pipeline_config& config);
+        builder& with_storage_manager(std::shared_ptr<storage_manager> storage);
+        builder& with_compressor(std::shared_ptr<chunk_compressor> compressor);
+        [[nodiscard]] auto build() -> Result<server_pipeline>;
+    };
+
+    // Upload pipeline (receive from client, write to storage)
+    [[nodiscard]] auto start_upload_pipeline() -> Result<void>;
+
+    // Download pipeline (read from storage, send to client)
+    [[nodiscard]] auto start_download_pipeline() -> Result<void>;
+
+    [[nodiscard]] auto stop(bool wait_for_completion = true) -> Result<void>;
+    [[nodiscard]] auto get_stats() const -> pipeline_statistics;
+};
+```
+
+### client_pipeline
+
+Multi-stage pipeline for client-side processing.
+
+```cpp
+class client_pipeline {
 public:
     class builder {
     public:
         builder& with_config(const pipeline_config& config);
         builder& with_compressor(std::shared_ptr<chunk_compressor> compressor);
         builder& with_transport(std::shared_ptr<transport_interface> transport);
-        [[nodiscard]] auto build() -> Result<sender_pipeline>;
+        [[nodiscard]] auto build() -> Result<client_pipeline>;
     };
+
+    // Upload (send to server)
+    [[nodiscard]] auto submit_upload(
+        const std::filesystem::path& file,
+        const transfer_id& id,
+        const upload_options& options
+    ) -> Result<void>;
+
+    // Download (receive from server)
+    [[nodiscard]] auto submit_download(
+        const std::string& remote_name,
+        const std::filesystem::path& local_path,
+        const transfer_id& id,
+        const download_options& options
+    ) -> Result<void>;
 
     [[nodiscard]] auto start() -> Result<void>;
     [[nodiscard]] auto stop(bool wait_for_completion = true) -> Result<void>;
-
-    [[nodiscard]] auto submit(
-        const std::filesystem::path& file,
-        const transfer_id& id,
-        const transfer_options& options
-    ) -> Result<void>;
-
-    [[nodiscard]] auto get_stats() const -> pipeline_statistics;
-    [[nodiscard]] auto get_queue_depths() const -> queue_depth_info;
-};
-```
-
-### receiver_pipeline
-
-Multi-stage receiver processing pipeline.
-
-```cpp
-class receiver_pipeline {
-public:
-    class builder {
-    public:
-        builder& with_config(const pipeline_config& config);
-        builder& with_compressor(std::shared_ptr<chunk_compressor> compressor);
-        builder& with_assembler(std::shared_ptr<chunk_assembler> assembler);
-        [[nodiscard]] auto build() -> Result<receiver_pipeline>;
-    };
-
-    [[nodiscard]] auto start(const endpoint& listen_addr) -> Result<void>;
-    [[nodiscard]] auto stop(bool wait_for_completion = true) -> Result<void>;
-
-    [[nodiscard]] auto submit_chunk(chunk c) -> Result<void>;
     [[nodiscard]] auto get_stats() const -> pipeline_statistics;
     [[nodiscard]] auto get_queue_depths() const -> queue_depth_info;
 };
@@ -726,19 +1084,22 @@ class transport_interface {
 public:
     virtual ~transport_interface() = default;
 
+    // Client operations
     [[nodiscard]] virtual auto connect(const endpoint& ep) -> Result<void> = 0;
     [[nodiscard]] virtual auto disconnect() -> Result<void> = 0;
     [[nodiscard]] virtual auto is_connected() const -> bool = 0;
 
+    // Data transfer
     [[nodiscard]] virtual auto send(std::span<const std::byte> data) -> Result<void> = 0;
     [[nodiscard]] virtual auto receive(std::span<std::byte> buffer) -> Result<std::size_t> = 0;
+
+    // Server operations
+    [[nodiscard]] virtual auto listen(const endpoint& ep) -> Result<void> = 0;
+    [[nodiscard]] virtual auto accept() -> Result<std::unique_ptr<transport_interface>> = 0;
 
     // QUIC-specific (no-op for TCP)
     [[nodiscard]] virtual auto create_stream() -> Result<stream_id>;
     [[nodiscard]] virtual auto close_stream(stream_id) -> Result<void>;
-
-    [[nodiscard]] virtual auto listen(const endpoint& ep) -> Result<void> = 0;
-    [[nodiscard]] virtual auto accept() -> Result<std::unique_ptr<transport_interface>> = 0;
 };
 ```
 
@@ -782,4 +1143,147 @@ public:
 
 ---
 
+## Complete Example
+
+### Server Example
+
+```cpp
+#include <kcenon/file_transfer/file_transfer.h>
+
+using namespace kcenon::file_transfer;
+
+int main() {
+    // Create and configure server
+    auto server = file_transfer_server::builder()
+        .with_storage_directory("/data/files")
+        .with_max_connections(100)
+        .with_max_file_size(10ULL * 1024 * 1024 * 1024)  // 10GB
+        .with_storage_quota(1ULL * 1024 * 1024 * 1024 * 1024)  // 1TB
+        .with_pipeline_config(pipeline_config::auto_detect())
+        .build();
+
+    if (!server) {
+        std::cerr << "Failed to create server: " << server.error().message() << "\n";
+        return 1;
+    }
+
+    // Set up callbacks
+    server->on_upload_request([](const upload_request& req) {
+        std::cout << "Upload request: " << req.filename
+                  << " (" << req.file_size << " bytes)\n";
+        return req.file_size < 1ULL * 1024 * 1024 * 1024;  // Accept < 1GB
+    });
+
+    server->on_download_request([](const download_request& req) {
+        std::cout << "Download request: " << req.filename << "\n";
+        return true;
+    });
+
+    server->on_transfer_complete([](const transfer_result& result) {
+        if (result.verified) {
+            std::cout << "Transfer complete: " << result.filename << "\n";
+        } else {
+            std::cerr << "Transfer failed: " << result.error->message << "\n";
+        }
+    });
+
+    // Start server
+    auto result = server->start(endpoint{"0.0.0.0", 19000});
+    if (!result) {
+        std::cerr << "Failed to start server: " << result.error().message() << "\n";
+        return 1;
+    }
+
+    std::cout << "Server running on port 19000. Press Enter to stop.\n";
+    std::cin.get();
+
+    server->stop();
+    return 0;
+}
+```
+
+### Client Example
+
+```cpp
+#include <kcenon/file_transfer/file_transfer.h>
+
+using namespace kcenon::file_transfer;
+
+int main() {
+    // Create and configure client
+    auto client = file_transfer_client::builder()
+        .with_compression(compression_mode::adaptive)
+        .with_auto_reconnect(true)
+        .with_reconnect_policy(reconnect_policy{
+            .initial_delay = std::chrono::seconds(1),
+            .max_delay = std::chrono::seconds(60),
+            .multiplier = 2.0,
+            .max_attempts = 10
+        })
+        .build();
+
+    if (!client) {
+        std::cerr << "Failed to create client: " << client.error().message() << "\n";
+        return 1;
+    }
+
+    // Set up callbacks
+    client->on_progress([](const transfer_progress& p) {
+        double percent = 100.0 * p.bytes_transferred / p.total_bytes;
+        std::cout << "\r" << p.filename << ": "
+                  << std::fixed << std::setprecision(1) << percent << "% - "
+                  << p.transfer_rate / (1024*1024) << " MB/s" << std::flush;
+    });
+
+    client->on_complete([](const transfer_result& result) {
+        std::cout << "\n";
+        if (result.verified) {
+            std::cout << "Transfer complete: " << result.filename
+                      << " (compression: " << result.compression_stats.compression_ratio()
+                      << ":1)\n";
+        } else {
+            std::cerr << "Transfer failed: " << result.error->message << "\n";
+        }
+    });
+
+    client->on_disconnected([](disconnect_reason reason) {
+        std::cerr << "Disconnected: " << static_cast<int>(reason) << "\n";
+    });
+
+    // Connect to server
+    auto connect_result = client->connect(endpoint{"192.168.1.100", 19000});
+    if (!connect_result) {
+        std::cerr << "Failed to connect: " << connect_result.error().message() << "\n";
+        return 1;
+    }
+
+    // List files
+    auto files = client->list_files();
+    if (files) {
+        std::cout << "Files on server:\n";
+        for (const auto& file : *files) {
+            std::cout << "  " << file.filename << " - " << file.file_size << " bytes\n";
+        }
+    }
+
+    // Upload a file
+    auto upload = client->upload_file("/local/data.zip", "data.zip");
+    if (upload) {
+        upload->wait();  // Wait for completion
+    }
+
+    // Download a file
+    auto download = client->download_file("report.pdf", "/local/report.pdf");
+    if (download) {
+        download->wait();  // Wait for completion
+    }
+
+    client->disconnect();
+    return 0;
+}
+```
+
+---
+
 *Last updated: 2025-12-11*
+*Version: 2.0.0*

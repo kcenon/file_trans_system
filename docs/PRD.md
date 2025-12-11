@@ -5,7 +5,7 @@
 | Item | Description |
 |------|-------------|
 | **Project Name** | file_trans_system |
-| **Version** | 1.0.0 |
+| **Version** | 2.0.0 |
 | **Status** | Draft |
 | **Created** | 2025-12-11 |
 | **Author** | kcenon@naver.com |
@@ -16,23 +16,25 @@
 
 ### 1.1 Purpose
 
-The **file_trans_system** is a high-performance, production-ready C++20 file transfer library designed to enable reliable transmission and reception of multiple files with chunk-based streaming capabilities. It integrates seamlessly with the existing ecosystem (common_system, thread_system, logger_system, monitoring_system, container_system, network_system) to provide enterprise-grade file transfer functionality.
+The **file_trans_system** is a high-performance, production-ready C++20 file transfer library that implements a **client-server architecture** for centralized file management. The server maintains a file storage repository while clients connect to upload, download, or query files. It integrates seamlessly with the existing ecosystem (common_system, thread_system, logger_system, monitoring_system, container_system, network_system) to provide enterprise-grade file transfer functionality.
 
 ### 1.2 Goals
 
-1. **Multi-file Transfer**: Support concurrent transfer of multiple files in a single session
-2. **Chunk-based Streaming**: Enable large file transfers through configurable chunk splitting
-3. **Real-time LZ4 Compression**: Per-chunk compression/decompression for increased effective throughput
-4. **Reliability**: Ensure data integrity with checksums, resume capability, and error recovery
-5. **Performance**: Achieve high throughput leveraging async I/O and thread pooling
-6. **Observability**: Full integration with monitoring and logging systems
-7. **Security**: Support encrypted transfers with TLS/SSL
+1. **Client-Server Architecture**: Central server with file storage, multiple client connections
+2. **Bidirectional Transfer**: Support both upload (client→server) and download (server→client)
+3. **File Management**: Server-side file listing, storage management, and access control
+4. **Real-time LZ4 Compression**: Per-chunk compression/decompression for increased effective throughput
+5. **Reliability**: Ensure data integrity with checksums, resume capability, and error recovery
+6. **Performance**: Achieve high throughput leveraging async I/O and thread pooling
+7. **Observability**: Full integration with monitoring and logging systems
+8. **Security**: Support encrypted transfers with TLS/SSL
 
 ### 1.3 Success Metrics
 
 | Metric | Target |
 |--------|--------|
-| Throughput (1GB file, LAN) | ≥ 500 MB/s |
+| Upload throughput (1GB file, LAN) | ≥ 500 MB/s |
+| Download throughput (1GB file, LAN) | ≥ 500 MB/s |
 | Throughput (1GB file, WAN) | ≥ 100 MB/s (network limited) |
 | Effective throughput with compression | 2-4x improvement for compressible data |
 | LZ4 compression speed | ≥ 400 MB/s per core |
@@ -40,7 +42,8 @@ The **file_trans_system** is a high-performance, production-ready C++20 file tra
 | Compression ratio (text/logs) | 2:1 to 4:1 typical |
 | Memory footprint | < 50 MB baseline |
 | Resume accuracy | 100% (verified checksum) |
-| Concurrent transfers | ≥ 100 simultaneous files |
+| Concurrent connections | ≥ 100 simultaneous clients |
+| File listing response | < 100ms for 10,000 files |
 
 ---
 
@@ -48,25 +51,30 @@ The **file_trans_system** is a high-performance, production-ready C++20 file tra
 
 ### 2.1 Current Challenges
 
-1. **Large File Handling**: Transferring files larger than available memory requires streaming
-2. **Network Instability**: Interrupted transfers should resume without re-sending entire files
-3. **Bandwidth Limitations**: Network bandwidth is often the bottleneck; compression can increase effective throughput
-4. **Multi-file Coordination**: Batch transfers need progress tracking and error handling per file
-5. **Resource Management**: Efficient use of memory, disk I/O, and network bandwidth
-6. **Cross-platform Support**: Consistent behavior across Linux, macOS, and Windows
+1. **Centralized File Management**: Need a central repository for file storage and distribution
+2. **Bidirectional Transfers**: Both upload and download capabilities from a single server
+3. **Large File Handling**: Transferring files larger than available memory requires streaming
+4. **Network Instability**: Interrupted transfers should resume without re-sending entire files
+5. **Bandwidth Limitations**: Network bandwidth is often the bottleneck; compression can increase effective throughput
+6. **Multi-client Coordination**: Multiple clients need concurrent access to server resources
+7. **Resource Management**: Efficient use of memory, disk I/O, and network bandwidth
+8. **Cross-platform Support**: Consistent behavior across Linux, macOS, and Windows
 
 ### 2.2 Use Cases
 
 | Use Case | Description |
 |----------|-------------|
-| **UC-01** | Transfer a single large file (>10GB) between two endpoints |
-| **UC-02** | Transfer multiple small files as a batch operation |
-| **UC-03** | Resume an interrupted transfer from the last successful chunk |
-| **UC-04** | Monitor transfer progress with detailed metrics |
-| **UC-05** | Secure file transfer over untrusted networks |
-| **UC-06** | Prioritized transfer queue with bandwidth throttling |
-| **UC-07** | Transfer compressible files (logs, text, JSON) with real-time compression |
-| **UC-08** | Transfer pre-compressed files (ZIP, media) without double-compression overhead |
+| **UC-01** | Client uploads a single file to the server |
+| **UC-02** | Client downloads a single file from the server |
+| **UC-03** | Client uploads multiple files as a batch operation |
+| **UC-04** | Client downloads multiple files from the server |
+| **UC-05** | Client queries the server for available files (list) |
+| **UC-06** | Resume an interrupted upload/download from the last successful chunk |
+| **UC-07** | Monitor transfer progress with detailed metrics |
+| **UC-08** | Secure file transfer over untrusted networks |
+| **UC-09** | Server manages file storage (quota, retention, cleanup) |
+| **UC-10** | Transfer compressible files (logs, text, JSON) with real-time compression |
+| **UC-11** | Transfer pre-compressed files (ZIP, media) without double-compression overhead |
 
 ---
 
@@ -78,88 +86,199 @@ The **file_trans_system** is a high-performance, production-ready C++20 file tra
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           file_trans_system                                  │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌────────────────────┐ │
-│  │   Sender    │  │  Receiver   │  │  Transfer   │  │     Progress       │ │
-│  │   Engine    │  │   Engine    │  │   Manager   │  │     Tracker        │ │
-│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘  └─────────┬──────────┘ │
-│         │                │                │                    │            │
-│  ┌──────▼────────────────▼────────────────▼────────────────────▼──────────┐ │
-│  │                         Chunk Manager                                   │ │
-│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐ │ │
-│  │  │ Splitter │  │Assembler │  │ Checksum │  │  Resume  │  │   LZ4    │ │ │
-│  │  │          │  │          │  │          │  │ Handler  │  │Compressor│ │ │
-│  │  └──────────┘  └──────────┘  └──────────┘  └──────────┘  └──────────┘ │ │
-│  └─────────────────────────────────────────────────────────────────────────┘ │
+│                                                                              │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │                        file_transfer_server                            │  │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌───────────┐  │  │
+│  │  │   Server     │  │   Storage    │  │   Client     │  │  Transfer │  │  │
+│  │  │   Handler    │  │   Manager    │  │   Manager    │  │  Manager  │  │  │
+│  │  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘  └─────┬─────┘  │  │
+│  │         │                 │                 │                │        │  │
+│  │  ┌──────▼─────────────────▼─────────────────▼────────────────▼──────┐ │  │
+│  │  │                         File Storage                             │ │  │
+│  │  │                       /data/files/                               │ │  │
+│  │  └──────────────────────────────────────────────────────────────────┘ │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│                                    ▲                                         │
+│                                    │ TCP/TLS or QUIC                        │
+│                                    ▼                                         │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │                       file_transfer_client                             │  │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌───────────┐  │  │
+│  │  │   Upload     │  │  Download    │  │    List      │  │  Progress │  │  │
+│  │  │   Engine     │  │   Engine     │  │   Handler    │  │  Tracker  │  │  │
+│  │  └──────────────┘  └──────────────┘  └──────────────┘  └───────────┘  │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│                                                                              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  ┌──────────────────────────────────────────────────────────────────────┐   │
+│  │                         Chunk Manager                                 │   │
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌────────┐ │   │
+│  │  │ Splitter │  │Assembler │  │ Checksum │  │  Resume  │  │  LZ4   │ │   │
+│  │  │          │  │          │  │          │  │ Handler  │  │Compress│ │   │
+│  │  └──────────┘  └──────────┘  └──────────┘  └──────────┘  └────────┘ │   │
+│  └──────────────────────────────────────────────────────────────────────┘   │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                            Integration Layer                                 │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────┐│
-│  │ common   │ │ thread   │ │ logger   │ │monitoring│ │ network  │ │ LZ4  ││
-│  │ _system  │ │ _system  │ │ _system  │ │ _system  │ │ _system  │ │ lib  ││
-│  └──────────┘ └──────────┘ └──────────┘ └──────────┘ └──────────┘ └──────┘│
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────┐ │
+│  │ common   │ │ thread   │ │ logger   │ │monitoring│ │ network  │ │ LZ4  │ │
+│  │ _system  │ │ _system  │ │ _system  │ │ _system  │ │ _system  │ │ lib  │ │
+│  └──────────┘ └──────────┘ └──────────┘ └──────────┘ └──────────┘ └──────┘ │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 3.2 Data Pipeline Architecture
+### 3.2 Data Flow
+
+#### 3.2.1 Upload Flow (Client → Server)
+
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│                           UPLOAD FLOW                                       │
+│                                                                             │
+│  Client                                              Server                 │
+│  ┌─────────────────┐                    ┌─────────────────────────────────┐│
+│  │ Local File      │                    │        File Storage             ││
+│  │ /local/data.zip │                    │      /data/files/data.zip       ││
+│  └────────┬────────┘                    └──────────────▲──────────────────┘│
+│           │                                            │                    │
+│           ▼                                            │                    │
+│  ┌─────────────────┐    UPLOAD_REQUEST    ┌───────────┴───────────┐       │
+│  │  Upload Engine  │─────────────────────▶│    Server Handler     │       │
+│  │                 │◀─────────────────────│                       │       │
+│  │  io_read        │    UPLOAD_ACCEPT     │  validate request     │       │
+│  │  chunk_process  │                      │  check storage quota  │       │
+│  │  compression    │                      └───────────────────────┘       │
+│  │  network_send   │                                                       │
+│  └────────┬────────┘                                                       │
+│           │                                                                 │
+│           │  CHUNK_DATA [0..N]           ┌───────────────────────┐        │
+│           │─────────────────────────────▶│  Server Receive       │        │
+│           │◀─────────────────────────────│  Pipeline             │        │
+│           │  CHUNK_ACK                   │                       │        │
+│           │                              │  network_recv         │        │
+│           │  TRANSFER_COMPLETE           │  decompression        │        │
+│           │─────────────────────────────▶│  chunk_assemble       │        │
+│           │◀─────────────────────────────│  io_write             │        │
+│           │  TRANSFER_VERIFY             └───────────────────────┘        │
+│                                                                             │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 3.2.2 Download Flow (Server → Client)
+
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│                          DOWNLOAD FLOW                                      │
+│                                                                             │
+│  Client                                              Server                 │
+│  ┌─────────────────┐                    ┌─────────────────────────────────┐│
+│  │ Local File      │                    │        File Storage             ││
+│  │/local/report.pdf│                    │    /data/files/report.pdf       ││
+│  └────────▲────────┘                    └──────────────┬──────────────────┘│
+│           │                                            │                    │
+│           │                                            ▼                    │
+│  ┌────────┴────────┐   DOWNLOAD_REQUEST   ┌───────────────────────┐       │
+│  │ Download Engine │─────────────────────▶│    Server Handler     │       │
+│  │                 │◀─────────────────────│                       │       │
+│  │  network_recv   │   DOWNLOAD_ACCEPT    │  validate request     │       │
+│  │  decompression  │   (+ file metadata)  │  check file exists    │       │
+│  │  chunk_assemble │                      └───────────┬───────────┘       │
+│  │  io_write       │                                  │                    │
+│  └────────▲────────┘                                  ▼                    │
+│           │                              ┌───────────────────────┐        │
+│           │  CHUNK_DATA [0..N]           │  Server Send          │        │
+│           │◀─────────────────────────────│  Pipeline             │        │
+│           │─────────────────────────────▶│                       │        │
+│           │  CHUNK_ACK                   │  io_read              │        │
+│           │                              │  chunk_process        │        │
+│           │  TRANSFER_COMPLETE           │  compression          │        │
+│           │◀─────────────────────────────│  network_send         │        │
+│           │─────────────────────────────▶└───────────────────────┘        │
+│           │  TRANSFER_VERIFY                                               │
+│                                                                             │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 3.2.3 List Files Flow
+
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│                          LIST FILES FLOW                                    │
+│                                                                             │
+│  Client                                              Server                 │
+│                                                                             │
+│  ┌─────────────────┐    LIST_REQUEST      ┌───────────────────────┐       │
+│  │  List Handler   │─────────────────────▶│    Server Handler     │       │
+│  │                 │                      │                       │       │
+│  │  filter: *.pdf  │                      │  scan storage dir     │       │
+│  │  sort: by_size  │                      │  apply filter         │       │
+│  │  limit: 100     │                      │  apply sort           │       │
+│  │                 │◀─────────────────────│  paginate results     │       │
+│  │  Display files  │    LIST_RESPONSE     │                       │       │
+│  └─────────────────┘                      └───────────────────────┘       │
+│                                                                             │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 3.3 Pipeline Architecture
 
 The file transfer system uses a **typed_thread_pool-based pipeline architecture** from thread_system to maximize throughput through parallel processing of different pipeline stages.
 
-#### 3.2.1 Sender Pipeline
+#### 3.3.1 Client Upload Pipeline
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                           SENDER PIPELINE                                        │
-│                                                                                  │
-│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐  │
-│  │  File Read   │───▶│    Chunk     │───▶│     LZ4      │───▶│   Network    │  │
-│  │    Stage     │    │   Assembly   │    │  Compress    │    │    Send      │  │
-│  └──────────────┘    └──────────────┘    └──────────────┘    └──────────────┘  │
-│        │                   │                   │                   │            │
-│        ▼                   ▼                   ▼                   ▼            │
-│  ┌──────────────────────────────────────────────────────────────────────────┐  │
-│  │                    typed_thread_pool<pipeline_stage>                      │  │
-│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐   │  │
-│  │  │  IO      │  │  IO      │  │  Compute │  │  Compute │  │ Network  │   │  │
-│  │  │ Worker 1 │  │ Worker 2 │  │ Worker 1 │  │ Worker 2 │  │ Worker 1 │   │  │
-│  │  └──────────┘  └──────────┘  └──────────┘  └──────────┘  └──────────┘   │  │
-│  └──────────────────────────────────────────────────────────────────────────┘  │
-│                                                                                  │
-│  Stage Queues:                                                                   │
-│  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌────────────┐               │
-│  │ read_queue │─▶│chunk_queue │─▶│ comp_queue │─▶│ send_queue │               │
-│  └────────────┘  └────────────┘  └────────────┘  └────────────┘               │
-└─────────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                      CLIENT UPLOAD PIPELINE                                  │
+│                                                                              │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌────────────┐│
+│  │  File Read   │───▶│    Chunk     │───▶│     LZ4      │───▶│  Network   ││
+│  │    Stage     │    │   Assembly   │    │  Compress    │    │    Send    ││
+│  └──────────────┘    └──────────────┘    └──────────────┘    └────────────┘│
+│        │                   │                   │                   │        │
+│        ▼                   ▼                   ▼                   ▼        │
+│  ┌──────────────────────────────────────────────────────────────────────┐  │
+│  │                    typed_thread_pool<pipeline_stage>                  │  │
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐              │  │
+│  │  │  IO (2)  │  │ Chunk(2) │  │Compress(4)│ │Network(2)│              │  │
+│  │  └──────────┘  └──────────┘  └──────────┘  └──────────┘              │  │
+│  └──────────────────────────────────────────────────────────────────────┘  │
+│                                                                              │
+│  Stage Queues (Backpressure Control):                                       │
+│  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌────────────┐           │
+│  │ read_queue │─▶│chunk_queue │─▶│ comp_queue │─▶│ send_queue │           │
+│  │    (16)    │  │    (16)    │  │    (32)    │  │    (64)    │           │
+│  └────────────┘  └────────────┘  └────────────┘  └────────────┘           │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-#### 3.2.2 Receiver Pipeline
+#### 3.3.2 Client Download Pipeline
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                           RECEIVER PIPELINE                                      │
-│                                                                                  │
-│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐  │
-│  │   Network    │───▶│     LZ4      │───▶│    Chunk     │───▶│  File Write  │  │
-│  │   Receive    │    │  Decompress  │    │   Assembly   │    │    Stage     │  │
-│  └──────────────┘    └──────────────┘    └──────────────┘    └──────────────┘  │
-│        │                   │                   │                   │            │
-│        ▼                   ▼                   ▼                   ▼            │
-│  ┌──────────────────────────────────────────────────────────────────────────┐  │
-│  │                    typed_thread_pool<pipeline_stage>                      │  │
-│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐   │  │
-│  │  │ Network  │  │  Compute │  │  Compute │  │  IO      │  │  IO      │   │  │
-│  │  │ Worker 1 │  │ Worker 1 │  │ Worker 2 │  │ Worker 1 │  │ Worker 2 │   │  │
-│  │  └──────────┘  └──────────┘  └──────────┘  └──────────┘  └──────────┘   │  │
-│  └──────────────────────────────────────────────────────────────────────────┘  │
-│                                                                                  │
-│  Stage Queues:                                                                   │
-│  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌────────────┐               │
-│  │ recv_queue │─▶│decomp_queue│─▶│assem_queue │─▶│write_queue │               │
-│  └────────────┘  └────────────┘  └────────────┘  └────────────┘               │
-└─────────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                     CLIENT DOWNLOAD PIPELINE                                 │
+│                                                                              │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌────────────┐│
+│  │   Network    │───▶│     LZ4      │───▶│    Chunk     │───▶│ File Write ││
+│  │   Receive    │    │  Decompress  │    │   Assembly   │    │    Stage   ││
+│  └──────────────┘    └──────────────┘    └──────────────┘    └────────────┘│
+│        │                   │                   │                   │        │
+│        ▼                   ▼                   ▼                   ▼        │
+│  ┌──────────────────────────────────────────────────────────────────────┐  │
+│  │                    typed_thread_pool<pipeline_stage>                  │  │
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐              │  │
+│  │  │Network(2)│  │Decomp(4) │  │ Chunk(2) │  │  IO (2)  │              │  │
+│  │  └──────────┘  └──────────┘  └──────────┘  └──────────┘              │  │
+│  └──────────────────────────────────────────────────────────────────────┘  │
+│                                                                              │
+│  Stage Queues:                                                              │
+│  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌────────────┐           │
+│  │ recv_queue │─▶│decomp_queue│─▶│assem_queue │─▶│write_queue │           │
+│  │    (64)    │  │    (32)    │  │    (16)    │  │    (16)    │           │
+│  └────────────┘  └────────────┘  └────────────┘  └────────────┘           │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-#### 3.2.3 Pipeline Stage Types
-
-Using thread_system's `typed_thread_pool`, pipeline stages are categorized by job type:
+#### 3.3.3 Pipeline Stage Types
 
 ```cpp
 namespace kcenon::file_transfer {
@@ -176,7 +295,7 @@ enum class pipeline_stage : uint8_t {
 } // namespace kcenon::file_transfer
 ```
 
-#### 3.2.4 Pipeline Configuration
+#### 3.3.4 Pipeline Configuration
 
 ```cpp
 // Pipeline worker configuration
@@ -192,57 +311,74 @@ struct pipeline_config {
     std::size_t read_queue_size      = 16;  // Pending read chunks
     std::size_t compress_queue_size  = 32;  // Pending compression
     std::size_t send_queue_size      = 64;  // Pending network sends
+    std::size_t decompress_queue_size = 32; // Pending decompression
+    std::size_t write_queue_size     = 16;  // Pending writes
 
     // Auto-tune based on hardware
     static auto auto_detect() -> pipeline_config;
 };
 ```
 
-#### 3.2.5 Pipeline Benefits
+### 3.4 Component Descriptions
 
-| Benefit | Description |
-|---------|-------------|
-| **Parallel Processing** | Each stage runs concurrently, maximizing CPU and I/O utilization |
-| **Backpressure Control** | Queue sizes prevent memory exhaustion under load |
-| **Stage Isolation** | I/O-bound and CPU-bound stages don't block each other |
-| **Scalability** | Worker counts can be tuned per stage based on bottleneck |
-| **Type-Based Scheduling** | Priority handling for real-time vs batch transfers |
+#### 3.4.1 file_transfer_server
 
-### 3.3 Component Descriptions
+The central server component that manages file storage and handles client requests.
 
-#### 3.3.1 Sender Engine
-- Reads files from disk and prepares chunks for transmission
-- Applies LZ4 compression to each chunk before sending (if enabled)
-- Manages send queue with priority support
-- Handles flow control and backpressure
-- **Uses pipeline stages**: io_read → chunk_process → compression → network
+**Responsibilities:**
+- Listen for incoming client connections
+- Authenticate and authorize client requests
+- Handle upload requests (receive files from clients)
+- Handle download requests (send files to clients)
+- Handle list requests (return available files)
+- Manage file storage (quota, retention, cleanup)
+- Track active transfers and connected clients
 
-#### 3.3.2 Receiver Engine
-- Accepts incoming chunks and validates integrity
-- Decompresses LZ4-compressed chunks (if compression flag is set)
-- Writes chunks to disk in correct order
-- Handles out-of-order chunk reassembly
-- **Uses pipeline stages**: network → compression → chunk_process → io_write
+**Key Features:**
+- Multi-client support with connection pooling
+- Configurable storage directory and quotas
+- File access control (optional)
+- Automatic file metadata indexing
 
-#### 3.3.3 Transfer Manager
-- Coordinates multiple concurrent transfers
-- Manages transfer lifecycle (init → transfer → verify → complete)
-- Provides unified API for send/receive operations
-- Controls compression settings per transfer
+#### 3.4.2 file_transfer_client
 
-#### 3.3.4 Chunk Manager
+The client component that connects to a server to perform file operations.
+
+**Responsibilities:**
+- Connect to and disconnect from the server
+- Upload files to the server
+- Download files from the server
+- Query server for available files
+- Track transfer progress
+- Handle transfer resume on interruption
+
+**Key Features:**
+- Auto-reconnect with exponential backoff
+- Concurrent upload/download support
+- Progress callbacks with compression metrics
+- Transfer pause/resume/cancel
+
+#### 3.4.3 Storage Manager (Server-side)
+
+Manages the server's file storage repository.
+
+**Responsibilities:**
+- File storage organization
+- Storage quota enforcement
+- File retention policies
+- File metadata caching for fast queries
+- Concurrent access management
+
+#### 3.4.4 Chunk Manager
+
+Shared component for chunk-level operations.
+
+**Responsibilities:**
 - **Splitter**: Divides files into configurable chunks (default: 64KB - 1MB)
 - **Assembler**: Reconstructs files from received chunks
 - **Checksum**: Calculates and verifies chunk/file integrity (CRC32, SHA-256)
 - **Resume Handler**: Tracks transfer state for resume capability
 - **LZ4 Compressor**: Real-time per-chunk compression/decompression
-
-#### 3.3.5 Progress Tracker
-- Real-time transfer progress monitoring
-- Tracks both raw and compressed bytes for accurate progress
-- Reports compression ratio and effective throughput
-- Integration with monitoring_system for metrics export
-- Event callbacks for UI/CLI progress display
 
 ---
 
@@ -250,465 +386,361 @@ struct pipeline_config {
 
 ### 4.1 Core Features
 
-#### FR-01: Single File Transfer
+#### FR-01: Server Startup and Shutdown
 | ID | FR-01 |
 |----|-------|
-| **Description** | Transfer a single file from sender to receiver |
+| **Description** | Server starts listening on configured endpoint and gracefully shuts down |
+| **Priority** | P0 (Critical) |
+| **Acceptance Criteria** | Server accepts connections, handles graceful shutdown with active transfers |
+
+#### FR-02: Client Connection
+| ID | FR-02 |
+|----|-------|
+| **Description** | Client connects to server with optional authentication |
+| **Priority** | P0 (Critical) |
+| **Acceptance Criteria** | Successful handshake, connection state management |
+
+#### FR-03: File Upload (Single)
+| ID | FR-03 |
+|----|-------|
+| **Description** | Client uploads a single file to the server |
 | **Priority** | P0 (Critical) |
 | **Acceptance Criteria** | File transferred with 100% integrity verified by checksum |
 
-#### FR-02: Multi-file Batch Transfer
-| ID | FR-02 |
+#### FR-04: File Upload (Batch)
+| ID | FR-04 |
 |----|-------|
-| **Description** | Transfer multiple files in a single operation |
-| **Priority** | P0 (Critical) |
+| **Description** | Client uploads multiple files in a single operation |
+| **Priority** | P1 (High) |
 | **Acceptance Criteria** | All files transferred, individual file status tracked |
 
-#### FR-03: Chunk-based Transfer
-| ID | FR-03 |
+#### FR-05: File Download (Single)
+| ID | FR-05 |
+|----|-------|
+| **Description** | Client downloads a single file from the server |
+| **Priority** | P0 (Critical) |
+| **Acceptance Criteria** | File transferred with 100% integrity verified by checksum |
+
+#### FR-06: File Download (Batch)
+| ID | FR-06 |
+|----|-------|
+| **Description** | Client downloads multiple files in a single operation |
+| **Priority** | P1 (High) |
+| **Acceptance Criteria** | All files transferred, individual file status tracked |
+
+#### FR-07: File Listing
+| ID | FR-07 |
+|----|-------|
+| **Description** | Client queries server for available files with filtering and sorting |
+| **Priority** | P0 (Critical) |
+| **Acceptance Criteria** | Returns file list with metadata, supports filter/sort/pagination |
+
+#### FR-08: Chunk-based Transfer
+| ID | FR-08 |
 |----|-------|
 | **Description** | Split files into chunks for streaming transfer |
 | **Priority** | P0 (Critical) |
 | **Acceptance Criteria** | Configurable chunk size, correct reassembly |
 
-#### FR-04: Transfer Resume
-| ID | FR-04 |
+#### FR-09: Transfer Resume
+| ID | FR-09 |
 |----|-------|
-| **Description** | Resume interrupted transfers from last successful chunk |
+| **Description** | Resume interrupted uploads/downloads from last successful chunk |
 | **Priority** | P1 (High) |
 | **Acceptance Criteria** | Resume within 1 second, no data loss |
 
-#### FR-05: Progress Monitoring
-| ID | FR-05 |
+#### FR-10: Progress Monitoring
+| ID | FR-10 |
 |----|-------|
 | **Description** | Real-time progress tracking with callbacks |
 | **Priority** | P1 (High) |
 | **Acceptance Criteria** | Progress updates at configurable intervals |
 
-#### FR-06: Integrity Verification
-| ID | FR-06 |
+#### FR-11: Integrity Verification
+| ID | FR-11 |
 |----|-------|
 | **Description** | Verify data integrity using checksums |
 | **Priority** | P0 (Critical) |
 | **Acceptance Criteria** | CRC32 per chunk, SHA-256 per file |
 
-#### FR-07: Concurrent Transfers
-| ID | FR-07 |
+#### FR-12: Concurrent Transfers
+| ID | FR-12 |
 |----|-------|
 | **Description** | Support multiple simultaneous file transfers |
 | **Priority** | P1 (High) |
 | **Acceptance Criteria** | ≥100 concurrent transfers without degradation |
 
-#### FR-08: Bandwidth Throttling
-| ID | FR-08 |
+#### FR-13: Bandwidth Throttling
+| ID | FR-13 |
 |----|-------|
 | **Description** | Limit transfer bandwidth per connection/total |
 | **Priority** | P2 (Medium) |
 | **Acceptance Criteria** | Bandwidth within 5% of configured limit |
 
-#### FR-09: Real-time LZ4 Compression
-| ID | FR-09 |
+#### FR-14: Real-time LZ4 Compression
+| ID | FR-14 |
 |----|-------|
-| **Description** | Per-chunk LZ4 compression/decompression for increased effective throughput |
+| **Description** | Per-chunk LZ4 compression/decompression |
 | **Priority** | P0 (Critical) |
-| **Acceptance Criteria** | Compression speed ≥400 MB/s, decompression ≥1.5 GB/s, transparent to user |
+| **Acceptance Criteria** | Compression speed ≥400 MB/s, decompression ≥1.5 GB/s |
 
-#### FR-10: Adaptive Compression
-| ID | FR-10 |
+#### FR-15: Adaptive Compression
+| ID | FR-15 |
 |----|-------|
 | **Description** | Automatically skip compression for incompressible data |
 | **Priority** | P1 (High) |
-| **Acceptance Criteria** | Detect incompressible chunks within 1KB sample, avoid CPU waste |
+| **Acceptance Criteria** | Detect incompressible chunks within 1KB sample |
 
-#### FR-11: Compression Statistics
-| ID | FR-11 |
+#### FR-16: Storage Management
+| ID | FR-16 |
 |----|-------|
-| **Description** | Report compression ratio and effective throughput |
-| **Priority** | P2 (Medium) |
-| **Acceptance Criteria** | Per-transfer and aggregate compression metrics available |
-
-#### FR-12: Pipeline-based Processing
-| ID | FR-12 |
-|----|-------|
-| **Description** | Multi-stage pipeline using typed_thread_pool for parallel processing |
-| **Priority** | P0 (Critical) |
-| **Acceptance Criteria** | Sender: read→chunk→compress→send, Receiver: recv→decompress→assemble→write |
-
-#### FR-13: Pipeline Backpressure
-| ID | FR-13 |
-|----|-------|
-| **Description** | Prevent memory exhaustion through bounded queues between pipeline stages |
+| **Description** | Server manages file storage with quotas and retention |
 | **Priority** | P1 (High) |
-| **Acceptance Criteria** | Configurable queue sizes, automatic slowdown when queues are full |
+| **Acceptance Criteria** | Enforce storage limits, optional auto-cleanup |
+
+#### FR-17: Pipeline-based Processing
+| ID | FR-17 |
+|----|-------|
+| **Description** | Multi-stage pipeline for parallel processing |
+| **Priority** | P0 (Critical) |
+| **Acceptance Criteria** | Upload/Download pipelines with configurable stages |
+
+#### FR-18: Pipeline Backpressure
+| ID | FR-18 |
+|----|-------|
+| **Description** | Prevent memory exhaustion through bounded queues |
+| **Priority** | P1 (High) |
+| **Acceptance Criteria** | Configurable queue sizes, automatic slowdown |
 
 ### 4.2 API Requirements
 
-#### 4.2.1 Sender API
+#### 4.2.1 Server API
 
 ```cpp
 namespace kcenon::file_transfer {
 
-class file_sender {
+class file_transfer_server {
 public:
     // Builder pattern for configuration
-    class builder;
+    class builder {
+    public:
+        builder& with_storage_directory(const std::filesystem::path& dir);
+        builder& with_pipeline_config(const pipeline_config& config);
+        builder& with_max_connections(std::size_t max_conn);
+        builder& with_max_file_size(uint64_t max_size);
+        builder& with_storage_quota(uint64_t quota_bytes);
+        builder& with_allowed_extensions(std::vector<std::string> exts);
+        builder& with_transport(transport_type type);
+        [[nodiscard]] auto build() -> Result<file_transfer_server>;
+    };
 
-    // Single file transfer
-    [[nodiscard]] auto send_file(
-        const std::filesystem::path& file_path,
-        const endpoint& destination,
+    // Lifecycle management
+    [[nodiscard]] auto start(const endpoint& listen_addr) -> Result<void>;
+    [[nodiscard]] auto stop() -> Result<void>;
+    [[nodiscard]] auto is_running() const -> bool;
+
+    // File management
+    [[nodiscard]] auto list_files(const list_options& opts = {})
+        -> std::vector<file_info>;
+    [[nodiscard]] auto delete_file(const std::string& filename) -> Result<void>;
+    [[nodiscard]] auto get_file_info(const std::string& filename)
+        -> Result<file_info>;
+    [[nodiscard]] auto get_storage_usage() -> storage_stats;
+
+    // Request callbacks
+    void on_upload_request(
+        std::function<bool(const upload_request&)> callback
+    );
+    void on_download_request(
+        std::function<bool(const download_request&)> callback
+    );
+
+    // Event callbacks
+    void on_transfer_progress(
+        std::function<void(const transfer_progress&)> callback
+    );
+    void on_transfer_complete(
+        std::function<void(const transfer_result&)> callback
+    );
+    void on_client_connected(
+        std::function<void(const client_info&)> callback
+    );
+    void on_client_disconnected(
+        std::function<void(const client_info&)> callback
+    );
+
+    // Statistics
+    [[nodiscard]] auto get_statistics() -> server_statistics;
+    [[nodiscard]] auto get_connected_clients() -> std::vector<client_info>;
+};
+
+} // namespace kcenon::file_transfer
+```
+
+#### 4.2.2 Client API
+
+```cpp
+namespace kcenon::file_transfer {
+
+class file_transfer_client {
+public:
+    // Builder pattern for configuration
+    class builder {
+    public:
+        builder& with_pipeline_config(const pipeline_config& config);
+        builder& with_compression(compression_mode mode);
+        builder& with_compression_level(compression_level level);
+        builder& with_chunk_size(std::size_t size);
+        builder& with_bandwidth_limit(std::size_t bytes_per_second);
+        builder& with_transport(transport_type type);
+        builder& with_auto_reconnect(bool enabled, duration interval = 5s);
+        [[nodiscard]] auto build() -> Result<file_transfer_client>;
+    };
+
+    // Connection management
+    [[nodiscard]] auto connect(const endpoint& server_addr) -> Result<void>;
+    [[nodiscard]] auto disconnect() -> Result<void>;
+    [[nodiscard]] auto is_connected() const -> bool;
+
+    // Upload operations
+    [[nodiscard]] auto upload_file(
+        const std::filesystem::path& local_path,
+        const std::string& remote_name = {},
         const transfer_options& options = {}
     ) -> Result<transfer_handle>;
 
-    // Multi-file transfer
-    [[nodiscard]] auto send_files(
+    [[nodiscard]] auto upload_files(
         std::span<const std::filesystem::path> files,
-        const endpoint& destination,
         const transfer_options& options = {}
     ) -> Result<batch_transfer_handle>;
 
-    // Cancel transfer
-    [[nodiscard]] auto cancel(const transfer_id& id) -> Result<void>;
-
-    // Pause/Resume
-    [[nodiscard]] auto pause(const transfer_id& id) -> Result<void>;
-    [[nodiscard]] auto resume(const transfer_id& id) -> Result<void>;
-
-    // Progress callback
-    void on_progress(std::function<void(const transfer_progress&)> callback);
-};
-
-} // namespace kcenon::file_transfer
-```
-
-#### 4.2.2 Receiver API
-
-```cpp
-namespace kcenon::file_transfer {
-
-class file_receiver {
-public:
-    class builder;
-
-    // Start listening for incoming transfers
-    [[nodiscard]] auto start(const endpoint& listen_addr) -> Result<void>;
-
-    // Stop receiving
-    [[nodiscard]] auto stop() -> Result<void>;
-
-    // Set output directory
-    void set_output_directory(const std::filesystem::path& dir);
-
-    // Accept/Reject callback
-    void on_transfer_request(
-        std::function<bool(const transfer_request&)> callback
-    );
-
-    // Progress callback
-    void on_progress(std::function<void(const transfer_progress&)> callback);
-
-    // Completion callback
-    void on_complete(std::function<void(const transfer_result&)> callback);
-};
-
-} // namespace kcenon::file_transfer
-```
-
-#### 4.2.3 Transfer Manager API
-
-```cpp
-namespace kcenon::file_transfer {
-
-class transfer_manager {
-public:
-    class builder;
-
-    // Get transfer status
-    [[nodiscard]] auto get_status(const transfer_id& id)
-        -> Result<transfer_status>;
-
-    // List active transfers
-    [[nodiscard]] auto list_transfers()
-        -> Result<std::vector<transfer_info>>;
-
-    // Get statistics
-    [[nodiscard]] auto get_statistics() -> transfer_statistics;
-
-    // Get compression statistics
-    [[nodiscard]] auto get_compression_stats() -> compression_statistics;
-
-    // Set global bandwidth limit
-    void set_bandwidth_limit(std::size_t bytes_per_second);
-
-    // Set concurrent transfer limit
-    void set_max_concurrent_transfers(std::size_t max_count);
-
-    // Set default compression mode
-    void set_default_compression(compression_mode mode);
-};
-
-} // namespace kcenon::file_transfer
-```
-
-#### 4.2.4 Compression API
-
-```cpp
-namespace kcenon::file_transfer {
-
-// Compression modes
-enum class compression_mode {
-    disabled,       // No compression
-    enabled,        // Always compress
-    adaptive        // Auto-detect compressibility (default)
-};
-
-// Compression level (speed vs ratio trade-off)
-enum class compression_level {
-    fast,           // LZ4 default - fastest
-    high_compression // LZ4-HC - better ratio, slower
-};
-
-// Transfer options with compression settings
-struct transfer_options {
-    compression_mode    compression     = compression_mode::adaptive;
-    compression_level   level           = compression_level::fast;
-    std::size_t         chunk_size      = 256 * 1024;  // 256KB default
-    bool                verify_checksum = true;
-    std::optional<std::size_t> bandwidth_limit;
-};
-
-// Compression statistics
-struct compression_statistics {
-    uint64_t    total_raw_bytes;
-    uint64_t    total_compressed_bytes;
-    double      compression_ratio;          // raw / compressed
-    double      compression_speed_mbps;     // MB/s
-    double      decompression_speed_mbps;   // MB/s
-    uint64_t    chunks_compressed;
-    uint64_t    chunks_skipped;             // Incompressible chunks
-};
-
-// Per-chunk compression interface
-class chunk_compressor {
-public:
-    // Compress a chunk, returns compressed data or original if incompressible
-    [[nodiscard]] auto compress(
-        std::span<const std::byte> input
-    ) -> Result<compressed_chunk>;
-
-    // Decompress a chunk
-    [[nodiscard]] auto decompress(
-        std::span<const std::byte> compressed,
-        std::size_t original_size
-    ) -> Result<std::vector<std::byte>>;
-
-    // Check if data is worth compressing (quick sample test)
-    [[nodiscard]] auto is_compressible(
-        std::span<const std::byte> sample
-    ) -> bool;
-};
-
-} // namespace kcenon::file_transfer
-```
-
-#### 4.2.5 Pipeline API
-
-```cpp
-namespace kcenon::file_transfer {
-
-// Pipeline stage types for typed_thread_pool routing
-enum class pipeline_stage : uint8_t {
-    io_read,        // File read operations (I/O bound)
-    chunk_process,  // Chunk assembly/disassembly (CPU light)
-    compression,    // LZ4 compress/decompress (CPU bound)
-    network,        // Network send/receive (I/O bound)
-    io_write        // File write operations (I/O bound)
-};
-
-// Pipeline worker configuration
-struct pipeline_config {
-    // Worker counts per stage
-    std::size_t io_read_workers      = 2;
-    std::size_t chunk_workers        = 2;
-    std::size_t compression_workers  = 4;   // More workers for CPU-bound
-    std::size_t network_workers      = 2;
-    std::size_t io_write_workers     = 2;
-
-    // Queue sizes (backpressure control)
-    std::size_t read_queue_size      = 16;
-    std::size_t compress_queue_size  = 32;
-    std::size_t send_queue_size      = 64;
-    std::size_t decompress_queue_size = 32;
-    std::size_t write_queue_size     = 16;
-
-    // Auto-tune based on hardware capabilities
-    [[nodiscard]] static auto auto_detect() -> pipeline_config;
-};
-
-// Pipeline job base class
-template<pipeline_stage Stage>
-class pipeline_job : public thread::typed_job_t<pipeline_stage> {
-public:
-    explicit pipeline_job(const std::string& name = "pipeline_job")
-        : typed_job_t<pipeline_stage>(Stage, name) {}
-};
-
-// Sender pipeline controller
-class sender_pipeline {
-public:
-    class builder;
-
-    // Start the pipeline
-    [[nodiscard]] auto start(const pipeline_config& config = {}) -> Result<void>;
-
-    // Stop the pipeline gracefully
-    [[nodiscard]] auto stop(bool wait_for_completion = true) -> Result<void>;
-
-    // Submit file for sending (enters pipeline)
-    [[nodiscard]] auto submit(
-        const std::filesystem::path& file,
-        const endpoint& destination,
+    // Download operations
+    [[nodiscard]] auto download_file(
+        const std::string& remote_name,
+        const std::filesystem::path& local_path,
         const transfer_options& options = {}
     ) -> Result<transfer_handle>;
 
-    // Get pipeline statistics
-    [[nodiscard]] auto get_stats() const -> pipeline_statistics;
+    [[nodiscard]] auto download_files(
+        std::span<const std::string> remote_names,
+        const std::filesystem::path& output_dir,
+        const transfer_options& options = {}
+    ) -> Result<batch_transfer_handle>;
 
-    // Get current queue depths
-    [[nodiscard]] auto get_queue_depths() const -> queue_depth_info;
-};
+    // File listing
+    [[nodiscard]] auto list_files(
+        const list_options& options = {}
+    ) -> Result<std::vector<file_info>>;
 
-// Receiver pipeline controller
-class receiver_pipeline {
-public:
-    class builder;
+    // Transfer control
+    [[nodiscard]] auto cancel(const transfer_id& id) -> Result<void>;
+    [[nodiscard]] auto pause(const transfer_id& id) -> Result<void>;
+    [[nodiscard]] auto resume(const transfer_id& id) -> Result<void>;
 
-    // Start the pipeline
-    [[nodiscard]] auto start(
-        const endpoint& listen_addr,
-        const pipeline_config& config = {}
-    ) -> Result<void>;
+    // Callbacks
+    void on_progress(std::function<void(const transfer_progress&)> callback);
+    void on_connection_state(std::function<void(connection_state)> callback);
 
-    // Stop the pipeline gracefully
-    [[nodiscard]] auto stop(bool wait_for_completion = true) -> Result<void>;
-
-    // Set output directory
-    void set_output_directory(const std::filesystem::path& dir);
-
-    // Get pipeline statistics
-    [[nodiscard]] auto get_stats() const -> pipeline_statistics;
-
-    // Get current queue depths
-    [[nodiscard]] auto get_queue_depths() const -> queue_depth_info;
-};
-
-// Pipeline statistics
-struct pipeline_statistics {
-    // Per-stage metrics
-    struct stage_stats {
-        uint64_t    jobs_processed;
-        uint64_t    bytes_processed;
-        double      avg_latency_us;         // Average job latency in microseconds
-        double      throughput_mbps;        // MB/s
-        std::size_t current_queue_depth;
-        std::size_t max_queue_depth;
-    };
-
-    stage_stats io_read_stats;
-    stage_stats chunk_stats;
-    stage_stats compression_stats;
-    stage_stats network_stats;
-    stage_stats io_write_stats;
-
-    // Overall metrics
-    uint64_t    total_files_processed;
-    uint64_t    total_bytes_transferred;
-    double      overall_throughput_mbps;
-    duration    total_elapsed_time;
-};
-
-// Queue depth information for monitoring
-struct queue_depth_info {
-    std::size_t read_queue;
-    std::size_t chunk_queue;
-    std::size_t compress_queue;
-    std::size_t send_queue;
-    std::size_t recv_queue;
-    std::size_t decompress_queue;
-    std::size_t assemble_queue;
-    std::size_t write_queue;
+    // Statistics
+    [[nodiscard]] auto get_statistics() -> client_statistics;
 };
 
 } // namespace kcenon::file_transfer
 ```
 
-### 4.3 Data Structures
-
-#### 4.3.1 Chunk Structure
+#### 4.2.3 Data Structures
 
 ```cpp
-// Chunk flags
-enum class chunk_flags : uint8_t {
-    none            = 0x00,
-    first_chunk     = 0x01,     // First chunk of file
-    last_chunk      = 0x02,     // Last chunk of file
-    compressed      = 0x04,     // LZ4 compressed
-    encrypted       = 0x08      // TLS encrypted (reserved)
+namespace kcenon::file_transfer {
+
+// Connection state
+enum class connection_state {
+    disconnected,
+    connecting,
+    connected,
+    reconnecting
 };
 
-struct chunk_header {
-    transfer_id     transfer_id;        // Unique transfer identifier
-    uint64_t        file_index;         // Index in batch transfer
-    uint64_t        chunk_index;        // Chunk sequence number
-    uint64_t        chunk_offset;       // Byte offset in original file
-    uint32_t        original_size;      // Original (uncompressed) data size
-    uint32_t        compressed_size;    // Compressed size (= original if not compressed)
-    uint32_t        checksum;           // CRC32 of original (uncompressed) data
-    chunk_flags     flags;              // Chunk flags including compression flag
-};
-
-struct chunk {
-    chunk_header            header;
-    std::vector<std::byte>  data;       // Possibly compressed
-};
-
-struct compressed_chunk {
-    std::vector<std::byte>  data;
-    uint32_t                original_size;
-    bool                    is_compressed;  // false if compression was skipped
-};
-```
-
-#### 4.3.2 Transfer Metadata
-
-```cpp
-struct file_metadata {
+// File information
+struct file_info {
     std::string             filename;
     uint64_t                file_size;
     std::string             sha256_hash;
-    std::filesystem::perms  permissions;
+    std::chrono::system_clock::time_point created_time;
     std::chrono::system_clock::time_point modified_time;
-    bool                    compressible_hint;  // Hint from file extension
 };
 
-struct transfer_request {
-    transfer_id                     id;
-    std::vector<file_metadata>      files;
-    transfer_options                options;
+// Upload request (server callback)
+struct upload_request {
+    client_info             client;
+    std::string             filename;
+    uint64_t                file_size;
+    std::string             sha256_hash;
+    compression_mode        compression;
 };
 
+// Download request (server callback)
+struct download_request {
+    client_info             client;
+    std::string             filename;
+    uint64_t                offset;         // For resume
+    uint64_t                length;         // 0 = entire file
+};
+
+// List options
+struct list_options {
+    std::string             filter_pattern;     // Glob pattern (e.g., "*.pdf")
+    sort_field              sort_by = sort_field::name;
+    sort_order              order = sort_order::ascending;
+    uint32_t                offset = 0;         // Pagination
+    uint32_t                limit = 0;          // 0 = no limit
+};
+
+// Transfer options
+struct transfer_options {
+    compression_mode            compression     = compression_mode::adaptive;
+    compression_level           level           = compression_level::fast;
+    std::size_t                 chunk_size      = 256 * 1024;  // 256KB
+    bool                        verify_checksum = true;
+    std::optional<std::size_t>  bandwidth_limit;
+    std::optional<int>          priority;
+    bool                        overwrite_existing = false;
+};
+
+// Transfer progress
 struct transfer_progress {
-    transfer_id     id;
-    uint64_t        bytes_transferred;      // Raw bytes (uncompressed)
-    uint64_t        bytes_on_wire;          // Actual bytes sent (compressed)
-    uint64_t        total_bytes;            // Total raw bytes
-    double          transfer_rate;          // Raw bytes/second
-    double          effective_rate;         // Accounting for compression
-    double          compression_ratio;      // Current compression ratio
-    duration        elapsed_time;
-    duration        estimated_remaining;
-    transfer_state  state;
+    transfer_id         id;
+    transfer_direction  direction;          // upload or download
+    std::string         filename;
+    uint64_t            bytes_transferred;  // Raw bytes
+    uint64_t            bytes_on_wire;      // Compressed bytes
+    uint64_t            total_bytes;
+    double              transfer_rate;      // bytes/second
+    double              effective_rate;     // With compression
+    double              compression_ratio;
+    duration            elapsed_time;
+    duration            estimated_remaining;
+    transfer_state      state;
 };
+
+// Storage statistics
+struct storage_stats {
+    uint64_t            total_capacity;
+    uint64_t            used_bytes;
+    uint64_t            available_bytes;
+    uint64_t            file_count;
+};
+
+// Client information
+struct client_info {
+    std::string         client_id;
+    endpoint            address;
+    std::chrono::system_clock::time_point connected_at;
+    uint64_t            bytes_uploaded;
+    uint64_t            bytes_downloaded;
+};
+
+} // namespace kcenon::file_transfer
 ```
 
 ---
@@ -719,236 +751,110 @@ struct transfer_progress {
 
 | Requirement | Target | Measurement |
 |-------------|--------|-------------|
-| **NFR-01** Throughput | ≥500 MB/s (LAN) | 1GB file transfer time |
-| **NFR-02** Latency | <10ms chunk processing | End-to-end chunk latency |
-| **NFR-03** Memory | <50MB baseline | RSS during idle |
-| **NFR-04** Memory (transfer) | <100MB per 1GB transfer | RSS during transfer |
-| **NFR-05** CPU utilization | <30% per core | During sustained transfer |
-| **NFR-06** LZ4 compression | ≥400 MB/s | Compression throughput |
-| **NFR-07** LZ4 decompression | ≥1.5 GB/s | Decompression throughput |
-| **NFR-08** Compression ratio | 2:1 to 4:1 for text | Typical compressible data |
-| **NFR-09** Adaptive detection | <100μs | Compressibility check time |
+| **NFR-01** Upload throughput | ≥500 MB/s (LAN) | 1GB file upload time |
+| **NFR-02** Download throughput | ≥500 MB/s (LAN) | 1GB file download time |
+| **NFR-03** Latency | <10ms chunk processing | End-to-end chunk latency |
+| **NFR-04** Memory (server) | <100MB + 1MB/connection | RSS during operation |
+| **NFR-05** Memory (client) | <50MB baseline | RSS during idle |
+| **NFR-06** CPU utilization | <30% per core | During sustained transfer |
+| **NFR-07** LZ4 compression | ≥400 MB/s | Compression throughput |
+| **NFR-08** LZ4 decompression | ≥1.5 GB/s | Decompression throughput |
+| **NFR-09** Compression ratio | 2:1 to 4:1 for text | Typical compressible data |
+| **NFR-10** List response | <100ms for 10K files | File listing query |
 
 ### 5.2 Reliability
 
 | Requirement | Target |
 |-------------|--------|
-| **NFR-10** Data integrity | 100% (SHA-256 verified) |
-| **NFR-11** Resume accuracy | 100% successful resume |
-| **NFR-12** Error recovery | Auto-retry with exponential backoff |
-| **NFR-13** Graceful degradation | Reduced throughput under load |
-| **NFR-14** Compression fallback | Seamless fallback on decompression error |
+| **NFR-11** Data integrity | 100% (SHA-256 verified) |
+| **NFR-12** Resume accuracy | 100% successful resume |
+| **NFR-13** Error recovery | Auto-retry with exponential backoff |
+| **NFR-14** Graceful degradation | Reduced throughput under load |
+| **NFR-15** Server uptime | 99.9% availability |
 
 ### 5.3 Security
 
 | Requirement | Description |
 |-------------|-------------|
-| **NFR-15** Encryption | TLS 1.3 for network transfer |
-| **NFR-16** Authentication | Optional certificate-based auth |
-| **NFR-17** Path traversal | Prevent directory escape attacks |
-| **NFR-18** Resource limits | Max file size, transfer count limits |
+| **NFR-16** Encryption | TLS 1.3 for network transfer |
+| **NFR-17** Authentication | Optional token/certificate-based auth |
+| **NFR-18** Path traversal | Prevent directory escape attacks |
+| **NFR-19** Resource limits | Max file size, connection limits |
+| **NFR-20** File validation | Filename sanitization |
 
 ### 5.4 Compatibility
 
 | Requirement | Description |
 |-------------|-------------|
-| **NFR-19** C++ Standard | C++20 or later |
-| **NFR-20** Platforms | Linux, macOS, Windows |
-| **NFR-21** Compilers | GCC 11+, Clang 14+, MSVC 19.29+ |
-| **NFR-22** LZ4 library | LZ4 1.9.0+ (BSD license) |
+| **NFR-21** C++ Standard | C++20 or later |
+| **NFR-22** Platforms | Linux, macOS, Windows |
+| **NFR-23** Compilers | GCC 11+, Clang 14+, MSVC 19.29+ |
+| **NFR-24** LZ4 library | LZ4 1.9.0+ (BSD license) |
 
 ---
 
-## 6. Integration Requirements
+## 6. Protocol Design
 
-### 6.1 System Dependencies
-
-| System | Usage | Required |
-|--------|-------|----------|
-| **common_system** | Result<T>, interfaces, error codes | Yes |
-| **thread_system** | Async task execution, thread pool | Yes |
-| **network_system** | TCP/TLS (Phase 1) and QUIC (Phase 2) transport | Yes |
-| **container_system** | Chunk serialization | Yes |
-| **LZ4** | Real-time compression/decompression | Yes |
-| **logger_system** | Diagnostic logging | Optional |
-| **monitoring_system** | Metrics and tracing | Optional |
-
-> **Note**: network_system provides both TCP and QUIC transport, so no separate external QUIC library is required.
-
-### 6.2 Transport Protocol Design
-
-#### 6.2.1 Protocol Selection Rationale
-
-**HTTP is explicitly excluded** from this system for the following reasons:
-- Unnecessary abstraction layer for streaming file transfer
-- High header overhead (~800 bytes per request) unsuitable for high-frequency chunk transmission
-- Stateless design conflicts with connection-based resume capability
-- HTTP chunked encoding semantics differ from our chunk-based transfer model
-
-**Supported Transport Protocols:**
-
-| Protocol | Phase | Priority | Use Case |
-|----------|-------|----------|----------|
-| **TCP + TLS 1.3** | Phase 1 | Primary | All environments, default |
-| **QUIC** | Phase 2 | Optional | High-loss networks, mobile |
-
-#### 6.2.2 Custom Application Protocol
-
-A lightweight custom protocol is used on top of TCP/QUIC for minimal overhead:
+### 6.1 Message Types
 
 ```cpp
-// Message types (1 byte)
 enum class message_type : uint8_t {
-    // Session management
+    // Session management (0x01-0x0F)
     handshake_request   = 0x01,
     handshake_response  = 0x02,
 
-    // Transfer control
-    transfer_request    = 0x10,
-    transfer_accept     = 0x11,
-    transfer_reject     = 0x12,
-    transfer_cancel     = 0x13,
+    // Upload operations (0x10-0x1F)
+    upload_request      = 0x10,
+    upload_accept       = 0x11,
+    upload_reject       = 0x12,
+    upload_cancel       = 0x13,
 
-    // Data transfer
+    // Download operations (0x50-0x5F)
+    download_request    = 0x50,
+    download_accept     = 0x51,
+    download_reject     = 0x52,
+    download_cancel     = 0x53,
+
+    // File listing (0x60-0x6F)
+    list_request        = 0x60,
+    list_response       = 0x61,
+
+    // Data transfer (0x20-0x2F)
     chunk_data          = 0x20,
     chunk_ack           = 0x21,
-    chunk_nack          = 0x22,  // Retransmission request
+    chunk_nack          = 0x22,
 
-    // Resume
+    // Resume (0x30-0x3F)
     resume_request      = 0x30,
     resume_response     = 0x31,
 
-    // Completion
+    // Completion (0x40-0x4F)
     transfer_complete   = 0x40,
     transfer_verify     = 0x41,
 
-    // Control
+    // Control (0xF0-0xFF)
     keepalive           = 0xF0,
     error               = 0xFF
 };
-
-// Message frame (5 bytes overhead)
-struct message_frame {
-    message_type    type;           // 1 byte
-    uint32_t        payload_length; // 4 bytes (big-endian)
-    // payload follows...
-};
 ```
 
-**Overhead Comparison (1GB file, 256KB chunks = 4,096 chunks):**
+### 6.2 Message Frame
 
-| Protocol | Per-Chunk Overhead | Total Overhead | Percentage |
-|----------|-------------------|----------------|------------|
-| HTTP/1.1 | ~800 bytes | ~3.2 MB | 0.31% |
-| Custom/TCP | 54 bytes | ~221 KB | 0.02% |
-| Custom/QUIC | ~74 bytes | ~303 KB | 0.03% |
+```
+┌─────────────────────────────────┐
+│ Message Type    │ 1 byte        │
+├─────────────────────────────────┤
+│ Payload Length  │ 4 bytes (BE)  │
+├─────────────────────────────────┤
+│ Payload         │ Variable      │
+└─────────────────────────────────┘
 
-#### 6.2.3 TCP Transport (Phase 1 - Required)
-
-**Advantages:**
-- 40+ years of proven reliability
-- Kernel-level optimization on all platforms
-- Already supported by network_system
-- Firewall-friendly (port 443 with TLS)
-
-**Configuration:**
-```cpp
-struct tcp_transport_config {
-    bool        enable_tls      = true;     // TLS 1.3
-    bool        tcp_nodelay     = true;     // Disable Nagle's algorithm
-    std::size_t send_buffer     = 256 * 1024;
-    std::size_t recv_buffer     = 256 * 1024;
-    duration    connect_timeout = 10s;
-    duration    read_timeout    = 30s;
-};
+Total overhead: 5 bytes per message
 ```
 
-#### 6.2.4 QUIC Transport (Phase 2 - Optional)
+---
 
-**Advantages:**
-- 0-RTT connection resumption
-- No head-of-line blocking (stream multiplexing)
-- Connection migration (survives IP changes)
-- Built-in encryption (TLS 1.3)
-
-**When to use QUIC:**
-- High packet loss environments (>0.5%)
-- Mobile networks with frequent handoffs
-- Multi-file transfers benefiting from multiplexing
-
-**Implementation**: Uses network_system's QUIC library (no external dependency required)
-
-```cpp
-struct quic_transport_config {
-    bool        enable_0rtt         = true;
-    std::size_t max_streams         = 100;      // Per connection
-    std::size_t initial_window      = 10 * 1024 * 1024;
-    duration    idle_timeout        = 30s;
-    bool        enable_migration    = true;
-};
-```
-
-#### 6.2.5 Transport Abstraction Layer
-
-```cpp
-// Abstract interface for transport implementations
-class transport_interface {
-public:
-    virtual ~transport_interface() = default;
-
-    [[nodiscard]] virtual auto connect(const endpoint& ep) -> Result<void> = 0;
-    [[nodiscard]] virtual auto disconnect() -> Result<void> = 0;
-    [[nodiscard]] virtual auto send(std::span<const std::byte> data) -> Result<void> = 0;
-    [[nodiscard]] virtual auto receive(std::span<std::byte> buffer) -> Result<std::size_t> = 0;
-    [[nodiscard]] virtual auto is_connected() const -> bool = 0;
-
-    // QUIC-specific (no-op for TCP)
-    [[nodiscard]] virtual auto create_stream() -> Result<stream_id> { return stream_id{0}; }
-    [[nodiscard]] virtual auto close_stream(stream_id) -> Result<void> { return {}; }
-};
-
-// Factory for creating transport instances
-[[nodiscard]] auto create_transport(transport_type type) -> std::unique_ptr<transport_interface>;
-```
-
-### 6.3 LZ4 Library Integration
-
-```cpp
-// LZ4 integration wrapper
-namespace kcenon::file_transfer::compression {
-
-class lz4_engine {
-public:
-    // Standard LZ4 compression (fast)
-    [[nodiscard]] static auto compress(
-        std::span<const std::byte> input,
-        std::span<std::byte> output
-    ) -> Result<std::size_t>;
-
-    // LZ4-HC compression (high compression ratio)
-    [[nodiscard]] static auto compress_hc(
-        std::span<const std::byte> input,
-        std::span<std::byte> output,
-        int compression_level = 9
-    ) -> Result<std::size_t>;
-
-    // Decompression (same for both modes)
-    [[nodiscard]] static auto decompress(
-        std::span<const std::byte> compressed,
-        std::span<std::byte> output,
-        std::size_t original_size
-    ) -> Result<std::size_t>;
-
-    // Calculate maximum compressed size for buffer allocation
-    [[nodiscard]] static auto max_compressed_size(
-        std::size_t input_size
-    ) -> std::size_t;
-};
-
-} // namespace kcenon::file_transfer::compression
-```
-
-### 6.4 Error Code Range
+## 7. Error Codes
 
 Following the ecosystem convention, file_trans_system reserves error codes in range **-700 to -799**:
 
@@ -956,28 +862,26 @@ Following the ecosystem convention, file_trans_system reserves error codes in ra
 |-------|----------|
 | -700 to -719 | Transfer errors (init, cancel, timeout) |
 | -720 to -739 | Chunk errors (checksum, sequence, size) |
-| -740 to -759 | File I/O errors (read, write, permission) |
+| -740 to -759 | File I/O errors (read, write, permission, not_found) |
 | -760 to -779 | Resume errors (state, corruption) |
 | -780 to -789 | Compression errors (compress, decompress, invalid) |
 | -790 to -799 | Configuration errors |
 
-### 6.5 Interface Implementation
+### 7.1 New Error Codes for Client-Server
 
-```cpp
-// Implements IExecutor for transfer task scheduling
-class transfer_executor : public common::IExecutor {
-    // Uses thread_system internally
-};
-
-// Optional IMonitor integration
-class transfer_monitor : public common::IMonitor {
-    // Exports metrics including compression stats to monitoring_system
-};
-```
+| Code | Name | Description |
+|------|------|-------------|
+| -744 | file_already_exists | Upload: file already exists on server |
+| -745 | storage_full | Server storage quota exceeded |
+| -746 | file_not_found_on_server | Download: requested file not found |
+| -747 | access_denied | Permission denied for operation |
+| -748 | invalid_filename | Filename contains invalid characters |
+| -749 | connection_refused | Server refused connection |
+| -750 | server_busy | Server at max capacity |
 
 ---
 
-## 7. Directory Structure
+## 8. Directory Structure
 
 ```
 file_trans_system/
@@ -986,17 +890,23 @@ file_trans_system/
 ├── docs/
 │   ├── PRD.md
 │   ├── PRD_KR.md
-│   ├── API.md
-│   └── ARCHITECTURE.md
+│   ├── SRS.md
+│   ├── SDS.md
+│   └── reference/
 ├── include/
 │   └── kcenon/
 │       └── file_transfer/
 │           ├── file_transfer.h           # Main header
+│           ├── server/
+│           │   ├── file_transfer_server.h
+│           │   ├── server_handler.h
+│           │   └── storage_manager.h
+│           ├── client/
+│           │   ├── file_transfer_client.h
+│           │   ├── upload_engine.h
+│           │   └── download_engine.h
 │           ├── core/
-│           │   ├── file_sender.h
-│           │   ├── file_receiver.h
 │           │   ├── transfer_manager.h
-│           │   ├── chunk_manager.h
 │           │   └── error_codes.h
 │           ├── chunk/
 │           │   ├── chunk.h
@@ -1006,49 +916,38 @@ file_trans_system/
 │           ├── compression/
 │           │   ├── lz4_engine.h
 │           │   ├── chunk_compressor.h
-│           │   ├── adaptive_compression.h
 │           │   └── compression_stats.h
 │           ├── transport/
 │           │   ├── transport_interface.h
-│           │   ├── transport_factory.h
 │           │   ├── tcp_transport.h
-│           │   ├── quic_transport.h      # Phase 2
+│           │   ├── quic_transport.h
 │           │   └── protocol_messages.h
-│           ├── resume/
-│           │   ├── resume_handler.h
-│           │   └── transfer_state.h
-│           ├── adapters/
-│           │   └── common_adapter.h
-│           ├── di/
-│           │   └── file_transfer_module.h
-│           └── metrics/
-│               └── transfer_metrics.h
+│           └── resume/
+│               ├── resume_handler.h
+│               └── transfer_state.h
 ├── src/
+│   ├── server/
+│   ├── client/
 │   ├── core/
 │   ├── chunk/
 │   ├── compression/
 │   ├── transport/
-│   ├── resume/
-│   └── adapters/
+│   └── resume/
 ├── tests/
 │   ├── unit/
-│   │   ├── chunk_test.cpp
-│   │   ├── compression_test.cpp
-│   │   └── ...
 │   ├── integration/
 │   └── benchmark/
-│       ├── compression_benchmark.cpp
-│       └── transfer_benchmark.cpp
 └── examples/
-    ├── simple_send/
-    ├── simple_receive/
-    ├── compressed_transfer/
+    ├── simple_server/
+    ├── simple_client/
+    ├── upload_example/
+    ├── download_example/
     └── batch_transfer/
 ```
 
 ---
 
-## 8. Development Phases
+## 9. Development Phases
 
 ### Phase 1: Core Infrastructure (2-3 weeks)
 - [ ] Project setup with CMake
@@ -1056,35 +955,31 @@ file_trans_system/
 - [ ] Chunk data structures and serialization
 - [ ] Basic chunk splitter/assembler
 - [ ] CRC32 checksum implementation
-- [ ] Unit tests for core components
 
-### Phase 2: LZ4 Compression Engine (1-2 weeks)
-- [ ] LZ4 compression wrapper
-- [ ] LZ4-HC support for high compression mode
+### Phase 2: Server Foundation (2-3 weeks)
+- [ ] file_transfer_server basic implementation
+- [ ] Storage manager with file indexing
+- [ ] Server handler for client connections
+- [ ] Upload request handling
+- [ ] Download request handling
+
+### Phase 3: Client Foundation (2-3 weeks)
+- [ ] file_transfer_client implementation
+- [ ] Connection management with auto-reconnect
+- [ ] Upload engine with pipeline
+- [ ] Download engine with pipeline
+- [ ] List files functionality
+
+### Phase 4: Compression & Resume (2 weeks)
+- [ ] LZ4 compression integration
 - [ ] Adaptive compression detection
-- [ ] Compression statistics tracking
-- [ ] Compression unit tests and benchmarks
-
-### Phase 3: Transfer Engine (2-3 weeks)
-- [ ] Transport abstraction layer
-- [ ] TCP transport implementation (via network_system)
-- [ ] Custom protocol message handling
-- [ ] File sender with compression support
-- [ ] File receiver with decompression support
-- [ ] Basic transfer manager
-- [ ] Integration tests
-
-### Phase 4: Reliability Features (2 weeks)
 - [ ] Resume handler implementation
 - [ ] Transfer state persistence
-- [ ] SHA-256 file verification
-- [ ] Error recovery and retry logic
-- [ ] Compression error handling
 
 ### Phase 5: Advanced Features (2 weeks)
-- [ ] Multi-file batch transfer
-- [ ] Concurrent transfer support
+- [ ] Batch upload/download
 - [ ] Bandwidth throttling
+- [ ] Storage quota management
 - [ ] Progress tracking with compression metrics
 
 ### Phase 6: Integration & Polish (1-2 weeks)
@@ -1094,27 +989,9 @@ file_trans_system/
 - [ ] Documentation and examples
 
 ### Phase 7: QUIC Transport (Optional, 2-3 weeks)
-- [ ] network_system QUIC library integration
 - [ ] QUIC transport implementation
 - [ ] 0-RTT connection resumption
 - [ ] Connection migration support
-- [ ] Multi-stream file transfer
-- [ ] QUIC-specific benchmarks
-- [ ] Fallback mechanism (QUIC → TCP)
-
----
-
-## 9. Risks and Mitigations
-
-| Risk | Impact | Probability | Mitigation |
-|------|--------|-------------|------------|
-| Large file memory exhaustion | High | Medium | Streaming with fixed buffer pools |
-| Network instability | Medium | High | Robust retry and resume logic |
-| Chunk ordering complexity | Medium | Medium | Sequence numbers and validation |
-| Cross-platform file permissions | Low | Medium | Abstract permission model |
-| Performance bottlenecks | Medium | Medium | Early benchmarking, profiling |
-| LZ4 compression overhead | Low | Low | Adaptive compression, skip incompressible |
-| Compression ratio variability | Low | Medium | Report actual ratios, don't guarantee |
 
 ---
 
@@ -1123,8 +1000,8 @@ file_trans_system/
 ### 10.1 Functional Completeness
 - [ ] All P0 requirements implemented and tested
 - [ ] All P1 requirements implemented and tested
-- [ ] LZ4 compression fully integrated
-- [ ] API documentation complete
+- [ ] Server and client APIs complete
+- [ ] Upload/Download/List operations working
 
 ### 10.2 Quality Gates
 - [ ] ≥80% code coverage
@@ -1133,10 +1010,10 @@ file_trans_system/
 - [ ] All integration tests passing
 
 ### 10.3 Performance Validation
-- [ ] Throughput targets met (verified by benchmark)
-- [ ] Compression speed targets met (≥400 MB/s)
-- [ ] Decompression speed targets met (≥1.5 GB/s)
-- [ ] Memory targets met (verified by profiling)
+- [ ] Upload throughput targets met
+- [ ] Download throughput targets met
+- [ ] Compression speed targets met
+- [ ] Memory targets met
 - [ ] Resume functionality validated
 
 ---
@@ -1145,80 +1022,24 @@ file_trans_system/
 
 | Term | Definition |
 |------|------------|
+| **Server** | Central component that stores files and handles client requests |
+| **Client** | Component that connects to server for file operations |
+| **Upload** | Transfer of file from client to server |
+| **Download** | Transfer of file from server to client |
 | **Chunk** | A fixed-size segment of a file for streaming transfer |
-| **Transfer** | A single file or batch of files being sent/received |
 | **Resume** | Continuing an interrupted transfer from the last successful point |
-| **Checksum** | A hash value used to verify data integrity |
-| **Backpressure** | Flow control mechanism to prevent buffer overflow |
-| **LZ4** | A fast lossless compression algorithm optimized for speed |
-| **Adaptive Compression** | Automatic detection and skipping of incompressible data |
-| **Compression Ratio** | Original size divided by compressed size (higher is better) |
+| **Storage** | Server-side file repository |
 
 ---
 
-## Appendix B: LZ4 Compression Details
-
-### B.1 Why LZ4?
-
-| Algorithm | Compress Speed | Decompress Speed | Ratio |
-|-----------|----------------|------------------|-------|
-| **LZ4** | ~500 MB/s | ~2 GB/s | 2.1:1 |
-| LZ4-HC | ~50 MB/s | ~2 GB/s | 2.7:1 |
-| zstd | ~400 MB/s | ~1 GB/s | 2.9:1 |
-| gzip | ~30 MB/s | ~300 MB/s | 2.7:1 |
-| snappy | ~400 MB/s | ~800 MB/s | 1.8:1 |
-
-LZ4 offers the best balance of:
-- **Speed**: Near memory bandwidth compression/decompression
-- **Simplicity**: Single-header library, minimal dependencies
-- **License**: BSD license (commercially friendly)
-- **Maturity**: Battle-tested in production (Linux kernel, ZFS, etc.)
-
-### B.2 Adaptive Compression Strategy
-
-```cpp
-// Pseudo-code for adaptive compression decision
-bool should_compress(span<byte> chunk) {
-    // Sample first 1KB of chunk
-    auto sample = chunk.first(min(1024, chunk.size()));
-
-    // Try compressing sample
-    auto compressed = lz4_compress(sample);
-
-    // Only compress if we get at least 10% reduction
-    return compressed.size() < sample.size() * 0.9;
-}
-```
-
-### B.3 File Type Heuristics
-
-| File Type | Compression | Reason |
-|-----------|-------------|--------|
-| .txt, .log, .json, .xml | Yes | Highly compressible text |
-| .csv, .html, .css, .js | Yes | Text-based formats |
-| .cpp, .h, .py, .java | Yes | Source code |
-| .zip, .gz, .tar.gz | No | Already compressed |
-| .jpg, .png, .mp4 | No | Already compressed media |
-| .exe, .dll, .so | Maybe | Binary, may have some gain |
-
----
-
-## Appendix C: References
+## Appendix B: References
 
 ### Internal Documentation
 - [common_system Documentation](../../../common_system/README.md)
 - [thread_system Documentation](../../../thread_system/README.md)
-- [network_system Documentation](../../../network_system/README.md) - Provides TCP and QUIC transport
+- [network_system Documentation](../../../network_system/README.md)
 - [container_system Documentation](../../../container_system/README.md)
 
-### Compression
+### External References
 - [LZ4 Official Repository](https://github.com/lz4/lz4)
-- [LZ4 Frame Format Specification](https://github.com/lz4/lz4/blob/dev/doc/lz4_Frame_format.md)
-
-### Transport Protocols
-- [RFC 9000 - QUIC: A UDP-Based Multiplexed and Secure Transport](https://tools.ietf.org/html/rfc9000)
-- [RFC 9001 - Using TLS to Secure QUIC](https://tools.ietf.org/html/rfc9001)
-- [RFC 9002 - QUIC Loss Detection and Congestion Control](https://tools.ietf.org/html/rfc9002)
-
-### Other References
-- [RFC 7233 - HTTP Range Requests](https://tools.ietf.org/html/rfc7233) (for reference only, HTTP not used)
+- [RFC 9000 - QUIC](https://tools.ietf.org/html/rfc9000)

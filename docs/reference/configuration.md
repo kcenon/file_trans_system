@@ -2,15 +2,23 @@
 
 Complete configuration reference for the **file_trans_system** library.
 
+**Version:** 2.0.0
+**Architecture:** Client-Server Model
+
+---
+
 ## Table of Contents
 
 1. [Quick Start](#quick-start)
-2. [Sender Configuration](#sender-configuration)
-3. [Receiver Configuration](#receiver-configuration)
-4. [Pipeline Configuration](#pipeline-configuration)
-5. [Compression Configuration](#compression-configuration)
-6. [Transport Configuration](#transport-configuration)
-7. [Performance Tuning](#performance-tuning)
+2. [Server Configuration](#server-configuration)
+3. [Client Configuration](#client-configuration)
+4. [Storage Configuration](#storage-configuration)
+5. [Reconnection Configuration](#reconnection-configuration)
+6. [Pipeline Configuration](#pipeline-configuration)
+7. [Compression Configuration](#compression-configuration)
+8. [Transport Configuration](#transport-configuration)
+9. [Security Configuration](#security-configuration)
+10. [Performance Tuning](#performance-tuning)
 
 ---
 
@@ -19,56 +27,190 @@ Complete configuration reference for the **file_trans_system** library.
 ### Minimal Configuration
 
 ```cpp
-// Sender with defaults
-auto sender = file_sender::builder().build();
+#include <kcenon/file_transfer/file_transfer.h>
 
-// Receiver with output directory
-auto receiver = file_receiver::builder()
-    .with_output_directory("/downloads")
+using namespace kcenon::file_transfer;
+
+// Server with storage directory
+auto server = file_transfer_server::builder()
+    .with_storage_directory("/data/files")
     .build();
+
+// Client with defaults
+auto client = file_transfer_client::builder().build();
 ```
 
 ### Recommended Configuration
 
 ```cpp
-// Sender - optimized for most use cases
-auto sender = file_sender::builder()
-    .with_compression(compression_mode::adaptive)
-    .with_chunk_size(256 * 1024)  // 256KB
+// Server - optimized for production
+auto server = file_transfer_server::builder()
+    .with_storage_directory("/data/files")
+    .with_max_connections(100)
+    .with_max_file_size(10ULL * 1024 * 1024 * 1024)  // 10GB
+    .with_storage_quota(1ULL * 1024 * 1024 * 1024 * 1024)  // 1TB
     .with_pipeline_config(pipeline_config::auto_detect())
     .build();
 
-// Receiver - optimized for most use cases
-auto receiver = file_receiver::builder()
-    .with_output_directory("/downloads")
+// Client - optimized for production
+auto client = file_transfer_client::builder()
+    .with_compression(compression_mode::adaptive)
+    .with_chunk_size(256 * 1024)  // 256KB
+    .with_auto_reconnect(true)
+    .with_reconnect_policy(reconnect_policy::exponential_backoff())
     .with_pipeline_config(pipeline_config::auto_detect())
     .build();
 ```
 
 ---
 
-## Sender Configuration
+## Server Configuration
 
 ### Builder Options
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `with_pipeline_config` | `pipeline_config` | auto-detect | Pipeline worker and queue configuration |
+| `with_storage_directory` | `std::filesystem::path` | **Required** | Root directory for file storage |
+| `with_max_connections` | `std::size_t` | 100 | Maximum concurrent client connections |
+| `with_max_file_size` | `uint64_t` | 10GB | Maximum allowed file size |
+| `with_storage_quota` | `uint64_t` | 0 (unlimited) | Total storage quota |
+| `with_pipeline_config` | `pipeline_config` | auto-detect | Pipeline worker configuration |
+| `with_transport` | `transport_type` | `tcp` | Transport protocol |
+| `with_connection_timeout` | `duration` | 30s | Connection idle timeout |
+| `with_request_timeout` | `duration` | 10s | Request response timeout |
+
+### Server Examples
+
+#### Basic Server
+
+```cpp
+auto server = file_transfer_server::builder()
+    .with_storage_directory("/var/data/files")
+    .build();
+
+server->start(endpoint{"0.0.0.0", 19000});
+```
+
+#### High-Capacity Server
+
+```cpp
+auto server = file_transfer_server::builder()
+    .with_storage_directory("/fast-nvme/storage")
+    .with_max_connections(500)
+    .with_max_file_size(50ULL * 1024 * 1024 * 1024)  // 50GB
+    .with_storage_quota(10ULL * 1024 * 1024 * 1024 * 1024)  // 10TB
+    .with_pipeline_config(pipeline_config{
+        .network_workers = 8,
+        .compression_workers = 16,
+        .io_write_workers = 8,
+        .recv_queue_size = 256,
+        .write_queue_size = 64
+    })
+    .build();
+```
+
+#### Restricted Server
+
+```cpp
+auto server = file_transfer_server::builder()
+    .with_storage_directory("/uploads")
+    .with_max_connections(10)
+    .with_max_file_size(100 * 1024 * 1024)  // 100MB limit
+    .with_storage_quota(10ULL * 1024 * 1024 * 1024)  // 10GB total
+    .with_connection_timeout(5min)
+    .build();
+
+// Custom validation callbacks
+server->on_upload_request([](const upload_request& req) {
+    // Only allow specific extensions
+    auto ext = std::filesystem::path(req.filename).extension();
+    return ext == ".pdf" || ext == ".doc" || ext == ".txt";
+});
+
+server->on_download_request([](const download_request& req) {
+    // Allow all downloads
+    return true;
+});
+```
+
+### Server Callbacks
+
+```cpp
+// Upload request validation
+server->on_upload_request([](const upload_request& req) -> bool {
+    // Validate file size
+    if (req.file_size > 1e9) return false;  // Reject > 1GB
+
+    // Validate filename
+    if (req.filename.find("..") != std::string::npos) return false;
+
+    return true;
+});
+
+// Download request validation
+server->on_download_request([](const download_request& req) -> bool {
+    // Check access permissions (custom logic)
+    return has_access(req.client_id, req.filename);
+});
+
+// Connection events
+server->on_client_connected([](const client_info& info) {
+    log_info("Client connected: {}", info.address);
+});
+
+server->on_client_disconnected([](const client_info& info, disconnect_reason reason) {
+    log_info("Client disconnected: {} ({})", info.address, to_string(reason));
+});
+
+// Transfer events
+server->on_upload_complete([](const transfer_result& result) {
+    log_info("Upload complete: {} ({} bytes)", result.filename, result.file_size);
+});
+
+server->on_download_complete([](const transfer_result& result) {
+    log_info("Download complete: {} to {}", result.filename, result.client_address);
+});
+```
+
+---
+
+## Client Configuration
+
+### Builder Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `with_pipeline_config` | `pipeline_config` | auto-detect | Pipeline configuration |
 | `with_compression` | `compression_mode` | `adaptive` | Compression mode |
 | `with_compression_level` | `compression_level` | `fast` | LZ4 compression level |
 | `with_chunk_size` | `std::size_t` | 256KB | Chunk size (64KB-1MB) |
 | `with_bandwidth_limit` | `std::size_t` | 0 (unlimited) | Bandwidth limit (bytes/sec) |
 | `with_transport` | `transport_type` | `tcp` | Transport protocol |
+| `with_auto_reconnect` | `bool` | true | Enable automatic reconnection |
+| `with_reconnect_policy` | `reconnect_policy` | exponential | Reconnection strategy |
+| `with_connect_timeout` | `duration` | 10s | Connection timeout |
+| `with_request_timeout` | `duration` | 30s | Request timeout |
 
-### Examples
+### Client Examples
 
-#### High Throughput Configuration
+#### Basic Client
 
 ```cpp
-auto sender = file_sender::builder()
+auto client = file_transfer_client::builder().build();
+
+auto result = client->connect(endpoint{"192.168.1.100", 19000});
+if (result) {
+    client->upload_file("/local/report.pdf", "report.pdf");
+}
+```
+
+#### High-Throughput Client
+
+```cpp
+auto client = file_transfer_client::builder()
     .with_compression(compression_mode::enabled)
     .with_compression_level(compression_level::fast)
-    .with_chunk_size(512 * 1024)  // 512KB for better throughput
+    .with_chunk_size(512 * 1024)  // 512KB chunks
     .with_pipeline_config(pipeline_config{
         .io_read_workers = 4,
         .compression_workers = 8,
@@ -78,11 +220,11 @@ auto sender = file_sender::builder()
     .build();
 ```
 
-#### Low Memory Configuration
+#### Low-Memory Client
 
 ```cpp
-auto sender = file_sender::builder()
-    .with_chunk_size(64 * 1024)   // Minimum 64KB
+auto client = file_transfer_client::builder()
+    .with_chunk_size(64 * 1024)  // Minimum 64KB
     .with_pipeline_config(pipeline_config{
         .io_read_workers = 1,
         .compression_workers = 2,
@@ -94,72 +236,241 @@ auto sender = file_sender::builder()
     .build();
 ```
 
-#### Bandwidth Limited Configuration
+#### Bandwidth-Limited Client
 
 ```cpp
-auto sender = file_sender::builder()
+auto client = file_transfer_client::builder()
     .with_bandwidth_limit(10 * 1024 * 1024)  // 10 MB/s
     .with_compression(compression_mode::enabled)  // Maximize effective throughput
     .build();
 ```
 
----
-
-## Receiver Configuration
-
-### Builder Options
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `with_pipeline_config` | `pipeline_config` | auto-detect | Pipeline configuration |
-| `with_output_directory` | `std::filesystem::path` | Required | Output directory |
-| `with_bandwidth_limit` | `std::size_t` | 0 (unlimited) | Bandwidth limit |
-| `with_transport` | `transport_type` | `tcp` | Transport protocol |
-
-### Examples
-
-#### Standard Configuration
+#### Mobile/Unreliable Network Client
 
 ```cpp
-auto receiver = file_receiver::builder()
-    .with_output_directory("/var/data/incoming")
-    .with_pipeline_config(pipeline_config::auto_detect())
+auto client = file_transfer_client::builder()
+    .with_auto_reconnect(true)
+    .with_reconnect_policy(reconnect_policy{
+        .initial_delay = std::chrono::milliseconds(500),
+        .max_delay = std::chrono::seconds(30),
+        .multiplier = 1.5,
+        .max_attempts = 20
+    })
+    .with_chunk_size(64 * 1024)  // Smaller chunks for faster recovery
     .build();
 ```
 
-#### High Volume Configuration
+### Client Callbacks
 
 ```cpp
-auto receiver = file_receiver::builder()
-    .with_output_directory("/fast-ssd/incoming")
-    .with_pipeline_config(pipeline_config{
-        .network_workers = 4,
-        .compression_workers = 8,
-        .io_write_workers = 4,
-        .write_queue_size = 32
+// Connection events
+client->on_connected([](const server_info& info) {
+    log_info("Connected to server: {}", info.address);
+});
+
+client->on_disconnected([](disconnect_reason reason) {
+    log_warning("Disconnected: {}", to_string(reason));
+});
+
+client->on_reconnecting([](int attempt, duration delay) {
+    log_info("Reconnecting (attempt {}, waiting {}ms)", attempt, delay.count());
+});
+
+client->on_reconnected([]() {
+    log_info("Reconnected successfully");
+});
+
+// Transfer progress
+client->on_progress([](const transfer_progress& p) {
+    double percent = 100.0 * p.bytes_transferred / p.total_bytes;
+    log_info("{}% - {} MB/s", percent, p.transfer_rate / 1e6);
+});
+```
+
+---
+
+## Storage Configuration
+
+Server-side storage management configuration.
+
+### Storage Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `with_storage_directory` | `path` | **Required** | Root storage path |
+| `with_storage_quota` | `uint64_t` | 0 | Total quota (0 = unlimited) |
+| `with_max_file_size` | `uint64_t` | 10GB | Max single file size |
+| `with_temp_directory` | `path` | storage/temp | Temporary upload directory |
+| `with_filename_validator` | `function` | default | Custom filename validation |
+
+### Storage Structure
+
+```
+storage_directory/
+├── files/           # Completed uploads
+├── temp/            # In-progress uploads
+└── metadata/        # File metadata (optional)
+```
+
+### Custom Filename Validation
+
+```cpp
+auto server = file_transfer_server::builder()
+    .with_storage_directory("/data/files")
+    .with_filename_validator([](const std::string& filename) -> Result<void> {
+        // Check length
+        if (filename.length() > 255) {
+            return Error{error::invalid_filename, "Filename too long"};
+        }
+
+        // Check for invalid characters
+        static const std::string invalid = "<>:\"/\\|?*";
+        if (filename.find_first_of(invalid) != std::string::npos) {
+            return Error{error::invalid_filename, "Invalid characters in filename"};
+        }
+
+        // Check for path traversal
+        if (filename.find("..") != std::string::npos) {
+            return Error{error::invalid_filename, "Path traversal not allowed"};
+        }
+
+        return {};
     })
     .build();
+```
+
+### Quota Management
+
+```cpp
+// Check storage status
+auto status = server->get_storage_status();
+log_info("Storage: {} / {} bytes used ({:.1f}%)",
+    status.used_bytes,
+    status.quota_bytes,
+    100.0 * status.used_bytes / status.quota_bytes);
+
+// Monitor storage events
+server->on_storage_warning([](const storage_warning& warning) {
+    if (warning.percent_used > 90) {
+        log_warning("Storage nearly full: {}%", warning.percent_used);
+    }
+});
+
+server->on_storage_full([]() {
+    log_error("Storage quota exceeded");
+    // Trigger cleanup or notification
+});
+```
+
+---
+
+## Reconnection Configuration
+
+Client automatic reconnection settings.
+
+### Reconnection Policy Structure
+
+```cpp
+struct reconnect_policy {
+    duration    initial_delay = 1s;      // First retry delay
+    duration    max_delay     = 30s;     // Maximum delay cap
+    double      multiplier    = 2.0;     // Exponential backoff factor
+    std::size_t max_attempts  = 10;      // Maximum retry attempts (0 = infinite)
+    bool        jitter        = true;    // Add random jitter
+};
+```
+
+### Preset Policies
+
+```cpp
+// Fast reconnection (LAN)
+auto policy = reconnect_policy::fast();
+// initial_delay=100ms, max_delay=5s, multiplier=1.5, max_attempts=5
+
+// Standard reconnection (default)
+auto policy = reconnect_policy::exponential_backoff();
+// initial_delay=1s, max_delay=30s, multiplier=2.0, max_attempts=10
+
+// Aggressive reconnection (mobile)
+auto policy = reconnect_policy::aggressive();
+// initial_delay=500ms, max_delay=60s, multiplier=1.5, max_attempts=20
+
+// Persistent reconnection (critical applications)
+auto policy = reconnect_policy::persistent();
+// initial_delay=1s, max_delay=5min, multiplier=2.0, max_attempts=0 (infinite)
+```
+
+### Custom Policy Examples
+
+```cpp
+// Very aggressive for real-time applications
+auto client = file_transfer_client::builder()
+    .with_auto_reconnect(true)
+    .with_reconnect_policy(reconnect_policy{
+        .initial_delay = std::chrono::milliseconds(100),
+        .max_delay = std::chrono::seconds(2),
+        .multiplier = 1.2,
+        .max_attempts = 50,
+        .jitter = true
+    })
+    .build();
+
+// Conservative for batch processing
+auto client = file_transfer_client::builder()
+    .with_auto_reconnect(true)
+    .with_reconnect_policy(reconnect_policy{
+        .initial_delay = std::chrono::seconds(5),
+        .max_delay = std::chrono::minutes(10),
+        .multiplier = 2.5,
+        .max_attempts = 5,
+        .jitter = false
+    })
+    .build();
+```
+
+### Backoff Calculation
+
+```
+delay(n) = min(initial_delay × multiplier^n, max_delay)
+
+With jitter:
+delay(n) = delay(n) × (0.5 + random(0.0, 1.0))
+```
+
+Example sequence (default policy):
+```
+Attempt 1: 1s
+Attempt 2: 2s
+Attempt 3: 4s
+Attempt 4: 8s
+Attempt 5: 16s
+Attempt 6: 30s (capped)
+Attempt 7: 30s (capped)
+...
 ```
 
 ---
 
 ## Pipeline Configuration
 
+Shared configuration for both server and client data pipelines.
+
 ### Configuration Structure
 
 ```cpp
 struct pipeline_config {
     // Worker counts per stage
-    std::size_t io_read_workers      = 2;   // File reading
+    std::size_t io_read_workers      = 2;   // File reading (upload source)
     std::size_t chunk_workers        = 2;   // Chunk processing
     std::size_t compression_workers  = 4;   // LZ4 compress/decompress
     std::size_t network_workers      = 2;   // Network I/O
-    std::size_t io_write_workers     = 2;   // File writing
+    std::size_t io_write_workers     = 2;   // File writing (download dest)
 
     // Queue sizes (backpressure control)
     std::size_t read_queue_size      = 16;  // Pending read chunks
     std::size_t compress_queue_size  = 32;  // Pending compression
     std::size_t send_queue_size      = 64;  // Pending network sends
+    std::size_t recv_queue_size      = 64;  // Pending network receives
     std::size_t decompress_queue_size = 32; // Pending decompression
     std::size_t write_queue_size     = 16;  // Pending file writes
 };
@@ -176,21 +487,49 @@ Auto-detection considers:
 - Number of CPU cores
 - Available memory
 - Storage type (SSD vs HDD detection)
+- Network interface speed
+
+### Pipeline Direction
+
+#### Upload Pipeline (Client → Server)
+
+```
+[Client]                                    [Server]
+Read → Chunk → Compress → Send ──────────→ Recv → Decompress → Write
+```
+
+Relevant workers:
+- **Client**: io_read_workers, compression_workers (compress), network_workers
+- **Server**: network_workers, compression_workers (decompress), io_write_workers
+
+#### Download Pipeline (Server → Client)
+
+```
+[Server]                                    [Client]
+Read → Chunk → Compress → Send ──────────→ Recv → Decompress → Write
+```
+
+Relevant workers:
+- **Server**: io_read_workers, compression_workers (compress), network_workers
+- **Client**: network_workers, compression_workers (decompress), io_write_workers
 
 ### Stage-by-Stage Tuning
 
-#### I/O Read Stage
+#### I/O Stage
 
 | Workers | Use Case |
 |---------|----------|
 | 1 | Single HDD |
 | 2 | Single SSD (default) |
 | 4 | NVMe SSD or RAID |
+| 8 | High-performance storage array |
 
 ```cpp
 // For NVMe storage
 config.io_read_workers = 4;
+config.io_write_workers = 4;
 config.read_queue_size = 32;
+config.write_queue_size = 32;
 ```
 
 #### Compression Stage
@@ -199,12 +538,14 @@ config.read_queue_size = 32;
 |---------|----------|
 | 2 | Dual-core CPU |
 | 4 | Quad-core CPU (default) |
-| 8+ | High-core-count server |
+| 8 | 8-core CPU |
+| 16+ | High-core-count server |
 
 ```cpp
-// For 16-core server
-config.compression_workers = 12;
-config.compress_queue_size = 64;
+// For 32-core server
+config.compression_workers = 24;
+config.compress_queue_size = 128;
+config.decompress_queue_size = 128;
 ```
 
 #### Network Stage
@@ -214,11 +555,13 @@ config.compress_queue_size = 64;
 | 1 | Single connection |
 | 2 | Standard use (default) |
 | 4 | High-bandwidth network |
+| 8 | 10Gbps+ network |
 
 ```cpp
 // For 10Gbps network
-config.network_workers = 4;
-config.send_queue_size = 128;
+config.network_workers = 8;
+config.send_queue_size = 256;
+config.recv_queue_size = 256;
 ```
 
 ### Memory Calculation
@@ -228,17 +571,25 @@ Memory usage per queue:
 Queue Memory = queue_size × chunk_size
 ```
 
-Total pipeline memory (sender):
+**Upload Memory (Client)**:
 ```
 read_queue_size × chunk_size
 + compress_queue_size × chunk_size
 + send_queue_size × chunk_size
 ```
 
-Example (default configuration, 256KB chunks):
+**Download Memory (Client)**:
 ```
-16 × 256KB + 32 × 256KB + 64 × 256KB
-= 4MB + 8MB + 16MB = 28MB
+recv_queue_size × chunk_size
++ decompress_queue_size × chunk_size
++ write_queue_size × chunk_size
+```
+
+**Example** (default configuration, 256KB chunks):
+```
+Upload:  16 × 256KB + 32 × 256KB + 64 × 256KB = 28MB
+Download: 64 × 256KB + 32 × 256KB + 16 × 256KB = 28MB
+Total: 56MB (bidirectional)
 ```
 
 ---
@@ -283,13 +634,21 @@ bool should_compress = compressed_sample_size < original_sample_size * 0.9;
 ### Per-Transfer Options
 
 ```cpp
-// Override global settings for specific transfer
-transfer_options opts{
+// Override global settings for specific upload
+upload_options opts{
     .compression = compression_mode::enabled,
     .level = compression_level::high_compression
 };
 
-sender->send_file(path, endpoint, opts);
+client->upload_file(local_path, remote_name, opts);
+
+// Override for specific download
+download_options opts{
+    .verify_checksum = true,
+    .overwrite = true
+};
+
+client->download_file(remote_name, local_path, opts);
 ```
 
 ---
@@ -306,30 +665,37 @@ struct tcp_transport_config {
     std::size_t recv_buffer     = 256 * 1024;  // 256KB
     duration    connect_timeout = 10s;
     duration    read_timeout    = 30s;
+    duration    write_timeout   = 30s;
+    duration    keepalive       = 30s;         // TCP keepalive interval
 };
 ```
 
-#### TCP Tuning Examples
+#### TCP Examples
 
 ```cpp
 // High-latency network (WAN)
-tcp_transport_config config{
-    .send_buffer = 1024 * 1024,   // 1MB
-    .recv_buffer = 1024 * 1024,   // 1MB
-    .connect_timeout = 30s,
-    .read_timeout = 60s
-};
+auto client = file_transfer_client::builder()
+    .with_transport_config(tcp_transport_config{
+        .send_buffer = 1024 * 1024,   // 1MB
+        .recv_buffer = 1024 * 1024,   // 1MB
+        .connect_timeout = 30s,
+        .read_timeout = 60s,
+        .write_timeout = 60s
+    })
+    .build();
 ```
 
 ```cpp
 // Low-latency network (LAN)
-tcp_transport_config config{
-    .tcp_nodelay = true,          // Minimize latency
-    .send_buffer = 128 * 1024,    // 128KB
-    .recv_buffer = 128 * 1024,    // 128KB
-    .connect_timeout = 5s,
-    .read_timeout = 15s
-};
+auto client = file_transfer_client::builder()
+    .with_transport_config(tcp_transport_config{
+        .tcp_nodelay = true,          // Minimize latency
+        .send_buffer = 128 * 1024,    // 128KB
+        .recv_buffer = 128 * 1024,    // 128KB
+        .connect_timeout = 5s,
+        .read_timeout = 15s
+    })
+    .build();
 ```
 
 ### QUIC Transport (Phase 2)
@@ -353,6 +719,71 @@ struct quic_transport_config {
 | Mobile network | QUIC |
 | Multiple concurrent transfers | QUIC |
 | Firewall restrictions (UDP blocked) | TCP |
+
+---
+
+## Security Configuration
+
+### TLS Configuration
+
+```cpp
+struct tls_config {
+    std::filesystem::path certificate_path;    // Server certificate
+    std::filesystem::path private_key_path;    // Server private key
+    std::filesystem::path ca_certificate_path; // CA certificate (optional)
+    bool                  verify_peer = true;  // Verify client certificates
+    tls_version           min_version = tls_version::tls_1_3;
+};
+
+// Server with TLS
+auto server = file_transfer_server::builder()
+    .with_storage_directory("/data/files")
+    .with_tls(tls_config{
+        .certificate_path = "/etc/ssl/server.crt",
+        .private_key_path = "/etc/ssl/server.key",
+        .ca_certificate_path = "/etc/ssl/ca.crt",
+        .verify_peer = false  // Don't require client certificates
+    })
+    .build();
+```
+
+### Client Authentication
+
+```cpp
+// Client with certificate authentication
+auto client = file_transfer_client::builder()
+    .with_tls(tls_config{
+        .certificate_path = "/etc/ssl/client.crt",
+        .private_key_path = "/etc/ssl/client.key",
+        .ca_certificate_path = "/etc/ssl/ca.crt"
+    })
+    .build();
+```
+
+### Access Control
+
+```cpp
+// Server-side access control
+server->on_upload_request([&auth_service](const upload_request& req) {
+    // Validate client token
+    if (!auth_service.validate_token(req.auth_token)) {
+        return false;
+    }
+
+    // Check upload permission
+    return auth_service.can_upload(req.client_id, req.filename);
+});
+
+server->on_download_request([&auth_service](const download_request& req) {
+    // Validate client token
+    if (!auth_service.validate_token(req.auth_token)) {
+        return false;
+    }
+
+    // Check download permission
+    return auth_service.can_download(req.client_id, req.filename);
+});
+```
 
 ---
 
@@ -383,6 +814,7 @@ More queue depth increases parallelism.
 
 ```cpp
 config.send_queue_size = 128;  // More in-flight chunks
+config.recv_queue_size = 128;
 ```
 
 ### Memory Optimization
@@ -393,7 +825,10 @@ config.send_queue_size = 128;  // More in-flight chunks
 pipeline_config config{
     .read_queue_size = 4,
     .compress_queue_size = 8,
-    .send_queue_size = 16
+    .send_queue_size = 16,
+    .recv_queue_size = 16,
+    .decompress_queue_size = 8,
+    .write_queue_size = 4
 };
 ```
 
@@ -426,30 +861,50 @@ config.send_queue_size = 16;
 #### High Bandwidth Network
 
 ```cpp
-// 10Gbps network
-pipeline_config config{
-    .network_workers = 4,
-    .send_queue_size = 256
-};
-
-tcp_transport_config tcp_config{
-    .send_buffer = 2 * 1024 * 1024,  // 2MB
-    .recv_buffer = 2 * 1024 * 1024
-};
+// 10Gbps network (server)
+auto server = file_transfer_server::builder()
+    .with_storage_directory("/data/files")
+    .with_pipeline_config(pipeline_config{
+        .network_workers = 8,
+        .send_queue_size = 256,
+        .recv_queue_size = 256
+    })
+    .with_transport_config(tcp_transport_config{
+        .send_buffer = 2 * 1024 * 1024,  // 2MB
+        .recv_buffer = 2 * 1024 * 1024
+    })
+    .build();
 ```
 
 #### High Latency Network
 
 ```cpp
-// 100ms latency WAN
-pipeline_config config{
-    .send_queue_size = 256  // Many in-flight chunks
-};
+// 100ms latency WAN (client)
+auto client = file_transfer_client::builder()
+    .with_pipeline_config(pipeline_config{
+        .send_queue_size = 256,  // Many in-flight chunks
+        .recv_queue_size = 256
+    })
+    .with_transport_config(tcp_transport_config{
+        .send_buffer = 4 * 1024 * 1024,  // 4MB
+        .read_timeout = 60s
+    })
+    .build();
+```
 
-tcp_transport_config tcp_config{
-    .send_buffer = 4 * 1024 * 1024,  // 4MB
-    .read_timeout = 60s
-};
+### Concurrent Transfers
+
+```cpp
+// Server optimized for many concurrent clients
+auto server = file_transfer_server::builder()
+    .with_storage_directory("/data/files")
+    .with_max_connections(500)
+    .with_pipeline_config(pipeline_config{
+        .network_workers = 16,      // Handle many connections
+        .compression_workers = 32,  // Parallel compression
+        .io_write_workers = 8       // Parallel I/O
+    })
+    .build();
 ```
 
 ---
@@ -465,29 +920,55 @@ auto config = pipeline_config::auto_detect();
 ### 2. Measure Before Tuning
 
 ```cpp
-// Get pipeline statistics
-auto stats = sender->get_pipeline_stats();
-auto bottleneck = stats.bottleneck_stage();
+// Server statistics
+auto stats = server->get_statistics();
+log_info("Active connections: {}", stats.active_connections);
+log_info("Upload throughput: {} MB/s", stats.upload_throughput_mbps);
+log_info("Download throughput: {} MB/s", stats.download_throughput_mbps);
 
-// Tune the bottleneck stage
+// Client statistics
+auto stats = client->get_statistics();
+log_info("Upload rate: {} MB/s", stats.current_upload_rate_mbps);
+log_info("Download rate: {} MB/s", stats.current_download_rate_mbps);
 ```
 
-### 3. Monitor Queue Depths
+### 3. Monitor Pipeline Bottlenecks
 
 ```cpp
-auto depths = sender->get_queue_depths();
-if (depths.compress_queue > config.compress_queue_size * 0.9) {
-    // Compression is bottleneck - add workers
+// Get pipeline statistics
+auto pipeline_stats = server->get_pipeline_stats();
+auto bottleneck = pipeline_stats.bottleneck_stage();
+
+log_info("Bottleneck stage: {}", stage_name(bottleneck));
+
+// Tune the bottleneck stage
+if (bottleneck == pipeline_stage::compression) {
+    config.compression_workers *= 2;
 }
 ```
 
-### 4. Test Configuration Changes
+### 4. Monitor Queue Depths
 
 ```cpp
-// Benchmark before and after
+auto depths = server->get_queue_depths();
+if (depths.compress_queue > config.compress_queue_size * 0.9) {
+    log_warning("Compression queue near capacity - consider adding workers");
+}
+```
+
+### 5. Test Configuration Changes
+
+```cpp
+// Benchmark upload
 auto start = std::chrono::steady_clock::now();
-sender->send_file(test_file, endpoint);
+auto result = client->upload_file(test_file, "benchmark.dat");
 auto duration = std::chrono::steady_clock::now() - start;
+
+if (result) {
+    auto file_size = std::filesystem::file_size(test_file);
+    auto throughput = file_size / duration.count();
+    log_info("Upload throughput: {} MB/s", throughput / 1e6);
+}
 ```
 
 ---
@@ -497,13 +978,22 @@ auto duration = std::chrono::steady_clock::now() - start;
 Configurations are validated at build time:
 
 ```cpp
-auto sender = file_sender::builder()
+auto server = file_transfer_server::builder()
+    .with_storage_directory("")  // Error: empty path
+    .build();
+
+if (!server) {
+    // Error code: -790 (config_storage_dir_error)
+    std::cerr << server.error().message() << "\n";
+}
+
+auto client = file_transfer_client::builder()
     .with_chunk_size(32 * 1024)  // Error: below minimum
     .build();
 
-if (!sender) {
+if (!client) {
     // Error code: -791 (config_chunk_size_error)
-    std::cerr << sender.error().message() << "\n";
+    std::cerr << client.error().message() << "\n";
 }
 ```
 
@@ -511,11 +1001,18 @@ if (!sender) {
 
 | Parameter | Constraint |
 |-----------|------------|
+| storage_directory | Non-empty, writable |
+| max_connections | >= 1 |
+| max_file_size | >= 1KB |
 | chunk_size | 64KB <= size <= 1MB |
 | *_workers | >= 1 |
 | *_queue_size | >= 1 |
 | bandwidth_limit | >= 0 (0 = unlimited) |
+| reconnect max_attempts | >= 0 (0 = infinite) |
+| initial_delay | > 0 |
+| multiplier | > 1.0 |
 
 ---
 
+*Version: 2.0.0*
 *Last updated: 2025-12-11*

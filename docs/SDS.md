@@ -6,11 +6,11 @@
 |------|-------------|
 | **Project Name** | file_trans_system |
 | **Document Type** | Software Design Specification (SDS) |
-| **Version** | 1.0.0 |
-| **Status** | Draft |
+| **Version** | 2.0.0 |
+| **Status** | Approved |
 | **Created** | 2025-12-11 |
 | **Author** | kcenon@naver.com |
-| **Related Documents** | SRS.md v1.1.0, PRD.md v1.0.0 |
+| **Related Documents** | SRS.md v2.0.0, PRD.md v2.0.0 |
 
 ---
 
@@ -29,7 +29,9 @@ This document is intended for:
 ### 1.2 Scope
 
 This document covers:
-- System architecture and component design
+- Client-Server system architecture and component design
+- Server-side storage management and client handling
+- Client-side upload/download operations
 - Data structures and data flow
 - Interface specifications
 - Algorithm descriptions
@@ -38,25 +40,37 @@ This document covers:
 
 ### 1.3 Design Overview
 
-The file_trans_system is designed as a modular, layered architecture:
+The file_trans_system uses a **Client-Server Architecture**:
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                          API Layer                                       │
-│   file_sender  │  file_receiver  │  transfer_manager                    │
-├─────────────────────────────────────────────────────────────────────────┤
-│                        Core Layer                                        │
-│   sender_pipeline  │  receiver_pipeline  │  progress_tracker            │
-├─────────────────────────────────────────────────────────────────────────┤
-│                       Service Layer                                      │
-│   chunk_manager  │  compression_engine  │  resume_handler               │
-├─────────────────────────────────────────────────────────────────────────┤
-│                       Transport Layer                                    │
-│   transport_interface  │  tcp_transport  │  quic_transport (Phase 2)    │
-├─────────────────────────────────────────────────────────────────────────┤
-│                      Infrastructure Layer                                │
-│   common_system  │  thread_system  │  network_system  │  container_system│
-└─────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                               Server Layer                                    │
+│   ┌──────────────────────────────────────────────────────────────────────┐  │
+│   │                      file_transfer_server                             │  │
+│   │  ┌───────────────┐ ┌──────────────────┐ ┌─────────────────────────┐  │  │
+│   │  │ Storage       │ │ Connection       │ │ Server Pipeline         │  │  │
+│   │  │ Manager       │ │ Manager          │ │ (upload/download)       │  │  │
+│   │  └───────────────┘ └──────────────────┘ └─────────────────────────┘  │  │
+│   └──────────────────────────────────────────────────────────────────────┘  │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                              Client Layer                                    │
+│   ┌──────────────────────────────────────────────────────────────────────┐  │
+│   │                      file_transfer_client                             │  │
+│   │  ┌───────────────┐ ┌──────────────────┐ ┌─────────────────────────┐  │  │
+│   │  │ Connection    │ │ Upload/Download  │ │ Client Pipeline         │  │  │
+│   │  │ Handler       │ │ Manager          │ │ (send/receive)          │  │  │
+│   │  └───────────────┘ └──────────────────┘ └─────────────────────────┘  │  │
+│   └──────────────────────────────────────────────────────────────────────┘  │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                             Service Layer                                    │
+│   chunk_manager  │  compression_engine  │  resume_handler  │  checksum      │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                            Transport Layer                                   │
+│   transport_interface  │  tcp_transport  │  quic_transport (Phase 2)        │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                          Infrastructure Layer                                │
+│   common_system  │  thread_system  │  network_system  │  container_system   │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -65,10 +79,11 @@ The file_trans_system is designed as a modular, layered architecture:
 
 ### 2.1 Architecture Style
 
-The system employs a **Pipeline Architecture** combined with **Layered Architecture**:
+The system employs a **Client-Server Architecture** combined with **Pipeline Architecture**:
 
 | Style | Application | Rationale |
 |-------|-------------|-----------|
+| **Client-Server** | System topology | Central storage, multiple clients |
 | **Pipeline** | Data processing (read→compress→send) | Maximizes throughput via parallel stages |
 | **Layered** | System organization | Separation of concerns, testability |
 | **Strategy** | Transport, compression | Pluggable implementations |
@@ -76,35 +91,52 @@ The system employs a **Pipeline Architecture** combined with **Layered Architect
 
 ### 2.2 Component Architecture
 
-#### 2.2.1 Component Diagram
+#### 2.2.1 High-Level Component Diagram
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │                              file_trans_system                                │
 │                                                                               │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────────────┐  │
-│  │   file_sender   │  │  file_receiver  │  │     transfer_manager        │  │
-│  │                 │  │                 │  │                             │  │
-│  │  +send_file()   │  │  +start()       │  │  +get_status()              │  │
-│  │  +send_files()  │  │  +stop()        │  │  +list_transfers()          │  │
-│  │  +cancel()      │  │  +on_request()  │  │  +get_statistics()          │  │
-│  │  +pause()       │  │  +on_progress() │  │  +set_bandwidth_limit()     │  │
-│  │  +resume()      │  │  +on_complete() │  │  +set_compression()         │  │
-│  └────────┬────────┘  └────────┬────────┘  └─────────────┬───────────────┘  │
-│           │                    │                          │                  │
-│           └────────────────────┼──────────────────────────┘                  │
-│                                ▼                                             │
-│  ┌──────────────────────────────────────────────────────────────────────┐   │
-│  │                          Pipeline Layer                               │   │
-│  │  ┌──────────────────────┐    ┌──────────────────────┐                │   │
-│  │  │   sender_pipeline    │    │  receiver_pipeline   │                │   │
-│  │  │                      │    │                      │                │   │
-│  │  │ read→chunk→compress  │    │ recv→decompress      │                │   │
-│  │  │ →send                │    │ →assemble→write      │                │   │
-│  │  └──────────┬───────────┘    └──────────┬───────────┘                │   │
-│  │             │                           │                             │   │
-│  └─────────────┼───────────────────────────┼─────────────────────────────┘   │
-│                ▼                           ▼                                 │
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │                       file_transfer_server                              │  │
+│  │                                                                         │  │
+│  │  +start()              +stop()              +on_upload_request()       │  │
+│  │  +on_download_request() +on_client_connected() +get_storage_stats()    │  │
+│  │                                                                         │  │
+│  │  ┌─────────────┐ ┌─────────────────┐ ┌─────────────────────────────┐   │  │
+│  │  │  Storage    │ │   Connection    │ │      Request Handler        │   │  │
+│  │  │  Manager    │ │   Manager       │ │ (upload/download/list)      │   │  │
+│  │  └──────┬──────┘ └────────┬────────┘ └──────────────┬──────────────┘   │  │
+│  │         │                 │                          │                  │  │
+│  │         └─────────────────┼──────────────────────────┘                  │  │
+│  │                           ▼                                             │  │
+│  │  ┌──────────────────────────────────────────────────────────────────┐  │  │
+│  │  │                    Server Pipeline                                │  │  │
+│  │  │  [Upload]  recv→decompress→verify→write                          │  │  │
+│  │  │  [Download] read→compress→send                                    │  │  │
+│  │  └──────────────────────────────────────────────────────────────────┘  │  │
+│  └────────────────────────────────────────────────────────────────────────┘  │
+│                                                                               │
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │                       file_transfer_client                              │  │
+│  │                                                                         │  │
+│  │  +connect()          +disconnect()        +upload_file()               │  │
+│  │  +download_file()    +list_files()        +on_progress()               │  │
+│  │                                                                         │  │
+│  │  ┌─────────────┐ ┌─────────────────┐ ┌─────────────────────────────┐   │  │
+│  │  │ Connection  │ │ Auto-Reconnect  │ │    Transfer Handler         │   │  │
+│  │  │ Manager     │ │ Handler         │ │ (upload/download)           │   │  │
+│  │  └──────┬──────┘ └────────┬────────┘ └──────────────┬──────────────┘   │  │
+│  │         │                 │                          │                  │  │
+│  │         └─────────────────┼──────────────────────────┘                  │  │
+│  │                           ▼                                             │  │
+│  │  ┌──────────────────────────────────────────────────────────────────┐  │  │
+│  │  │                    Client Pipeline                                │  │  │
+│  │  │  [Upload]   read→compress→send                                    │  │  │
+│  │  │  [Download] recv→decompress→write                                 │  │  │
+│  │  └──────────────────────────────────────────────────────────────────┘  │  │
+│  └────────────────────────────────────────────────────────────────────────┘  │
+│                                                                               │
 │  ┌──────────────────────────────────────────────────────────────────────┐   │
 │  │                         Service Layer                                 │   │
 │  │  ┌─────────────┐ ┌────────────────────┐ ┌──────────────────────────┐ │   │
@@ -131,157 +163,189 @@ The system employs a **Pipeline Architecture** combined with **Layered Architect
 
 | Pattern | Usage | SRS Trace |
 |---------|-------|-----------|
-| **Builder** | file_sender::builder, file_receiver::builder | API usability |
+| **Builder** | file_transfer_server::builder, file_transfer_client::builder | API usability |
 | **Strategy** | transport_interface implementations | SRS-TRANS-001 |
 | **Observer** | Progress callbacks, completion events | SRS-PROGRESS-001 |
-| **Pipeline** | sender_pipeline, receiver_pipeline | SRS-PIPE-001, SRS-PIPE-002 |
+| **Pipeline** | upload_pipeline, download_pipeline | SRS-PIPE-001, SRS-PIPE-002 |
 | **Factory** | create_transport() | SRS-TRANS-001 |
-| **State** | Transfer state machine | SRS-PROGRESS-002 |
+| **State** | Transfer state machine, connection state | SRS-PROGRESS-002 |
 | **Command** | Pipeline jobs | SRS-PIPE-001 |
 
 ---
 
 ## 3. Component Design
 
-### 3.1 file_sender Component
+### 3.1 file_transfer_server Component
 
 #### 3.1.1 Responsibility
-Provides the public API for sending files to remote endpoints.
+Manages file storage, accepts client connections, and handles upload/download/list requests.
 
 #### 3.1.2 SRS Traceability
 | SRS Requirement | Design Element |
 |-----------------|----------------|
-| SRS-CORE-001 | send_file() method |
-| SRS-CORE-003 | send_files() method |
-| SRS-PROGRESS-001 | on_progress() callback |
+| SRS-SERVER-001 | Server initialization and storage setup |
+| SRS-SERVER-002 | start() method |
+| SRS-SERVER-003 | stop() method |
+| SRS-SERVER-004 | on_upload_request() callback |
+| SRS-SERVER-005 | on_download_request() callback |
+| SRS-SERVER-006 | list_files handling |
+| SRS-STORAGE-001 | storage_manager component |
+| SRS-STORAGE-002 | filename_validator component |
 
 #### 3.1.3 Class Design
 
 ```cpp
 namespace kcenon::file_transfer {
 
-class file_sender {
+class file_transfer_server {
 public:
     class builder {
     public:
+        builder& with_storage_directory(const std::filesystem::path& dir);
+        builder& with_max_connections(std::size_t max_count);
+        builder& with_max_file_size(uint64_t max_bytes);
+        builder& with_storage_quota(uint64_t max_bytes);
         builder& with_pipeline_config(const pipeline_config& config);
-        builder& with_compression(compression_mode mode);
-        builder& with_compression_level(compression_level level);
-        builder& with_chunk_size(std::size_t size);
-        builder& with_bandwidth_limit(std::size_t bytes_per_second);
         builder& with_transport(transport_type type);
-        [[nodiscard]] auto build() -> Result<file_sender>;
+        [[nodiscard]] auto build() -> Result<file_transfer_server>;
 
     private:
-        pipeline_config         pipeline_config_;
-        compression_mode        compression_mode_   = compression_mode::adaptive;
-        compression_level       compression_level_  = compression_level::fast;
-        std::size_t            chunk_size_         = 256 * 1024;
-        std::optional<size_t>  bandwidth_limit_;
-        transport_type         transport_type_     = transport_type::tcp;
+        std::filesystem::path       storage_dir_;
+        std::size_t                 max_connections_    = 100;
+        uint64_t                    max_file_size_      = 10ULL * 1024 * 1024 * 1024;
+        uint64_t                    storage_quota_      = 100ULL * 1024 * 1024 * 1024;
+        pipeline_config             pipeline_config_;
+        transport_type              transport_type_     = transport_type::tcp;
     };
 
-    // Public interface
-    [[nodiscard]] auto send_file(
-        const std::filesystem::path& file_path,
-        const endpoint& destination,
-        const transfer_options& options = {}
-    ) -> Result<transfer_handle>;
+    // Lifecycle
+    [[nodiscard]] auto start(const endpoint& listen_addr) -> Result<void>;
+    [[nodiscard]] auto stop() -> Result<void>;
 
-    [[nodiscard]] auto send_files(
-        std::span<const std::filesystem::path> files,
-        const endpoint& destination,
-        const transfer_options& options = {}
-    ) -> Result<batch_transfer_handle>;
+    // Request callbacks
+    void on_upload_request(std::function<bool(const upload_request&)> callback);
+    void on_download_request(std::function<bool(const download_request&)> callback);
 
-    [[nodiscard]] auto cancel(const transfer_id& id) -> Result<void>;
-    [[nodiscard]] auto pause(const transfer_id& id) -> Result<void>;
-    [[nodiscard]] auto resume(const transfer_id& id) -> Result<void>;
+    // Event callbacks
+    void on_client_connected(std::function<void(const client_info&)> callback);
+    void on_client_disconnected(std::function<void(const client_info&)> callback);
+    void on_transfer_complete(std::function<void(const transfer_result&)> callback);
 
+    // Progress monitoring
     void on_progress(std::function<void(const transfer_progress&)> callback);
 
+    // Statistics
+    [[nodiscard]] auto get_statistics() -> server_statistics;
+    [[nodiscard]] auto get_storage_stats() -> storage_stats;
+    [[nodiscard]] auto list_active_transfers() -> std::vector<transfer_info>;
+
 private:
-    // Internal components
-    std::unique_ptr<sender_pipeline>        pipeline_;
-    std::unique_ptr<transport_interface>    transport_;
-    std::unique_ptr<progress_tracker>       progress_tracker_;
-    std::unique_ptr<resume_handler>         resume_handler_;
+    // State
+    enum class server_state { stopped, starting, running, stopping };
+    std::atomic<server_state>           state_{server_state::stopped};
+
+    // Components
+    std::unique_ptr<storage_manager>    storage_manager_;
+    std::unique_ptr<connection_manager> connection_manager_;
+    std::unique_ptr<server_pipeline>    pipeline_;
+    std::unique_ptr<transport_interface> transport_;
+    std::unique_ptr<resume_handler>     resume_handler_;
 
     // Configuration
-    file_sender_config                      config_;
+    server_config                       config_;
 
-    // Active transfers
-    std::unordered_map<transfer_id, transfer_context> active_transfers_;
-    std::mutex                              transfers_mutex_;
+    // Active clients and transfers
+    std::unordered_map<client_id, client_context>     clients_;
+    std::unordered_map<transfer_id, transfer_context> transfers_;
+    std::shared_mutex                   clients_mutex_;
+    std::shared_mutex                   transfers_mutex_;
 
     // Callbacks
+    std::function<bool(const upload_request&)>    upload_callback_;
+    std::function<bool(const download_request&)>  download_callback_;
+    std::function<void(const client_info&)>       connect_callback_;
+    std::function<void(const client_info&)>       disconnect_callback_;
+    std::function<void(const transfer_result&)>   complete_callback_;
     std::function<void(const transfer_progress&)> progress_callback_;
+
+    // Internal methods
+    void accept_connections();
+    void handle_client(client_context& ctx);
+    void process_upload_request(const upload_request& req, client_context& ctx);
+    void process_download_request(const download_request& req, client_context& ctx);
+    void process_list_request(const list_request& req, client_context& ctx);
 };
 
 } // namespace kcenon::file_transfer
 ```
 
-#### 3.1.4 Sequence Diagram: send_file()
+#### 3.1.4 Sequence Diagram: Upload Request Processing
 
 ```
-┌──────────┐ ┌──────────────┐ ┌─────────────┐ ┌────────────┐ ┌─────────────┐ ┌───────────┐
-│  Client  │ │ file_sender  │ │chunk_manager│ │compression │ │  pipeline   │ │ transport │
-└────┬─────┘ └──────┬───────┘ └──────┬──────┘ └─────┬──────┘ └──────┬──────┘ └─────┬─────┘
-     │              │                │              │               │              │
-     │ send_file()  │                │              │               │              │
-     │─────────────>│                │              │               │              │
-     │              │                │              │               │              │
-     │              │ validate_file()│              │               │              │
-     │              │───────────────>│              │               │              │
-     │              │                │              │               │              │
-     │              │ calc_sha256()  │              │               │              │
-     │              │───────────────>│              │               │              │
-     │              │                │              │               │              │
-     │              │       connect()│              │               │              │
-     │              │────────────────────────────────────────────────────────────>│
-     │              │                │              │               │              │
-     │              │send_transfer_request()        │               │              │
-     │              │────────────────────────────────────────────────────────────>│
-     │              │                │              │               │              │
-     │              │      submit_file_to_pipeline()│               │              │
-     │              │──────────────────────────────────────────────>│              │
-     │              │                │              │               │              │
-     │              │                │   [Pipeline Processing]     │              │
-     │              │                │              │               │              │
-     │              │                │  read_chunk()│               │              │
-     │              │                │<─────────────┼───────────────│              │
-     │              │                │              │               │              │
-     │              │                │   compress() │               │              │
-     │              │                │─────────────>│               │              │
-     │              │                │              │               │              │
-     │              │                │              │     send()    │              │
-     │              │                │              │───────────────┼─────────────>│
-     │              │                │              │               │              │
-     │  progress()  │                │              │               │              │
-     │<─────────────│                │              │               │              │
-     │              │                │              │               │              │
-     │              │                │  [Repeat for all chunks]    │              │
-     │              │                │              │               │              │
-     │              │ verify_sha256()│              │               │              │
-     │              │────────────────────────────────────────────────────────────>│
-     │              │                │              │               │              │
-     │   Result     │                │              │               │              │
-     │<─────────────│                │              │               │              │
-     │              │                │              │               │              │
+┌──────────┐ ┌──────────────┐ ┌──────────────┐ ┌────────────┐ ┌─────────────┐
+│  Client  │ │    Server    │ │   Storage    │ │  Pipeline  │ │  Callbacks  │
+└────┬─────┘ └──────┬───────┘ └──────┬───────┘ └─────┬──────┘ └──────┬──────┘
+     │              │                │               │               │
+     │UPLOAD_REQUEST│                │               │               │
+     │─────────────>│                │               │               │
+     │              │                │               │               │
+     │              │ validate_filename()            │               │
+     │              │───────────────>│               │               │
+     │              │                │               │               │
+     │              │ check_quota()  │               │               │
+     │              │───────────────>│               │               │
+     │              │                │               │               │
+     │              │          on_upload_request()   │               │
+     │              │────────────────────────────────────────────────>│
+     │              │                │               │               │
+     │              │                │               │   accept/reject
+     │              │<───────────────────────────────────────────────│
+     │              │                │               │               │
+     │ UPLOAD_ACCEPT│                │               │               │
+     │<─────────────│                │               │               │
+     │              │                │               │               │
+     │  CHUNK_DATA  │                │               │               │
+     │─────────────>│                │               │               │
+     │              │    submit_chunk()              │               │
+     │              │──────────────────────────────>│               │
+     │              │                │               │               │
+     │              │                │  decompress   │               │
+     │              │                │<──────────────│               │
+     │              │                │               │               │
+     │              │                │  write_chunk  │               │
+     │              │                │<──────────────│               │
+     │              │                │               │               │
+     │   CHUNK_ACK  │                │               │               │
+     │<─────────────│                │               │               │
+     │              │                │               │               │
+     │     ...      │    [Repeat for all chunks]    │               │
+     │              │                │               │               │
+     │TRANSFER_COMPLETE              │               │               │
+     │─────────────>│                │               │               │
+     │              │ finalize_file()│               │               │
+     │              │───────────────>│               │               │
+     │              │                │               │               │
+     │TRANSFER_VERIFY                │               │               │
+     │<─────────────│                │               │               │
 ```
 
 ---
 
-### 3.2 file_receiver Component
+### 3.2 file_transfer_client Component
 
 #### 3.2.1 Responsibility
-Listens for incoming file transfers and writes received data to disk.
+Connects to server, uploads/downloads files, handles auto-reconnection.
 
 #### 3.2.2 SRS Traceability
 | SRS Requirement | Design Element |
 |-----------------|----------------|
-| SRS-CORE-002 | Receive processing logic |
-| SRS-CHUNK-002 | chunk_assembler integration |
+| SRS-CLIENT-001 | connect() method |
+| SRS-CLIENT-002 | auto_reconnect_handler |
+| SRS-CLIENT-003 | upload_file() method |
+| SRS-CLIENT-004 | download_file() method |
+| SRS-CLIENT-005 | list_files() method |
+| SRS-CLIENT-006 | upload_files() method |
+| SRS-CLIENT-007 | download_files() method |
 | SRS-PROGRESS-001 | on_progress() callback |
 
 #### 3.2.3 Class Design
@@ -289,63 +353,287 @@ Listens for incoming file transfers and writes received data to disk.
 ```cpp
 namespace kcenon::file_transfer {
 
-class file_receiver {
+// Reconnection policy
+struct reconnect_policy {
+    std::size_t max_attempts        = 5;
+    duration    initial_delay       = std::chrono::seconds(1);
+    duration    max_delay           = std::chrono::seconds(30);
+    double      backoff_multiplier  = 2.0;
+};
+
+// Connection state
+enum class connection_state {
+    disconnected,
+    connecting,
+    connected,
+    reconnecting
+};
+
+class file_transfer_client {
 public:
     class builder {
     public:
+        builder& with_compression(compression_mode mode);
+        builder& with_compression_level(compression_level level);
+        builder& with_chunk_size(std::size_t size);
+        builder& with_auto_reconnect(bool enable, reconnect_policy policy = {});
+        builder& with_upload_bandwidth_limit(std::size_t bytes_per_second);
+        builder& with_download_bandwidth_limit(std::size_t bytes_per_second);
         builder& with_pipeline_config(const pipeline_config& config);
-        builder& with_output_directory(const std::filesystem::path& dir);
-        builder& with_bandwidth_limit(std::size_t bytes_per_second);
         builder& with_transport(transport_type type);
-        [[nodiscard]] auto build() -> Result<file_receiver>;
+        [[nodiscard]] auto build() -> Result<file_transfer_client>;
 
     private:
+        compression_mode            compression_mode_   = compression_mode::adaptive;
+        compression_level           compression_level_  = compression_level::fast;
+        std::size_t                 chunk_size_         = 256 * 1024;
+        bool                        auto_reconnect_     = true;
+        reconnect_policy            reconnect_policy_;
+        std::optional<std::size_t>  upload_bandwidth_limit_;
+        std::optional<std::size_t>  download_bandwidth_limit_;
         pipeline_config             pipeline_config_;
-        std::filesystem::path       output_dir_;
-        std::optional<std::size_t>  bandwidth_limit_;
-        transport_type              transport_type_ = transport_type::tcp;
+        transport_type              transport_type_     = transport_type::tcp;
     };
 
-    // Lifecycle
-    [[nodiscard]] auto start(const endpoint& listen_addr) -> Result<void>;
-    [[nodiscard]] auto stop() -> Result<void>;
+    // Connection
+    [[nodiscard]] auto connect(const endpoint& server_addr) -> Result<void>;
+    [[nodiscard]] auto disconnect() -> Result<void>;
+    [[nodiscard]] auto is_connected() const -> bool;
 
-    // Configuration
-    void set_output_directory(const std::filesystem::path& dir);
+    // Single file operations
+    [[nodiscard]] auto upload_file(
+        const std::filesystem::path& local_path,
+        const std::string& remote_name,
+        const upload_options& options = {}
+    ) -> Result<transfer_handle>;
+
+    [[nodiscard]] auto download_file(
+        const std::string& remote_name,
+        const std::filesystem::path& local_path,
+        const download_options& options = {}
+    ) -> Result<transfer_handle>;
+
+    // Batch operations
+    [[nodiscard]] auto upload_files(
+        std::span<const upload_entry> files,
+        const upload_options& options = {}
+    ) -> Result<batch_transfer_handle>;
+
+    [[nodiscard]] auto download_files(
+        std::span<const download_entry> files,
+        const download_options& options = {}
+    ) -> Result<batch_transfer_handle>;
+
+    // File listing
+    [[nodiscard]] auto list_files(
+        const list_options& options = {}
+    ) -> Result<std::vector<file_info>>;
+
+    // Transfer control
+    [[nodiscard]] auto cancel(const transfer_id& id) -> Result<void>;
+    [[nodiscard]] auto pause(const transfer_id& id) -> Result<void>;
+    [[nodiscard]] auto resume(const transfer_id& id) -> Result<void>;
 
     // Callbacks
-    void on_transfer_request(std::function<bool(const transfer_request&)> callback);
     void on_progress(std::function<void(const transfer_progress&)> callback);
     void on_complete(std::function<void(const transfer_result&)> callback);
+    void on_connection_state_changed(std::function<void(connection_state)> callback);
+
+    // Statistics
+    [[nodiscard]] auto get_statistics() -> client_statistics;
+    [[nodiscard]] auto get_compression_stats() -> compression_statistics;
 
 private:
     // State
-    enum class receiver_state { stopped, starting, running, stopping };
-    std::atomic<receiver_state>             state_{receiver_state::stopped};
+    std::atomic<connection_state>       connection_state_{connection_state::disconnected};
 
     // Components
-    std::unique_ptr<receiver_pipeline>      pipeline_;
-    std::unique_ptr<transport_interface>    transport_;
-    std::unique_ptr<progress_tracker>       progress_tracker_;
-    std::unique_ptr<resume_handler>         resume_handler_;
+    std::unique_ptr<client_pipeline>    pipeline_;
+    std::unique_ptr<transport_interface> transport_;
+    std::unique_ptr<auto_reconnect_handler> reconnect_handler_;
+    std::unique_ptr<resume_handler>     resume_handler_;
+    std::unique_ptr<chunk_compressor>   compressor_;
 
     // Configuration
-    file_receiver_config                    config_;
-    std::filesystem::path                   output_dir_;
+    client_config                       config_;
+    endpoint                            server_endpoint_;
 
     // Active transfers
-    std::unordered_map<transfer_id, receive_context> active_transfers_;
-    std::shared_mutex                       transfers_mutex_;
+    std::unordered_map<transfer_id, transfer_context> active_transfers_;
+    std::mutex                          transfers_mutex_;
 
     // Callbacks
-    std::function<bool(const transfer_request&)>    request_callback_;
-    std::function<void(const transfer_progress&)>   progress_callback_;
-    std::function<void(const transfer_result&)>     complete_callback_;
+    std::function<void(const transfer_progress&)> progress_callback_;
+    std::function<void(const transfer_result&)>   complete_callback_;
+    std::function<void(connection_state)>         state_callback_;
 
     // Internal methods
-    void handle_incoming_connection(connection_ptr conn);
-    void process_transfer_request(const transfer_request& req, connection_ptr conn);
-    void handle_chunk(const chunk& c, receive_context& ctx);
+    void handle_connection_loss();
+    void attempt_reconnect();
+    void send_upload_request(const upload_request& req);
+    void send_download_request(const download_request& req);
+    void process_download_chunk(const chunk& c, transfer_context& ctx);
+};
+
+} // namespace kcenon::file_transfer
+```
+
+#### 3.2.4 Sequence Diagram: download_file()
+
+```
+┌──────────┐ ┌──────────────┐ ┌─────────────┐ ┌────────────┐ ┌─────────────┐
+│   App    │ │    Client    │ │   Server    │ │  Pipeline  │ │    Disk     │
+└────┬─────┘ └──────┬───────┘ └──────┬──────┘ └─────┬──────┘ └──────┬──────┘
+     │              │                │              │               │
+     │download_file()               │              │               │
+     │─────────────>│                │              │               │
+     │              │                │              │               │
+     │              │DOWNLOAD_REQUEST│              │               │
+     │              │───────────────>│              │               │
+     │              │                │              │               │
+     │              │                │ check_file_exists()          │
+     │              │                │──────────────────────────────│
+     │              │                │              │               │
+     │              │DOWNLOAD_ACCEPT │              │               │
+     │              │(with metadata) │              │               │
+     │              │<───────────────│              │               │
+     │              │                │              │               │
+     │              │  CHUNK_DATA    │              │               │
+     │              │<───────────────│              │               │
+     │              │                │              │               │
+     │              │    submit_chunk()             │               │
+     │              │──────────────────────────────>│               │
+     │              │                │              │               │
+     │              │                │   decompress │               │
+     │              │                │<─────────────│               │
+     │              │                │              │               │
+     │              │                │    write()   │               │
+     │              │                │──────────────────────────────>│
+     │              │                │              │               │
+     │  progress()  │                │              │               │
+     │<─────────────│                │              │               │
+     │              │                │              │               │
+     │              │     ...        │  [Repeat]    │               │
+     │              │                │              │               │
+     │              │TRANSFER_COMPLETE              │               │
+     │              │<───────────────│              │               │
+     │              │                │              │               │
+     │              │              verify_sha256()  │               │
+     │              │─────────────────────────────────────────────>│
+     │              │                │              │               │
+     │              │TRANSFER_VERIFY │              │               │
+     │              │───────────────>│              │               │
+     │              │                │              │               │
+     │   Result     │                │              │               │
+     │<─────────────│                │              │               │
+```
+
+---
+
+### 3.3 storage_manager Component
+
+#### 3.3.1 Responsibility
+Manages server-side file storage, quota enforcement, and file validation.
+
+#### 3.3.2 SRS Traceability
+| SRS Requirement | Design Element |
+|-----------------|----------------|
+| SRS-STORAGE-001 | Quota management methods |
+| SRS-STORAGE-002 | validate_filename() method |
+
+#### 3.3.3 Class Design
+
+```cpp
+namespace kcenon::file_transfer {
+
+// Storage configuration
+struct storage_config {
+    std::filesystem::path   storage_dir;
+    uint64_t                max_total_size  = 100ULL * 1024 * 1024 * 1024;  // 100GB
+    uint64_t                max_file_size   = 10ULL * 1024 * 1024 * 1024;   // 10GB
+    uint64_t                reserved_space  = 1ULL * 1024 * 1024 * 1024;    // 1GB
+};
+
+// Storage statistics
+struct storage_stats {
+    uint64_t    total_capacity;
+    uint64_t    used_size;
+    uint64_t    available_size;
+    std::size_t file_count;
+
+    [[nodiscard]] auto usage_percent() const -> double;
+};
+
+class storage_manager {
+public:
+    explicit storage_manager(const storage_config& config);
+
+    // File operations
+    [[nodiscard]] auto create_file(
+        const std::string& filename,
+        uint64_t size
+    ) -> Result<std::filesystem::path>;
+
+    [[nodiscard]] auto delete_file(const std::string& filename) -> Result<void>;
+
+    [[nodiscard]] auto get_file_path(const std::string& filename)
+        -> Result<std::filesystem::path>;
+
+    [[nodiscard]] auto file_exists(const std::string& filename) const -> bool;
+
+    // File listing
+    [[nodiscard]] auto list_files(
+        const std::string& pattern = "*",
+        std::size_t offset = 0,
+        std::size_t limit = 1000
+    ) -> Result<std::vector<file_info>>;
+
+    // Validation
+    [[nodiscard]] auto validate_filename(const std::string& filename) -> Result<void>;
+    [[nodiscard]] auto can_store_file(uint64_t size) -> Result<void>;
+
+    // Statistics
+    [[nodiscard]] auto get_stats() const -> storage_stats;
+
+    // Temp file management
+    [[nodiscard]] auto create_temp_file(const transfer_id& id)
+        -> Result<std::filesystem::path>;
+    [[nodiscard]] auto finalize_temp_file(
+        const transfer_id& id,
+        const std::string& final_name
+    ) -> Result<std::filesystem::path>;
+    void cleanup_temp_file(const transfer_id& id);
+
+private:
+    storage_config              config_;
+    std::filesystem::path       temp_dir_;
+
+    mutable std::shared_mutex   mutex_;
+    uint64_t                    current_usage_{0};
+    std::size_t                 file_count_{0};
+
+    // Path traversal prevention
+    [[nodiscard]] auto safe_path(const std::string& filename) const
+        -> Result<std::filesystem::path>;
+
+    // Quota tracking
+    void update_usage(int64_t delta);
+    void recalculate_usage();
+};
+
+// Filename validator utility
+class filename_validator {
+public:
+    [[nodiscard]] static auto validate(const std::string& filename) -> Result<void>;
+
+private:
+    // Invalid patterns
+    static constexpr std::array<std::string_view, 4> invalid_patterns = {
+        "..", "/", "\\", "\0"
+    };
+
+    // Invalid characters
+    static constexpr std::string_view invalid_chars = "<>:\"|?*";
 };
 
 } // namespace kcenon::file_transfer
@@ -353,12 +641,12 @@ private:
 
 ---
 
-### 3.3 chunk_manager Component
+### 3.4 chunk_manager Component
 
-#### 3.3.1 Responsibility
+#### 3.4.1 Responsibility
 Splits files into chunks for sending and reassembles chunks into files on receiving.
 
-#### 3.3.2 SRS Traceability
+#### 3.4.2 SRS Traceability
 | SRS Requirement | Design Element |
 |-----------------|----------------|
 | SRS-CHUNK-001 | chunk_splitter class |
@@ -366,7 +654,7 @@ Splits files into chunks for sending and reassembles chunks into files on receiv
 | SRS-CHUNK-003 | CRC32 checksum calculation |
 | SRS-CHUNK-004 | SHA-256 file hash calculation |
 
-#### 3.3.3 Class Design
+#### 3.4.3 Class Design
 
 ```cpp
 namespace kcenon::file_transfer {
@@ -479,16 +767,6 @@ public:
         const std::filesystem::path& path,
         const std::string& expected
     ) -> bool;
-
-    // Streaming SHA-256 for large files
-    class sha256_stream {
-    public:
-        void update(std::span<const std::byte> data);
-        [[nodiscard]] auto finalize() -> std::string;
-
-    private:
-        // Implementation details (e.g., OpenSSL context)
-    };
 };
 
 } // namespace kcenon::file_transfer
@@ -496,12 +774,12 @@ public:
 
 ---
 
-### 3.4 compression_engine Component
+### 3.5 compression_engine Component
 
-#### 3.4.1 Responsibility
+#### 3.5.1 Responsibility
 Provides LZ4 compression and decompression with adaptive detection.
 
-#### 3.4.2 SRS Traceability
+#### 3.5.2 SRS Traceability
 | SRS Requirement | Design Element |
 |-----------------|----------------|
 | SRS-COMP-001 | lz4_engine::compress() |
@@ -510,7 +788,7 @@ Provides LZ4 compression and decompression with adaptive detection.
 | SRS-COMP-004 | compression_mode enum |
 | SRS-COMP-005 | compression_statistics struct |
 
-#### 3.4.3 Class Design
+#### 3.5.3 Class Design
 
 ```cpp
 namespace kcenon::file_transfer {
@@ -531,27 +809,23 @@ enum class compression_level {
 // LZ4 compression engine
 class lz4_engine {
 public:
-    // Standard LZ4 compression
     [[nodiscard]] static auto compress(
         std::span<const std::byte> input,
         std::span<std::byte> output
     ) -> Result<std::size_t>;
 
-    // LZ4-HC for higher compression ratio
     [[nodiscard]] static auto compress_hc(
         std::span<const std::byte> input,
         std::span<std::byte> output,
-        int level = 9  // 1-12
+        int level = 9
     ) -> Result<std::size_t>;
 
-    // Decompression (works for both modes)
     [[nodiscard]] static auto decompress(
         std::span<const std::byte> compressed,
         std::span<std::byte> output,
         std::size_t original_size
     ) -> Result<std::size_t>;
 
-    // Calculate maximum compressed size for buffer allocation
     [[nodiscard]] static auto max_compressed_size(std::size_t input_size)
         -> std::size_t;
 };
@@ -559,55 +833,20 @@ public:
 // Adaptive compression detection
 class adaptive_compression {
 public:
-    // Quick compressibility check using sample
     [[nodiscard]] static auto is_compressible(
         std::span<const std::byte> data,
-        double threshold = 0.9  // Compress if < 90% of original
+        double threshold = 0.9
     ) -> bool;
 
-    // Check by file extension (heuristic)
     [[nodiscard]] static auto is_likely_compressible(
         const std::filesystem::path& file
     ) -> bool;
 
 private:
-    // Known compressed extensions
     static constexpr std::array<std::string_view, 10> compressed_extensions = {
         ".zip", ".gz", ".tar.gz", ".tgz", ".bz2",
         ".jpg", ".jpeg", ".png", ".mp4", ".mp3"
     };
-};
-
-// Chunk compressor with statistics
-class chunk_compressor {
-public:
-    explicit chunk_compressor(
-        compression_mode mode = compression_mode::adaptive,
-        compression_level level = compression_level::fast
-    );
-
-    // Compress chunk
-    [[nodiscard]] auto compress(const chunk& input) -> Result<chunk>;
-
-    // Decompress chunk
-    [[nodiscard]] auto decompress(const chunk& input) -> Result<chunk>;
-
-    // Get compression statistics
-    [[nodiscard]] auto get_statistics() const -> compression_statistics;
-
-    // Reset statistics
-    void reset_statistics();
-
-private:
-    compression_mode    mode_;
-    compression_level   level_;
-
-    // Statistics (thread-safe)
-    mutable std::mutex  stats_mutex_;
-    compression_statistics statistics_;
-
-    // Internal buffer for compression
-    std::vector<std::byte> compression_buffer_;
 };
 
 // Compression statistics
@@ -619,7 +858,6 @@ struct compression_statistics {
     std::atomic<uint64_t> compression_time_us{0};
     std::atomic<uint64_t> decompression_time_us{0};
 
-    // Calculated metrics
     [[nodiscard]] auto compression_ratio() const -> double;
     [[nodiscard]] auto compression_speed_mbps() const -> double;
     [[nodiscard]] auto decompression_speed_mbps() const -> double;
@@ -630,172 +868,48 @@ struct compression_statistics {
 
 ---
 
-### 3.5 Pipeline Components
+### 3.6 Pipeline Components
 
-#### 3.5.1 Responsibility
+#### 3.6.1 Responsibility
 Implements multi-stage parallel processing for maximum throughput.
 
-#### 3.5.2 SRS Traceability
+#### 3.6.2 SRS Traceability
 | SRS Requirement | Design Element |
 |-----------------|----------------|
-| SRS-PIPE-001 | sender_pipeline class |
-| SRS-PIPE-002 | receiver_pipeline class |
+| SRS-PIPE-001 | upload_pipeline class |
+| SRS-PIPE-002 | download_pipeline class |
 | SRS-PIPE-003 | Bounded queue implementation |
 | SRS-PIPE-004 | pipeline_statistics struct |
 
-#### 3.5.3 Class Design
+#### 3.6.3 Class Design
 
 ```cpp
 namespace kcenon::file_transfer {
 
-// Pipeline stage types for typed_thread_pool
+// Pipeline stage types
 enum class pipeline_stage : uint8_t {
-    io_read,        // File read operations (I/O bound)
-    chunk_process,  // Chunk assembly/disassembly (CPU light)
-    compression,    // LZ4 compress/decompress (CPU bound)
-    network,        // Network send/receive (I/O bound)
-    io_write        // File write operations (I/O bound)
+    io_read,        // File read operations
+    chunk_process,  // Chunk assembly/disassembly
+    compression,    // LZ4 compress/decompress
+    network,        // Network send/receive
+    io_write        // File write operations
 };
 
 // Pipeline configuration
 struct pipeline_config {
-    // Worker counts per stage
     std::size_t io_read_workers      = 2;
     std::size_t chunk_workers        = 2;
-    std::size_t compression_workers  = 4;  // More for CPU-bound
+    std::size_t compression_workers  = 4;
     std::size_t network_workers      = 2;
     std::size_t io_write_workers     = 2;
 
-    // Queue sizes for backpressure
     std::size_t read_queue_size      = 16;
     std::size_t compress_queue_size  = 32;
     std::size_t send_queue_size      = 64;
     std::size_t decompress_queue_size = 32;
     std::size_t write_queue_size     = 16;
 
-    // Auto-detect based on hardware
     [[nodiscard]] static auto auto_detect() -> pipeline_config;
-};
-
-// Base class for pipeline jobs
-template<pipeline_stage Stage>
-class pipeline_job : public thread::typed_job_t<pipeline_stage> {
-public:
-    explicit pipeline_job(const std::string& name)
-        : typed_job_t<pipeline_stage>(Stage, name) {}
-
-    virtual void execute() = 0;
-
-protected:
-    // Metrics
-    std::chrono::steady_clock::time_point start_time_;
-    std::chrono::steady_clock::time_point end_time_;
-};
-
-// Sender pipeline
-class sender_pipeline {
-public:
-    class builder {
-    public:
-        builder& with_config(const pipeline_config& config);
-        builder& with_compressor(std::shared_ptr<chunk_compressor> compressor);
-        builder& with_transport(std::shared_ptr<transport_interface> transport);
-        [[nodiscard]] auto build() -> Result<sender_pipeline>;
-    };
-
-    [[nodiscard]] auto start() -> Result<void>;
-    [[nodiscard]] auto stop(bool wait_for_completion = true) -> Result<void>;
-
-    // Submit file for processing
-    [[nodiscard]] auto submit(
-        const std::filesystem::path& file,
-        const transfer_id& id,
-        const transfer_options& options
-    ) -> Result<void>;
-
-    // Get statistics
-    [[nodiscard]] auto get_stats() const -> pipeline_statistics;
-    [[nodiscard]] auto get_queue_depths() const -> queue_depth_info;
-
-private:
-    // Thread pool (from thread_system)
-    std::unique_ptr<thread::typed_thread_pool<pipeline_stage>> thread_pool_;
-
-    // Inter-stage queues with backpressure
-    bounded_queue<read_result>      read_queue_;
-    bounded_queue<chunk>            chunk_queue_;
-    bounded_queue<chunk>            compress_queue_;
-    bounded_queue<chunk>            send_queue_;
-
-    // Shared components
-    std::shared_ptr<chunk_compressor>    compressor_;
-    std::shared_ptr<transport_interface> transport_;
-
-    // Configuration
-    pipeline_config config_;
-
-    // State
-    std::atomic<bool> running_{false};
-
-    // Statistics
-    pipeline_statistics stats_;
-
-    // Job implementations
-    class read_job;
-    class chunk_job;
-    class compress_job;
-    class send_job;
-};
-
-// Receiver pipeline
-class receiver_pipeline {
-public:
-    class builder {
-    public:
-        builder& with_config(const pipeline_config& config);
-        builder& with_compressor(std::shared_ptr<chunk_compressor> compressor);
-        builder& with_assembler(std::shared_ptr<chunk_assembler> assembler);
-        [[nodiscard]] auto build() -> Result<receiver_pipeline>;
-    };
-
-    [[nodiscard]] auto start(const endpoint& listen_addr) -> Result<void>;
-    [[nodiscard]] auto stop(bool wait_for_completion = true) -> Result<void>;
-
-    // Submit received chunk for processing
-    [[nodiscard]] auto submit_chunk(chunk c) -> Result<void>;
-
-    // Get statistics
-    [[nodiscard]] auto get_stats() const -> pipeline_statistics;
-    [[nodiscard]] auto get_queue_depths() const -> queue_depth_info;
-
-private:
-    // Thread pool
-    std::unique_ptr<thread::typed_thread_pool<pipeline_stage>> thread_pool_;
-
-    // Inter-stage queues
-    bounded_queue<chunk>            recv_queue_;
-    bounded_queue<chunk>            decompress_queue_;
-    bounded_queue<chunk>            assemble_queue_;
-    bounded_queue<chunk>            write_queue_;
-
-    // Shared components
-    std::shared_ptr<chunk_compressor>  compressor_;
-    std::shared_ptr<chunk_assembler>   assembler_;
-
-    // Configuration
-    pipeline_config config_;
-
-    // State
-    std::atomic<bool> running_{false};
-
-    // Statistics
-    pipeline_statistics stats_;
-
-    // Job implementations
-    class receive_job;
-    class decompress_job;
-    class assemble_job;
-    class write_job;
 };
 
 // Bounded queue for backpressure
@@ -804,17 +918,11 @@ class bounded_queue {
 public:
     explicit bounded_queue(std::size_t max_size);
 
-    // Block until space available
     void push(T item);
-
-    // Block until item available
     [[nodiscard]] auto pop() -> T;
-
-    // Non-blocking variants
     [[nodiscard]] auto try_push(T item) -> bool;
     [[nodiscard]] auto try_pop() -> std::optional<T>;
 
-    // Query state
     [[nodiscard]] auto size() const -> std::size_t;
     [[nodiscard]] auto empty() const -> bool;
     [[nodiscard]] auto full() const -> bool;
@@ -846,20 +954,7 @@ struct pipeline_statistics {
     stage_stats network_stats;
     stage_stats io_write_stats;
 
-    // Identify bottleneck stage
     [[nodiscard]] auto bottleneck_stage() const -> pipeline_stage;
-};
-
-// Queue depth information
-struct queue_depth_info {
-    std::size_t read_queue;
-    std::size_t chunk_queue;
-    std::size_t compress_queue;
-    std::size_t send_queue;
-    std::size_t recv_queue;
-    std::size_t decompress_queue;
-    std::size_t assemble_queue;
-    std::size_t write_queue;
 };
 
 } // namespace kcenon::file_transfer
@@ -867,58 +962,42 @@ struct queue_depth_info {
 
 ---
 
-### 3.6 Transport Components
+### 3.7 Transport Components
 
-#### 3.6.1 Responsibility
+#### 3.7.1 Responsibility
 Abstracts network transport protocols (TCP, QUIC).
 
-#### 3.6.2 SRS Traceability
+#### 3.7.2 SRS Traceability
 | SRS Requirement | Design Element |
 |-----------------|----------------|
 | SRS-TRANS-001 | transport_interface class |
 | SRS-TRANS-002 | tcp_transport class |
-| SRS-TRANS-003 | quic_transport class (Phase 2) |
-| SRS-TRANS-004 | Fallback logic in transport_factory |
 
-#### 3.6.3 Class Design
+#### 3.7.3 Class Design
 
 ```cpp
 namespace kcenon::file_transfer {
 
-// Transport types
 enum class transport_type {
     tcp,    // TCP + TLS 1.3 (default)
     quic    // QUIC (Phase 2)
 };
 
-// Abstract transport interface
 class transport_interface {
 public:
     virtual ~transport_interface() = default;
 
-    // Connection management
     [[nodiscard]] virtual auto connect(const endpoint& ep) -> Result<void> = 0;
     [[nodiscard]] virtual auto disconnect() -> Result<void> = 0;
     [[nodiscard]] virtual auto is_connected() const -> bool = 0;
 
-    // Data transfer
     [[nodiscard]] virtual auto send(std::span<const std::byte> data) -> Result<void> = 0;
     [[nodiscard]] virtual auto receive(std::span<std::byte> buffer) -> Result<std::size_t> = 0;
 
-    // QUIC-specific (no-op for TCP)
-    [[nodiscard]] virtual auto create_stream() -> Result<stream_id> {
-        return stream_id{0};
-    }
-    [[nodiscard]] virtual auto close_stream(stream_id) -> Result<void> {
-        return {};
-    }
-
-    // Server-side
     [[nodiscard]] virtual auto listen(const endpoint& ep) -> Result<void> = 0;
     [[nodiscard]] virtual auto accept() -> Result<std::unique_ptr<transport_interface>> = 0;
 };
 
-// TCP transport configuration
 struct tcp_transport_config {
     bool        enable_tls      = true;
     bool        tcp_nodelay     = true;
@@ -928,7 +1007,6 @@ struct tcp_transport_config {
     duration    read_timeout    = std::chrono::seconds(30);
 };
 
-// TCP transport implementation
 class tcp_transport : public transport_interface {
 public:
     explicit tcp_transport(const tcp_transport_config& config = {});
@@ -945,146 +1023,15 @@ public:
 
 private:
     tcp_transport_config config_;
-
-    // Uses network_system internally
     std::unique_ptr<network::tcp_socket> socket_;
     std::unique_ptr<network::tls_context> tls_context_;
-
     std::atomic<bool> connected_{false};
 };
 
-// QUIC transport configuration (Phase 2)
-struct quic_transport_config {
-    bool        enable_0rtt         = true;
-    std::size_t max_streams         = 100;
-    std::size_t initial_window      = 10 * 1024 * 1024;
-    duration    idle_timeout        = std::chrono::seconds(30);
-    bool        enable_migration    = true;
-};
-
-// QUIC transport implementation (Phase 2)
-class quic_transport : public transport_interface {
-public:
-    explicit quic_transport(const quic_transport_config& config = {});
-
-    [[nodiscard]] auto connect(const endpoint& ep) -> Result<void> override;
-    [[nodiscard]] auto disconnect() -> Result<void> override;
-    [[nodiscard]] auto is_connected() const -> bool override;
-
-    [[nodiscard]] auto send(std::span<const std::byte> data) -> Result<void> override;
-    [[nodiscard]] auto receive(std::span<std::byte> buffer) -> Result<std::size_t> override;
-
-    [[nodiscard]] auto create_stream() -> Result<stream_id> override;
-    [[nodiscard]] auto close_stream(stream_id id) -> Result<void> override;
-
-    [[nodiscard]] auto listen(const endpoint& ep) -> Result<void> override;
-    [[nodiscard]] auto accept() -> Result<std::unique_ptr<transport_interface>> override;
-
-private:
-    quic_transport_config config_;
-
-    // Uses network_system QUIC support
-    std::unique_ptr<network::quic_connection> connection_;
-    std::unordered_map<stream_id, network::quic_stream> streams_;
-};
-
-// Transport factory with fallback support
 class transport_factory {
 public:
     [[nodiscard]] static auto create(transport_type type)
         -> std::unique_ptr<transport_interface>;
-
-    // Create with automatic fallback (QUIC -> TCP)
-    [[nodiscard]] static auto create_with_fallback(
-        const endpoint& ep,
-        transport_type preferred = transport_type::quic
-    ) -> Result<std::unique_ptr<transport_interface>>;
-};
-
-} // namespace kcenon::file_transfer
-```
-
----
-
-### 3.7 Resume Handler Component
-
-#### 3.7.1 Responsibility
-Manages transfer state persistence for resume capability.
-
-#### 3.7.2 SRS Traceability
-| SRS Requirement | Design Element |
-|-----------------|----------------|
-| SRS-RESUME-001 | transfer_state struct, state persistence |
-| SRS-RESUME-002 | resume() method logic |
-
-#### 3.7.3 Class Design
-
-```cpp
-namespace kcenon::file_transfer {
-
-// Transfer state for persistence
-struct transfer_state {
-    transfer_id                             id;
-    std::string                             file_path;
-    uint64_t                                file_size;
-    std::string                             sha256_hash;
-    uint64_t                                chunks_completed;
-    uint64_t                                chunks_total;
-    std::vector<bool>                       chunk_bitmap;  // true = received
-    compression_mode                        compression;
-    std::chrono::system_clock::time_point   created_at;
-    std::chrono::system_clock::time_point   last_update;
-
-    // Serialization
-    [[nodiscard]] auto serialize() const -> std::vector<std::byte>;
-    [[nodiscard]] static auto deserialize(std::span<const std::byte> data)
-        -> Result<transfer_state>;
-};
-
-// Resume handler
-class resume_handler {
-public:
-    explicit resume_handler(const std::filesystem::path& state_dir);
-
-    // Save transfer state
-    [[nodiscard]] auto save_state(const transfer_state& state) -> Result<void>;
-
-    // Load transfer state
-    [[nodiscard]] auto load_state(const transfer_id& id)
-        -> Result<transfer_state>;
-
-    // Delete transfer state (on completion)
-    [[nodiscard]] auto delete_state(const transfer_id& id) -> Result<void>;
-
-    // List resumable transfers
-    [[nodiscard]] auto list_resumable() -> Result<std::vector<transfer_id>>;
-
-    // Update chunk completion
-    [[nodiscard]] auto mark_chunk_complete(
-        const transfer_id& id,
-        uint64_t chunk_index
-    ) -> Result<void>;
-
-    // Get missing chunks for resume
-    [[nodiscard]] auto get_missing_chunks(const transfer_id& id)
-        -> Result<std::vector<uint64_t>>;
-
-    // Validate state integrity
-    [[nodiscard]] auto validate_state(const transfer_state& state)
-        -> Result<void>;
-
-private:
-    std::filesystem::path state_dir_;
-
-    // File path for state
-    [[nodiscard]] auto state_file_path(const transfer_id& id) const
-        -> std::filesystem::path;
-
-    // Atomic state update
-    [[nodiscard]] auto atomic_write(
-        const std::filesystem::path& path,
-        std::span<const std::byte> data
-    ) -> Result<void>;
 };
 
 } // namespace kcenon::file_transfer
@@ -1099,21 +1046,14 @@ private:
 #### 4.1.1 Chunk Data Structure
 
 ```cpp
-// Chunk flags
 enum class chunk_flags : uint8_t {
     none            = 0x00,
-    first_chunk     = 0x01,     // First chunk of file
-    last_chunk      = 0x02,     // Last chunk of file
-    compressed      = 0x04,     // LZ4 compressed
-    encrypted       = 0x08      // Reserved for TLS
+    first_chunk     = 0x01,
+    last_chunk      = 0x02,
+    compressed      = 0x04,
+    encrypted       = 0x08
 };
 
-// Enable bitwise operations
-constexpr chunk_flags operator|(chunk_flags a, chunk_flags b);
-constexpr chunk_flags operator&(chunk_flags a, chunk_flags b);
-constexpr bool has_flag(chunk_flags flags, chunk_flags test);
-
-// Chunk header (fixed size for wire protocol)
 struct chunk_header {
     transfer_id     transfer_id;        // 16 bytes (UUID)
     uint64_t        file_index;         // 8 bytes
@@ -1125,37 +1065,29 @@ struct chunk_header {
     chunk_flags     flags;              // 1 byte
     uint8_t         reserved[3];        // 3 bytes padding
     // Total: 56 bytes
-
-    // Serialization
-    [[nodiscard]] auto to_bytes() const -> std::array<std::byte, 56>;
-    [[nodiscard]] static auto from_bytes(std::span<const std::byte, 56> data)
-        -> chunk_header;
 };
 
-// Complete chunk
 struct chunk {
     chunk_header            header;
     std::vector<std::byte>  data;
-
-    // Validation
-    [[nodiscard]] auto is_valid() const -> bool;
-    [[nodiscard]] auto verify_checksum() const -> bool;
 };
 ```
 
 #### 4.1.2 Transfer Data Structures
 
 ```cpp
-// Transfer identifier (UUID)
+// Transfer direction
+enum class transfer_direction {
+    upload,     // Client → Server
+    download    // Server → Client
+};
+
+// Transfer identifier
 struct transfer_id {
     std::array<uint8_t, 16> bytes;
 
     [[nodiscard]] static auto generate() -> transfer_id;
     [[nodiscard]] auto to_string() const -> std::string;
-    [[nodiscard]] static auto from_string(std::string_view str)
-        -> Result<transfer_id>;
-
-    auto operator<=>(const transfer_id&) const = default;
 };
 
 // File metadata
@@ -1166,109 +1098,110 @@ struct file_metadata {
     std::filesystem::perms  permissions;
     std::chrono::system_clock::time_point modified_time;
     bool                    compressible_hint;
-
-    [[nodiscard]] auto serialize() const -> std::vector<std::byte>;
-    [[nodiscard]] static auto deserialize(std::span<const std::byte> data)
-        -> Result<file_metadata>;
 };
 
-// Transfer options
-struct transfer_options {
-    compression_mode            compression     = compression_mode::adaptive;
-    compression_level           level           = compression_level::fast;
-    std::size_t                 chunk_size      = 256 * 1024;
-    bool                        verify_checksum = true;
-    std::optional<std::size_t>  bandwidth_limit;
-    std::optional<int>          priority;
+// Upload request (Client → Server)
+struct upload_request {
+    transfer_id         id;
+    std::string         remote_name;
+    uint64_t            file_size;
+    std::string         sha256_hash;
+    compression_mode    compression;
+    bool                overwrite;
 };
 
-// Transfer request
-struct transfer_request {
-    transfer_id                     id;
-    std::vector<file_metadata>      files;
-    transfer_options                options;
-
-    [[nodiscard]] auto serialize() const -> std::vector<std::byte>;
-    [[nodiscard]] static auto deserialize(std::span<const std::byte> data)
-        -> Result<transfer_request>;
+// Download request (Client → Server)
+struct download_request {
+    transfer_id         id;
+    std::string         remote_name;
 };
 
-// Transfer state enumeration
-enum class transfer_state_enum {
-    pending,        // Waiting to start
-    initializing,   // Setting up connection
-    transferring,   // Active transfer
-    verifying,      // Verifying integrity
-    completed,      // Successfully completed
-    failed,         // Transfer failed
-    cancelled       // User cancelled
+// File info (for listing)
+struct file_info {
+    std::string         name;
+    uint64_t            size;
+    std::string         sha256_hash;
+    std::chrono::system_clock::time_point modified_time;
 };
 
 // Transfer progress
 struct transfer_progress {
     transfer_id         id;
-    uint64_t            bytes_transferred;      // Raw bytes
-    uint64_t            bytes_on_wire;          // Compressed bytes
+    transfer_direction  direction;
+    uint64_t            bytes_transferred;
+    uint64_t            bytes_on_wire;
     uint64_t            total_bytes;
-    double              transfer_rate;          // Bytes/second
-    double              effective_rate;         // With compression
+    double              transfer_rate;
     double              compression_ratio;
     duration            elapsed_time;
     duration            estimated_remaining;
     transfer_state_enum state;
-    std::optional<std::string> error_message;
 };
 
 // Transfer result
 struct transfer_result {
     transfer_id             id;
-    std::filesystem::path   output_path;
+    transfer_direction      direction;
+    std::filesystem::path   local_path;
+    std::string             remote_name;
     uint64_t                bytes_transferred;
     uint64_t                bytes_on_wire;
     bool                    verified;
     std::optional<error>    error;
     duration                elapsed_time;
-    compression_statistics  compression_stats;
 };
 ```
 
 ### 4.2 Data Flow
 
-#### 4.2.1 Sender Data Flow
+#### 4.2.1 Upload Data Flow (Client → Server)
 
 ```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              CLIENT SIDE                                     │
+└─────────────────────────────────────────────────────────────────────────────┘
 ┌─────────────┐     ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│  File on    │────▶│   Chunk     │────▶│ Compressed  │────▶│   Network   │
-│    Disk     │     │   Buffer    │     │   Chunk     │     │   Buffer    │
+│  Local File │────▶│   Chunk     │────▶│ Compressed  │────▶│   Network   │
+│             │     │   Buffer    │     │   Chunk     │     │   Send      │
 └─────────────┘     └─────────────┘     └─────────────┘     └─────────────┘
                            │                   │                   │
                            ▼                   ▼                   ▼
-                    ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-                    │ CRC32 calc  │     │ LZ4 compress│     │ TCP/QUIC    │
-                    │             │     │ (if mode    │     │   send      │
-                    │             │     │  enabled)   │     │             │
-                    └─────────────┘     └─────────────┘     └─────────────┘
+                    CRC32 calc         LZ4 compress         TCP/TLS send
 
-Data sizes (256KB chunk):
-- Raw chunk:        262,144 bytes
-- After CRC32:      262,144 bytes + 4 byte checksum
-- After compress:   ~130,000 bytes (typical for text, ~50% reduction)
-- Wire format:      56 byte header + compressed data
-```
+                                        │
+                                        │ Network
+                                        ▼
 
-#### 4.2.2 Receiver Data Flow
-
-```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              SERVER SIDE                                     │
+└─────────────────────────────────────────────────────────────────────────────┘
 ┌─────────────┐     ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│   Network   │────▶│ Decompressed│────▶│  Reassembly │────▶│  File on    │
-│   Buffer    │     │    Chunk    │     │    Buffer   │     │    Disk     │
+│   Network   │────▶│Decompressed │────▶│   Verify    │────▶│  Storage    │
+│   Receive   │     │   Chunk     │     │   CRC32     │     │   Write     │
 └─────────────┘     └─────────────┘     └─────────────┘     └─────────────┘
-       │                   │                   │                   │
-       ▼                   ▼                   ▼                   ▼
+```
+
+#### 4.2.2 Download Data Flow (Server → Client)
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              SERVER SIDE                                     │
+└─────────────────────────────────────────────────────────────────────────────┘
 ┌─────────────┐     ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│ Header parse│     │LZ4 decomp.  │     │ CRC32 verify│     │ SHA256      │
-│             │     │(if compress │     │             │     │ verify      │
-│             │     │  flag set)  │     │             │     │             │
+│  Storage    │────▶│   Chunk     │────▶│ Compressed  │────▶│   Network   │
+│   Read      │     │   Buffer    │     │   Chunk     │     │   Send      │
+└─────────────┘     └─────────────┘     └─────────────┘     └─────────────┘
+
+                                        │
+                                        │ Network
+                                        ▼
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              CLIENT SIDE                                     │
+└─────────────────────────────────────────────────────────────────────────────┘
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│   Network   │────▶│Decompressed │────▶│   Verify    │────▶│  Local File │
+│   Receive   │     │   Chunk     │     │   CRC32     │     │   Write     │
 └─────────────┘     └─────────────┘     └─────────────┘     └─────────────┘
 ```
 
@@ -1302,16 +1235,15 @@ enum class message_type : uint8_t {
     handshake_request   = 0x01,
     handshake_response  = 0x02,
 
-    // Transfer control
-    transfer_request    = 0x10,
-    transfer_accept     = 0x11,
-    transfer_reject     = 0x12,
-    transfer_cancel     = 0x13,
+    // Upload operations
+    upload_request      = 0x10,
+    upload_accept       = 0x11,
+    upload_reject       = 0x12,
 
     // Data transfer
     chunk_data          = 0x20,
     chunk_ack           = 0x21,
-    chunk_nack          = 0x22,  // Retransmission request
+    chunk_nack          = 0x22,
 
     // Resume
     resume_request      = 0x30,
@@ -1321,53 +1253,24 @@ enum class message_type : uint8_t {
     transfer_complete   = 0x40,
     transfer_verify     = 0x41,
 
+    // Download operations
+    download_request    = 0x50,
+    download_accept     = 0x51,
+    download_reject     = 0x52,
+
+    // List operations
+    list_request        = 0x60,
+    list_response       = 0x61,
+
     // Control
     keepalive           = 0xF0,
     error               = 0xFF
 };
 ```
 
-#### 5.1.3 Protocol State Machine
-
-```
-                    ┌─────────────────┐
-                    │   DISCONNECTED  │
-                    └────────┬────────┘
-                             │ connect()
-                             ▼
-                    ┌─────────────────┐
-                    │  CONNECTING     │
-                    └────────┬────────┘
-                             │ handshake complete
-                             ▼
-                    ┌─────────────────┐
-          ┌────────│   CONNECTED     │────────┐
-          │        └────────┬────────┘        │
-          │                 │ transfer_request│
-          │                 ▼                 │
-          │        ┌─────────────────┐        │
-          │ error  │  TRANSFERRING   │ cancel │
-          │        └────────┬────────┘        │
-          │                 │ complete        │
-          │                 ▼                 │
-          │        ┌─────────────────┐        │
-          │        │   VERIFYING     │        │
-          │        └────────┬────────┘        │
-          │                 │ verified        │
-          │                 ▼                 │
-          │        ┌─────────────────┐        │
-          └───────▶│   COMPLETED     │◀───────┘
-                   └─────────────────┘
-                             │ disconnect()
-                             ▼
-                   ┌─────────────────┐
-                   │  DISCONNECTED   │
-                   └─────────────────┘
-```
-
 ### 5.2 Error Codes
 
-Following SRS Section 6.4, error codes are in range **-700 to -799**:
+Following SRS Section 6.4:
 
 ```cpp
 namespace kcenon::file_transfer::error {
@@ -1376,44 +1279,41 @@ namespace kcenon::file_transfer::error {
 constexpr int transfer_init_failed      = -700;
 constexpr int transfer_cancelled        = -701;
 constexpr int transfer_timeout          = -702;
-constexpr int transfer_rejected         = -703;
-constexpr int transfer_already_exists   = -704;
-constexpr int transfer_not_found        = -705;
+constexpr int upload_rejected           = -703;
+constexpr int download_rejected         = -704;
+constexpr int connection_refused        = -705;
+constexpr int connection_lost           = -706;
+constexpr int server_busy               = -707;
 
 // Chunk errors (-720 to -739)
 constexpr int chunk_checksum_error      = -720;
 constexpr int chunk_sequence_error      = -721;
 constexpr int chunk_size_error          = -722;
 constexpr int file_hash_mismatch        = -723;
-constexpr int chunk_timeout             = -724;
-constexpr int chunk_duplicate           = -725;
 
 // File I/O errors (-740 to -759)
 constexpr int file_read_error           = -740;
 constexpr int file_write_error          = -741;
 constexpr int file_permission_error     = -742;
 constexpr int file_not_found            = -743;
-constexpr int disk_full                 = -744;
-constexpr int invalid_path              = -745;
+constexpr int file_already_exists       = -744;
+constexpr int storage_full              = -745;
+constexpr int file_not_found_on_server  = -746;
+constexpr int access_denied             = -747;
+constexpr int invalid_filename          = -748;
 
 // Resume errors (-760 to -779)
 constexpr int resume_state_invalid      = -760;
 constexpr int resume_file_changed       = -761;
-constexpr int resume_state_corrupted    = -762;
-constexpr int resume_not_supported      = -763;
 
 // Compression errors (-780 to -789)
 constexpr int compression_failed        = -780;
 constexpr int decompression_failed      = -781;
 constexpr int compression_buffer_error  = -782;
-constexpr int invalid_compression_data  = -783;
 
 // Configuration errors (-790 to -799)
 constexpr int config_invalid            = -790;
-constexpr int config_chunk_size_error   = -791;
-constexpr int config_transport_error    = -792;
 
-// Helper function
 [[nodiscard]] auto error_message(int code) -> std::string_view;
 
 } // namespace kcenon::file_transfer::error
@@ -1428,201 +1328,100 @@ constexpr int config_transport_error    = -792;
 **SRS Trace**: SRS-COMP-003
 
 ```cpp
-// Algorithm: Determine if data chunk is worth compressing
 bool adaptive_compression::is_compressible(
     std::span<const std::byte> data,
     double threshold
 ) {
-    // Step 1: Sample first 1KB (or less for small chunks)
     const auto sample_size = std::min(data.size(), std::size_t{1024});
     auto sample = data.first(sample_size);
 
-    // Step 2: Allocate compression buffer
     auto max_size = lz4_engine::max_compressed_size(sample_size);
     std::vector<std::byte> compressed_buffer(max_size);
 
-    // Step 3: Try compressing the sample
     auto result = lz4_engine::compress(sample, compressed_buffer);
     if (!result) {
-        // Compression failed, assume incompressible
         return false;
     }
 
     auto compressed_size = result.value();
-
-    // Step 4: Compare sizes
-    // Only compress if we get at least (1-threshold) reduction
-    // With threshold=0.9, we compress if compressed < 90% of original
     return static_cast<double>(compressed_size) <
            static_cast<double>(sample_size) * threshold;
 }
 ```
 
-**Complexity**: O(sample_size) - constant time for fixed sample size
-**Latency**: < 100μs (per SRS requirement PERF-011)
+### 6.2 Auto-Reconnect Algorithm
 
-### 6.2 Chunk Assembly Algorithm
-
-**SRS Trace**: SRS-CHUNK-002
+**SRS Trace**: SRS-CLIENT-002
 
 ```cpp
-// Algorithm: Reassemble file from possibly out-of-order chunks
-Result<void> chunk_assembler::process_chunk(const chunk& c) {
-    std::unique_lock lock(contexts_mutex_);
+void auto_reconnect_handler::attempt_reconnect() {
+    std::size_t attempt = 0;
+    auto delay = policy_.initial_delay;
 
-    // Step 1: Get or create assembly context
-    auto& ctx = get_or_create_context(c.header.transfer_id);
-    std::lock_guard ctx_lock(ctx.mutex);
+    while (attempt < policy_.max_attempts && should_reconnect_) {
+        ++attempt;
 
-    // Step 2: Verify CRC32 checksum
-    if (!verify_crc32(c)) {
-        return error::chunk_checksum_error;
-    }
+        // Wait with exponential backoff
+        std::this_thread::sleep_for(delay);
 
-    // Step 3: Check for duplicate
-    if (ctx.received_chunks[c.header.chunk_index]) {
-        // Duplicate chunk - ignore (idempotent operation)
-        return {};
-    }
-
-    // Step 4: Decompress if needed
-    std::span<const std::byte> data_to_write = c.data;
-    std::vector<std::byte> decompressed;
-
-    if (has_flag(c.header.flags, chunk_flags::compressed)) {
-        decompressed.resize(c.header.original_size);
-        auto result = lz4_engine::decompress(
-            c.data, decompressed, c.header.original_size);
-        if (!result) {
-            return error::decompression_failed;
+        // Try to reconnect
+        auto result = transport_->connect(server_endpoint_);
+        if (result) {
+            // Success - notify and restore transfers
+            notify_reconnected();
+            resume_active_transfers();
+            return;
         }
-        data_to_write = decompressed;
+
+        // Calculate next delay with backoff
+        delay = std::min(
+            std::chrono::duration_cast<duration>(delay * policy_.backoff_multiplier),
+            policy_.max_delay
+        );
     }
 
-    // Step 5: Write to file at correct offset
-    ctx.file.seekp(c.header.chunk_offset);
-    ctx.file.write(
-        reinterpret_cast<const char*>(data_to_write.data()),
-        data_to_write.size()
-    );
-
-    // Step 6: Mark chunk as received
-    ctx.received_chunks[c.header.chunk_index] = true;
-    ctx.bytes_written += data_to_write.size();
-
-    return {};
+    // Max attempts exceeded
+    notify_reconnect_failed();
 }
 ```
 
-### 6.3 Pipeline Backpressure Algorithm
+### 6.3 Path Traversal Prevention Algorithm
 
-**SRS Trace**: SRS-PIPE-003
-
-```cpp
-// Bounded queue with backpressure
-template<typename T>
-void bounded_queue<T>::push(T item) {
-    std::unique_lock lock(mutex_);
-
-    // Block until space available (backpressure)
-    not_full_.wait(lock, [this] {
-        return queue_.size() < max_size_;
-    });
-
-    queue_.push(std::move(item));
-
-    lock.unlock();
-    not_empty_.notify_one();
-}
-
-template<typename T>
-T bounded_queue<T>::pop() {
-    std::unique_lock lock(mutex_);
-
-    // Block until item available
-    not_empty_.wait(lock, [this] {
-        return !queue_.empty();
-    });
-
-    T item = std::move(queue_.front());
-    queue_.pop();
-
-    lock.unlock();
-    not_full_.notify_one();
-
-    return item;
-}
-```
-
-**Memory Bound**: max_queue_size × chunk_size
-**Example**: 16 queue items × 256KB = 4MB per queue
-
-### 6.4 Transfer Resume Algorithm
-
-**SRS Trace**: SRS-RESUME-002
+**SRS Trace**: SRS-STORAGE-002
 
 ```cpp
-// Algorithm: Resume interrupted transfer
-Result<void> resume_transfer(
-    const transfer_id& id,
-    const endpoint& destination
-) {
-    // Step 1: Load persisted state
-    auto state_result = resume_handler_->load_state(id);
-    if (!state_result) {
-        return state_result.error();
-    }
-    auto state = state_result.value();
-
-    // Step 2: Validate source file still exists and unchanged
-    if (!std::filesystem::exists(state.file_path)) {
-        return error::file_not_found;
+Result<std::filesystem::path> storage_manager::safe_path(
+    const std::string& filename
+) const {
+    // Step 1: Check for path traversal patterns
+    if (filename.find("..") != std::string::npos) {
+        return error::invalid_filename;
     }
 
-    auto current_hash = checksum::sha256_file(state.file_path);
-    if (!current_hash || current_hash.value() != state.sha256_hash) {
-        return error::resume_file_changed;
+    // Step 2: Check for absolute path
+    std::filesystem::path requested_path(filename);
+    if (requested_path.is_absolute()) {
+        return error::invalid_filename;
     }
 
-    // Step 3: Connect and send resume request
-    auto connect_result = transport_->connect(destination);
-    if (!connect_result) {
-        return connect_result.error();
+    // Step 3: Check for path separators
+    if (filename.find('/') != std::string::npos ||
+        filename.find('\\') != std::string::npos) {
+        return error::invalid_filename;
     }
 
-    // Step 4: Send resume request with chunk bitmap
-    resume_request req{
-        .transfer_id = id,
-        .chunk_bitmap = state.chunk_bitmap
-    };
-    send_message(message_type::resume_request, req.serialize());
+    // Step 4: Construct and canonicalize
+    auto full_path = config_.storage_dir / filename;
+    auto canonical = std::filesystem::weakly_canonical(full_path);
+    auto canonical_base = std::filesystem::weakly_canonical(config_.storage_dir);
 
-    // Step 5: Receive resume response with missing chunks
-    auto response = receive_resume_response();
-    if (!response) {
-        return response.error();
+    // Step 5: Verify path is under storage directory
+    auto relative = canonical.lexically_relative(canonical_base);
+    if (relative.empty() || *relative.begin() == "..") {
+        return error::invalid_filename;
     }
 
-    // Step 6: Send only missing chunks
-    auto splitter = chunk_splitter(config_.chunk_config);
-    auto iterator = splitter.split(state.file_path, id);
-
-    while (iterator.has_next()) {
-        auto chunk = iterator.next();
-        if (!chunk) {
-            return chunk.error();
-        }
-
-        // Skip already-received chunks
-        if (state.chunk_bitmap[chunk->header.chunk_index]) {
-            continue;
-        }
-
-        // Send chunk through pipeline
-        pipeline_->submit_chunk(std::move(chunk.value()));
-    }
-
-    return {};
+    return canonical;
 }
 ```
 
@@ -1635,23 +1434,19 @@ Result<void> resume_transfer(
 **SRS Trace**: SEC-001
 
 ```cpp
-// TLS 1.3 configuration
 struct tls_config {
-    // Minimum TLS version
     static constexpr int min_version = TLS1_3_VERSION;
 
-    // Cipher suites (TLS 1.3 only)
     static constexpr std::array<const char*, 3> cipher_suites = {
         "TLS_AES_256_GCM_SHA384",
         "TLS_CHACHA20_POLY1305_SHA256",
         "TLS_AES_128_GCM_SHA256"
     };
 
-    // Certificate verification mode
     enum class verify_mode {
-        none,           // No verification (testing only)
-        peer,           // Verify peer certificate
-        fail_if_no_cert // Require and verify peer certificate
+        none,
+        peer,
+        fail_if_no_cert
     };
 
     verify_mode verification = verify_mode::peer;
@@ -1661,47 +1456,16 @@ struct tls_config {
 };
 ```
 
-### 7.2 Path Traversal Prevention
+### 7.2 Storage Isolation
 
-**SRS Trace**: SEC-003
+**SRS Trace**: SEC-005
 
-```cpp
-// Validate output path to prevent directory traversal
-Result<std::filesystem::path> validate_output_path(
-    const std::filesystem::path& base_dir,
-    const std::string& filename
-) {
-    // Step 1: Check for path traversal attempts
-    if (filename.find("..") != std::string::npos) {
-        return error::invalid_path;
-    }
+The storage_manager ensures all file operations are confined within the configured storage directory through:
 
-    // Step 2: Check for absolute path
-    std::filesystem::path requested_path(filename);
-    if (requested_path.is_absolute()) {
-        return error::invalid_path;
-    }
-
-    // Step 3: Construct full path
-    auto full_path = base_dir / filename;
-
-    // Step 4: Canonicalize and verify it's under base_dir
-    auto canonical = std::filesystem::weakly_canonical(full_path);
-    auto canonical_base = std::filesystem::weakly_canonical(base_dir);
-
-    // Check if canonical path starts with base directory
-    auto [base_end, _] = std::mismatch(
-        canonical_base.begin(), canonical_base.end(),
-        canonical.begin()
-    );
-
-    if (base_end != canonical_base.end()) {
-        return error::invalid_path;
-    }
-
-    return canonical;
-}
-```
+1. Filename validation (no path separators, no "..")
+2. Path canonicalization
+3. Relative path verification
+4. Symbolic link resolution and validation
 
 ---
 
@@ -1711,106 +1475,36 @@ Result<std::filesystem::path> validate_output_path(
 
 | SRS ID | SRS Description | Design Component | Design Element |
 |--------|-----------------|------------------|----------------|
-| SRS-CORE-001 | Single File Send | file_sender | send_file() method |
-| SRS-CORE-002 | Single File Receive | file_receiver | process_chunk() method |
-| SRS-CORE-003 | Multi-file Batch | file_sender | send_files() method |
+| SRS-SERVER-001 | Server Initialization | file_transfer_server | builder, storage_manager |
+| SRS-SERVER-002 | Server Start | file_transfer_server | start() method |
+| SRS-SERVER-003 | Server Stop | file_transfer_server | stop() method |
+| SRS-SERVER-004 | Upload Request Handling | file_transfer_server | on_upload_request() |
+| SRS-SERVER-005 | Download Request Handling | file_transfer_server | on_download_request() |
+| SRS-SERVER-006 | List Request Handling | file_transfer_server | list_files handling |
+| SRS-CLIENT-001 | Server Connection | file_transfer_client | connect() method |
+| SRS-CLIENT-002 | Auto Reconnect | auto_reconnect_handler | attempt_reconnect() |
+| SRS-CLIENT-003 | File Upload | file_transfer_client | upload_file() method |
+| SRS-CLIENT-004 | File Download | file_transfer_client | download_file() method |
+| SRS-CLIENT-005 | File Listing | file_transfer_client | list_files() method |
+| SRS-CLIENT-006 | Batch Upload | file_transfer_client | upload_files() method |
+| SRS-CLIENT-007 | Batch Download | file_transfer_client | download_files() method |
+| SRS-STORAGE-001 | Storage Quota | storage_manager | can_store_file() |
+| SRS-STORAGE-002 | Filename Validation | filename_validator | validate() |
 | SRS-CHUNK-001 | File Splitting | chunk_splitter | split() method |
-| SRS-CHUNK-002 | File Assembly | chunk_assembler | process_chunk() method |
+| SRS-CHUNK-002 | File Assembly | chunk_assembler | process_chunk() |
 | SRS-CHUNK-003 | Chunk Checksum | checksum | crc32() method |
 | SRS-CHUNK-004 | File Hash | checksum | sha256_file() method |
 | SRS-COMP-001 | LZ4 Compression | lz4_engine | compress() method |
 | SRS-COMP-002 | LZ4 Decompression | lz4_engine | decompress() method |
-| SRS-COMP-003 | Adaptive Detection | adaptive_compression | is_compressible() method |
-| SRS-COMP-004 | Compression Modes | compression_mode | enum definition |
-| SRS-COMP-005 | Compression Stats | compression_statistics | struct definition |
-| SRS-PIPE-001 | Sender Pipeline | sender_pipeline | Pipeline stages |
-| SRS-PIPE-002 | Receiver Pipeline | receiver_pipeline | Pipeline stages |
+| SRS-COMP-003 | Adaptive Detection | adaptive_compression | is_compressible() |
+| SRS-PIPE-001 | Upload Pipeline | upload_pipeline | Pipeline stages |
+| SRS-PIPE-002 | Download Pipeline | download_pipeline | Pipeline stages |
 | SRS-PIPE-003 | Backpressure | bounded_queue | push()/pop() blocking |
-| SRS-PIPE-004 | Pipeline Stats | pipeline_statistics | struct definition |
-| SRS-RESUME-001 | State Persistence | resume_handler | save_state() method |
-| SRS-RESUME-002 | Transfer Resume | resume_handler | load_state() method |
-| SRS-PROGRESS-001 | Progress Callbacks | progress_tracker | on_progress() callback |
-| SRS-PROGRESS-002 | Transfer States | transfer_state_enum | enum definition |
-| SRS-CONCURRENT-001 | Multiple Transfers | transfer_manager | Active transfers map |
-| SRS-CONCURRENT-002 | Bandwidth Throttle | bandwidth_limiter | Token bucket algorithm |
+| SRS-RESUME-001 | State Persistence | resume_handler | save_state() |
+| SRS-RESUME-002 | Transfer Resume | resume_handler | load_state() |
+| SRS-PROGRESS-001 | Progress Callbacks | progress_tracker | on_progress() |
 | SRS-TRANS-001 | Transport Abstraction | transport_interface | Abstract class |
 | SRS-TRANS-002 | TCP Transport | tcp_transport | Implementation class |
-| SRS-TRANS-003 | QUIC Transport | quic_transport | Implementation class |
-| SRS-TRANS-004 | Protocol Fallback | transport_factory | create_with_fallback() |
-
-### 8.2 Design to Test Traceability
-
-| Design Component | Test Category | Test File |
-|------------------|---------------|-----------|
-| chunk_splitter | Unit | chunk_splitter_test.cpp |
-| chunk_assembler | Unit | chunk_assembler_test.cpp |
-| lz4_engine | Unit | lz4_engine_test.cpp |
-| adaptive_compression | Unit | adaptive_compression_test.cpp |
-| bounded_queue | Unit | bounded_queue_test.cpp |
-| sender_pipeline | Integration | sender_pipeline_test.cpp |
-| receiver_pipeline | Integration | receiver_pipeline_test.cpp |
-| file_sender | Integration | file_sender_test.cpp |
-| file_receiver | Integration | file_receiver_test.cpp |
-| End-to-end transfer | E2E | transfer_e2e_test.cpp |
-| Compression throughput | Benchmark | compression_benchmark.cpp |
-| Pipeline throughput | Benchmark | pipeline_benchmark.cpp |
-
----
-
-## 9. Deployment Considerations
-
-### 9.1 Build Configuration
-
-```cmake
-# CMakeLists.txt excerpt
-cmake_minimum_required(VERSION 3.20)
-project(file_trans_system VERSION 1.0.0 LANGUAGES CXX)
-
-set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
-# Dependencies
-find_package(lz4 REQUIRED)
-find_package(OpenSSL REQUIRED)
-
-# Core library
-add_library(file_trans_system
-    src/core/file_sender.cpp
-    src/core/file_receiver.cpp
-    src/core/transfer_manager.cpp
-    src/chunk/chunk_splitter.cpp
-    src/chunk/chunk_assembler.cpp
-    src/chunk/checksum.cpp
-    src/compression/lz4_engine.cpp
-    src/compression/adaptive_compression.cpp
-    src/compression/chunk_compressor.cpp
-    src/pipeline/sender_pipeline.cpp
-    src/pipeline/receiver_pipeline.cpp
-    src/pipeline/bounded_queue.cpp
-    src/transport/tcp_transport.cpp
-    src/resume/resume_handler.cpp
-)
-
-target_link_libraries(file_trans_system
-    PUBLIC
-        common_system
-        thread_system
-        network_system
-        container_system
-    PRIVATE
-        lz4::lz4
-        OpenSSL::SSL
-        OpenSSL::Crypto
-)
-```
-
-### 9.2 Platform-Specific Notes
-
-| Platform | Consideration |
-|----------|--------------|
-| Linux | Use io_uring for async I/O (kernel 5.1+) |
-| macOS | Use dispatch_io for async I/O |
-| Windows | Use IOCP for async I/O |
 
 ---
 
@@ -1818,7 +1512,8 @@ target_link_libraries(file_trans_system
 
 | Version | Date | Author | Description |
 |---------|------|--------|-------------|
-| 1.0.0 | 2025-12-11 | kcenon@naver.com | Initial SDS creation |
+| 1.0.0 | 2025-12-11 | kcenon@naver.com | Initial SDS creation (P2P model) |
+| 2.0.0 | 2025-12-11 | kcenon@naver.com | Complete rewrite for Client-Server architecture |
 
 ---
 

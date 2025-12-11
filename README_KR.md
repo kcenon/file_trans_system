@@ -2,24 +2,27 @@
 
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg)](https://isocpp.org/std/the-standard)
 [![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD_3--Clause-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.0.0-green.svg)](https://github.com/kcenon/file_trans_system)
+[![Version](https://img.shields.io/badge/version-2.0.0-green.svg)](https://github.com/kcenon/file_trans_system)
 
-압축, 재개 기능, 멀티 스테이지 파이프라인 아키텍처를 갖춘 고성능 프로덕션급 C++20 파일 전송 라이브러리입니다.
+클라이언트-서버 아키텍처, LZ4 압축, 재개 기능, 멀티 스테이지 파이프라인 처리를 갖춘 고성능 프로덕션급 C++20 파일 전송 라이브러리입니다.
 
 ## 주요 기능
 
+- **클라이언트-서버 아키텍처**: 다중 클라이언트 연결을 지원하는 중앙 서버
+- **양방향 전송**: 서버로 파일 업로드, 서버에서 파일 다운로드
 - **고성능**: 멀티 스테이지 파이프라인 처리로 LAN 환경 ≥500 MB/s 처리량
 - **LZ4 압축**: ~400 MB/s 속도와 ~2.1:1 압축률의 적응형 압축
 - **재개 지원**: 중단 시 체크포인트 기반 자동 전송 재개
-- **다중 파일 배치**: 단일 세션으로 여러 파일 전송
+- **자동 재연결**: 지수 백오프 정책을 통한 자동 재연결
+- **파일 관리**: 서버 저장소의 파일 목록 조회, 업로드, 다운로드
 - **진행 상황 추적**: 통계를 포함한 실시간 진행 상황 콜백
 - **무결성 검증**: 청크별 CRC32 + 파일별 SHA-256 검증
-- **동시 전송**: ≥100개의 동시 전송 지원
+- **동시 연결**: ≥100개의 동시 클라이언트 연결 지원
 - **낮은 메모리 사용량**: 제한된 메모리 사용량 (~32MB per direction)
 
 ## 빠른 시작
 
-### 기본 송신자
+### 파일 전송 서버
 
 ```cpp
 #include <kcenon/file_transfer/file_transfer.h>
@@ -27,95 +30,161 @@
 using namespace kcenon::file_transfer;
 
 int main() {
-    // 적응형 압축을 사용하는 송신자 생성
-    auto sender = file_sender::builder()
-        .with_compression(compression_mode::adaptive)
-        .with_chunk_size(256 * 1024)  // 256KB 청크
+    // 저장소 디렉토리를 가진 서버 생성
+    auto server = file_transfer_server::builder()
+        .with_storage_directory("/data/files")
+        .with_max_connections(100)
+        .with_max_file_size(10ULL * 1024 * 1024 * 1024)  // 10GB
         .build();
 
-    if (!sender) {
-        std::cerr << "송신자 생성 실패\n";
+    if (!server) {
+        std::cerr << "서버 생성 실패: " << server.error().message() << "\n";
+        return 1;
+    }
+
+    // 5GB 미만 업로드만 수락
+    server->on_upload_request([](const upload_request& req) {
+        return req.file_size < 5ULL * 1024 * 1024 * 1024;
+    });
+
+    // 모든 다운로드 허용
+    server->on_download_request([](const download_request& req) {
+        return true;
+    });
+
+    // 업로드 완료 처리
+    server->on_upload_complete([](const transfer_result& result) {
+        if (result.verified) {
+            std::cout << "수신 완료: " << result.filename << "\n";
+        }
+    });
+
+    // 서버 시작
+    server->start(endpoint{"0.0.0.0", 19000});
+
+    std::cout << "서버가 19000 포트에서 대기 중...\n";
+    std::this_thread::sleep_for(std::chrono::hours(24));
+
+    server->stop();
+}
+```
+
+### 파일 전송 클라이언트
+
+```cpp
+#include <kcenon/file_transfer/file_transfer.h>
+
+using namespace kcenon::file_transfer;
+
+int main() {
+    // 자동 재연결을 사용하는 클라이언트 생성
+    auto client = file_transfer_client::builder()
+        .with_compression(compression_mode::adaptive)
+        .with_auto_reconnect(true)
+        .with_reconnect_policy(reconnect_policy{
+            .initial_delay = std::chrono::seconds(1),
+            .max_delay = std::chrono::seconds(30),
+            .multiplier = 2.0,
+            .max_attempts = 10
+        })
+        .build();
+
+    if (!client) {
+        std::cerr << "클라이언트 생성 실패: " << client.error().message() << "\n";
+        return 1;
+    }
+
+    // 서버에 연결
+    auto connect_result = client->connect(endpoint{"192.168.1.100", 19000});
+    if (!connect_result) {
+        std::cerr << "연결 실패: " << connect_result.error().message() << "\n";
         return 1;
     }
 
     // 진행 상황 콜백 등록
-    sender->on_progress([](const transfer_progress& p) {
+    client->on_progress([](const transfer_progress& p) {
         double percent = 100.0 * p.bytes_transferred / p.total_bytes;
-        std::cout << percent << "% - " << p.transfer_rate / 1e6 << " MB/s\n";
+        std::cout << p.direction << ": " << percent << "% - "
+                  << p.transfer_rate / 1e6 << " MB/s\n";
     });
 
-    // 파일 전송
-    auto result = sender->send_file(
-        "/path/to/file.dat",
-        endpoint{"192.168.1.100", 19000}
-    );
-
-    if (result) {
-        std::cout << "전송 완료: " << result->id.to_string() << "\n";
-    } else {
-        std::cerr << "전송 실패: " << result.error().message() << "\n";
-    }
-}
-```
-
-### 기본 수신자
-
-```cpp
-#include <kcenon/file_transfer/file_transfer.h>
-
-using namespace kcenon::file_transfer;
-
-int main() {
-    // 수신자 생성
-    auto receiver = file_receiver::builder()
-        .with_output_directory("/downloads")
-        .build();
-
-    if (!receiver) {
-        std::cerr << "수신자 생성 실패\n";
-        return 1;
+    // 파일 업로드
+    auto upload_result = client->upload_file("/local/data.zip", "data.zip");
+    if (upload_result) {
+        std::cout << "업로드 완료: " << upload_result->id.to_string() << "\n";
     }
 
-    // 10GB 미만 전송만 수락
-    receiver->on_transfer_request([](const transfer_request& req) {
-        uint64_t total = 0;
-        for (const auto& file : req.files) total += file.file_size;
-        return total < 10ULL * 1024 * 1024 * 1024;
-    });
+    // 파일 다운로드
+    auto download_result = client->download_file("report.pdf", "/local/report.pdf");
+    if (download_result) {
+        std::cout << "다운로드 완료: " << download_result->output_path << "\n";
+    }
 
-    // 완료 처리
-    receiver->on_complete([](const transfer_result& result) {
-        if (result.verified) {
-            std::cout << "수신 완료: " << result.output_path << "\n";
+    // 서버 파일 목록 조회
+    auto files = client->list_files();
+    if (files) {
+        for (const auto& file : *files) {
+            std::cout << file.filename << " (" << file.file_size << " 바이트)\n";
         }
-    });
+    }
 
-    // 수신 대기 시작
-    receiver->start(endpoint{"0.0.0.0", 19000});
-
-    // 신호 대기...
-    std::this_thread::sleep_for(std::chrono::hours(24));
-
-    receiver->stop();
+    client->disconnect();
 }
 ```
 
 ## 아키텍처
 
-file_trans_system은 최대 처리량을 위해 **멀티 스테이지 파이프라인 아키텍처**를 사용합니다:
+file_trans_system은 **클라이언트-서버 아키텍처**와 **멀티 스테이지 파이프라인 처리**를 사용합니다:
+
+```
+                    ┌─────────────────────────────────┐
+                    │    file_transfer_server         │
+                    │                                 │
+                    │  ┌───────────────────────────┐  │
+                    │  │    저장소: /data/files     │  │
+                    │  └───────────────────────────┘  │
+                    │                                 │
+                    │  on_upload_request()            │
+                    │  on_download_request()          │
+                    │  on_upload_complete()           │
+                    │  on_download_complete()         │
+                    └────────────┬────────────────────┘
+                                 │
+         ┌───────────────────────┼───────────────────────┐
+         │                       │                       │
+         ▼                       ▼                       ▼
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│   클라이언트 A   │    │   클라이언트 B   │    │   클라이언트 C   │
+│  upload_file()  │    │ download_file() │    │  list_files()   │
+│                 │    │                 │    │                 │
+│    자동 재연결   │    │    자동 재연결   │    │    자동 재연결   │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
+```
+
+### 파이프라인 아키텍처
+
+각 전송은 최대 처리량을 위해 멀티 스테이지 파이프라인을 사용합니다:
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
-│                         송신자 파이프라인                                │
-│                                                                         │
+│                     업로드 파이프라인 (클라이언트)                        │
+│                                                                        │
 │  파일 읽기 ──▶  청크     ──▶   LZ4      ──▶  네트워크                   │
 │   스테이지      조립         압축          전송                          │
-│  (io_read)   (chunk_process) (compression)   (network)                 │
-│                                                                         │
-│  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │              typed_thread_pool<pipeline_stage>                  │   │
-│  │   [IO 워커] [연산 워커] [네트워크 워커]                            │   │
-│  └─────────────────────────────────────────────────────────────────┘   │
+│  (io_read)   (chunk_process) (compression)   (network)                │
+│                                                                        │
+│  ┌──────────────────────────────────────────────────────────────────┐ │
+│  │              typed_thread_pool<pipeline_stage>                   │ │
+│  │   [IO 워커] [연산 워커] [네트워크 워커]                             │ │
+│  └──────────────────────────────────────────────────────────────────┘ │
+└────────────────────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────────────────────────┐
+│                    다운로드 파이프라인 (클라이언트)                       │
+│                                                                        │
+│  네트워크  ──▶   LZ4       ──▶  청크     ──▶  파일 쓰기                 │
+│   수신        압축 해제        재조립        스테이지                    │
+│ (network)    (compression)  (chunk_process)  (io_write)               │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -133,9 +202,38 @@ file_trans_system은 최대 처리량을 위해 **멀티 스테이지 파이프�
 | LZ4 압축 속도 | ≥ 400 MB/s |
 | LZ4 압축 해제 속도 | ≥ 1.5 GB/s |
 | 기본 메모리 | < 50 MB |
-| 동시 전송 | ≥ 100 |
+| 동시 클라이언트 연결 | ≥ 100 |
 
 ## 설정
+
+### 서버 설정
+
+```cpp
+auto server = file_transfer_server::builder()
+    .with_storage_directory("/data/files")         // 필수
+    .with_max_connections(100)                     // 기본값: 100
+    .with_max_file_size(10ULL * 1024 * 1024 * 1024) // 기본값: 10GB
+    .with_storage_quota(1ULL * 1024 * 1024 * 1024 * 1024) // 1TB
+    .with_pipeline_config(pipeline_config::auto_detect())
+    .build();
+```
+
+### 클라이언트 설정
+
+```cpp
+auto client = file_transfer_client::builder()
+    .with_compression(compression_mode::adaptive)   // 기본값
+    .with_chunk_size(256 * 1024)                   // 256KB (기본값)
+    .with_auto_reconnect(true)                     // 자동 재연결 활성화
+    .with_reconnect_policy(reconnect_policy{
+        .initial_delay = 1s,
+        .max_delay = 30s,
+        .multiplier = 2.0,
+        .max_attempts = 10
+    })
+    .with_pipeline_config(pipeline_config::auto_detect())
+    .build();
+```
 
 ### 압축 모드
 
@@ -167,6 +265,19 @@ auto config = pipeline_config::auto_detect();
 - 기본 **TLS 1.3** 암호화
 - **효율적인 재개**: 비트맵 기반 누락 청크 추적
 
+### 메시지 타입
+
+| 코드 | 메시지 | 방향 | 설명 |
+|-----|-------|------|------|
+| 0x10 | UPLOAD_REQUEST | C→S | 메타데이터 포함 업로드 요청 |
+| 0x11 | UPLOAD_ACCEPT | S→C | 업로드 승인 |
+| 0x12 | UPLOAD_REJECT | S→C | 업로드 거부 (사유 포함) |
+| 0x50 | DOWNLOAD_REQUEST | C→S | 파일 다운로드 요청 |
+| 0x51 | DOWNLOAD_ACCEPT | S→C | 다운로드 승인 (메타데이터 포함) |
+| 0x52 | DOWNLOAD_REJECT | S→C | 다운로드 거부 |
+| 0x60 | LIST_REQUEST | C→S | 파일 목록 요청 |
+| 0x61 | LIST_RESPONSE | S→C | 파일 목록 응답 |
+
 ## 의존성
 
 file_trans_system은 kcenon 에코시스템 라이브러리를 기반으로 구축되었습니다:
@@ -187,13 +298,14 @@ file_trans_system은 kcenon 에코시스템 라이브러리를 기반으로 구�
 
 | 문서 | 설명 |
 |-----|------|
-| [빠른 참조](docs/reference/quick-reference.md) | 일반 작업 치트 시트 |
-| [API 참조](docs/reference/api-reference.md) | 완전한 API 문서 |
-| [프로토콜 사양](docs/reference/protocol-spec.md) | 와이어 프로토콜 상세 |
-| [파이프라인 아키텍처](docs/reference/pipeline-architecture.md) | 파이프라인 설계 가이드 |
-| [설정 가이드](docs/reference/configuration.md) | 튜닝 옵션 |
-| [오류 코드](docs/reference/error-codes.md) | 오류 코드 참조 |
-| [LZ4 압축](docs/reference/lz4-compression.md) | 압축 상세 |
+| [빠른 참조](docs/reference/quick-reference_KR.md) | 일반 작업 치트 시트 |
+| [API 참조](docs/reference/api-reference_KR.md) | 완전한 API 문서 |
+| [프로토콜 사양](docs/reference/protocol-spec_KR.md) | 와이어 프로토콜 상세 |
+| [파이프라인 아키텍처](docs/reference/pipeline-architecture_KR.md) | 파이프라인 설계 가이드 |
+| [설정 가이드](docs/reference/configuration_KR.md) | 튜닝 옵션 |
+| [오류 코드](docs/reference/error-codes_KR.md) | 오류 코드 참조 |
+| [시작하기](docs/reference/getting-started_KR.md) | 단계별 튜토리얼 |
+| [시퀀스 다이어그램](docs/reference/sequence-diagrams_KR.md) | 상호작용 흐름 |
 
 ### 설계 문서
 
@@ -202,6 +314,7 @@ file_trans_system은 kcenon 에코시스템 라이브러리를 기반으로 구�
 | [PRD](docs/PRD_KR.md) | 제품 요구사항 문서 |
 | [SRS](docs/SRS_KR.md) | 소프트웨어 요구사항 사양 |
 | [SDS](docs/SDS_KR.md) | 소프트웨어 설계 사양 |
+| [아키텍처](docs/architecture_KR.md) | 아키텍처 개요 |
 | [검증](docs/Verification_KR.md) | 검증 계획 |
 | [확인](docs/Validation_KR.md) | 확인 계획 |
 
@@ -235,37 +348,89 @@ target_link_libraries(your_target PRIVATE kcenon::file_transfer)
 
 다음은 [examples/](examples/) 디렉토리에서 확인할 수 있습니다:
 
-- `simple_sender.cpp` - 기본 파일 전송
-- `simple_receiver.cpp` - 기본 파일 수신
+- `simple_server.cpp` - 기본 파일 전송 서버
+- `simple_client.cpp` - 기본 파일 전송 클라이언트
+- `upload_example.cpp` - 진행 상황 포함 파일 업로드
+- `download_example.cpp` - 검증 포함 파일 다운로드
 - `batch_transfer.cpp` - 다중 파일 배치 전송
 - `resume_transfer.cpp` - 전송 재개 처리
 - `custom_pipeline.cpp` - 파이프라인 설정 튜닝
+- `auto_reconnect.cpp` - 자동 재연결 데모
 
 ## 오류 처리
 
 모든 작업은 명시적 오류 처리를 위해 `Result<T>`를 반환합니다:
 
 ```cpp
-auto result = sender->send_file(path, endpoint);
+// 오류 처리를 포함한 업로드
+auto result = client->upload_file(path, filename);
 if (!result) {
     auto code = result.error().code();
-    if (error::is_retryable(code)) {
-        // 지수 백오프로 재시도
-        sender->resume(transfer_id);
-    } else {
-        std::cerr << "영구 오류: " << result.error().message() << "\n";
+    switch (code) {
+        case error::upload_rejected:
+            std::cerr << "서버가 업로드를 거부했습니다\n";
+            break;
+        case error::storage_full:
+            std::cerr << "서버 저장소가 가득 찼습니다\n";
+            break;
+        case error::transfer_timeout:
+            // 재시도 가능 - 재개 가능
+            client->resume_upload(transfer_id);
+            break;
+        default:
+            std::cerr << "오류: " << result.error().message() << "\n";
+    }
+}
+
+// 오류 처리를 포함한 다운로드
+auto download = client->download_file(filename, local_path);
+if (!download) {
+    if (download.error().code() == error::file_not_found_on_server) {
+        std::cerr << "서버에서 파일을 찾을 수 없습니다\n";
     }
 }
 ```
 
-주요 오류 코드:
+### 주요 오류 코드
 
 | 코드 | 이름 | 설명 |
 |-----|-----|-----|
 | -700 | `transfer_init_failed` | 연결 실패 |
 | -702 | `transfer_timeout` | 전송 시간 초과 |
+| -711 | `connection_closed` | 연결이 예기치 않게 닫힘 |
+| -712 | `upload_rejected` | 서버가 업로드를 거부함 |
 | -720 | `chunk_checksum_error` | 데이터 손상 감지 |
-| -743 | `file_not_found` | 원본 파일을 찾을 수 없음 |
+| -743 | `file_not_found` | 로컬 파일을 찾을 수 없음 |
+| -745 | `storage_full` | 서버 저장소 할당량 초과 |
+| -746 | `file_not_found_on_server` | 서버에 요청한 파일 없음 |
+| -747 | `access_denied` | 권한 없음 |
+| -748 | `invalid_filename` | 잘못된 파일명 |
+
+## 자동 재연결
+
+클라이언트는 지수 백오프를 사용한 자동 재연결을 지원합니다:
+
+```cpp
+auto client = file_transfer_client::builder()
+    .with_auto_reconnect(true)
+    .with_reconnect_policy(reconnect_policy{
+        .initial_delay = std::chrono::seconds(1),
+        .max_delay = std::chrono::seconds(30),
+        .multiplier = 2.0,
+        .max_attempts = 10
+    })
+    .build();
+
+// 재연결 콜백 설정
+client->on_reconnect([](int attempt, const reconnect_info& info) {
+    std::cout << "재연결 중 (시도 " << attempt << ")...\n";
+});
+
+// 연결 복구 콜백 설정
+client->on_connection_restored([]() {
+    std::cout << "연결이 복구되었습니다!\n";
+});
+```
 
 ## 라이선스
 
@@ -277,11 +442,11 @@ if (!result) {
 
 ## 로드맵
 
-- [ ] **Phase 1**: LZ4 압축을 포함한 핵심 TCP 전송
+- [x] **Phase 1**: TCP 전송 및 LZ4 압축을 포함한 클라이언트-서버 아키텍처
 - [ ] **Phase 2**: QUIC 전송 지원
 - [ ] **Phase 3**: 암호화 레이어 (AES-256-GCM)
 - [ ] **Phase 4**: 클라우드 스토리지 통합
 
 ---
 
-*file_trans_system v1.0.0 | 고성능 파일 전송 라이브러리*
+*file_trans_system v2.0.0 | 클라이언트-서버 아키텍처를 갖춘 고성능 파일 전송 라이브러리*

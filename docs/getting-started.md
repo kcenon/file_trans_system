@@ -2,16 +2,22 @@
 
 A step-by-step guide to start using **file_trans_system** in your C++20 projects.
 
+**Version:** 2.0.0
+**Architecture:** Client-Server Model
+
+---
+
 ## Table of Contents
 
 1. [Installation](#installation)
 2. [Quick Start](#quick-start)
-3. [Basic Examples](#basic-examples)
-4. [Configuration Options](#configuration-options)
-5. [Error Handling](#error-handling)
-6. [Progress Monitoring](#progress-monitoring)
-7. [Advanced Usage](#advanced-usage)
-8. [Troubleshooting](#troubleshooting)
+3. [Server Examples](#server-examples)
+4. [Client Examples](#client-examples)
+5. [Upload & Download](#upload--download)
+6. [Error Handling](#error-handling)
+7. [Progress Monitoring](#progress-monitoring)
+8. [Advanced Usage](#advanced-usage)
+9. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -49,7 +55,7 @@ include(FetchContent)
 FetchContent_Declare(
     file_trans_system
     GIT_REPOSITORY https://github.com/kcenon/file_trans_system.git
-    GIT_TAG v1.0.0
+    GIT_TAG v2.0.0
 )
 
 FetchContent_MakeAvailable(file_trans_system)
@@ -85,51 +91,7 @@ using namespace kcenon::file_transfer;
 
 ### 5-Minute Example
 
-**Sender (send_file.cpp):**
-
-```cpp
-#include <kcenon/file_transfer/file_transfer.h>
-#include <iostream>
-
-using namespace kcenon::file_transfer;
-
-int main(int argc, char* argv[]) {
-    if (argc != 4) {
-        std::cerr << "Usage: send_file <file> <host> <port>\n";
-        return 1;
-    }
-
-    // Create sender
-    auto sender = file_sender::builder().build();
-    if (!sender) {
-        std::cerr << "Failed to create sender: " << sender.error().message() << "\n";
-        return 1;
-    }
-
-    // Show progress
-    sender->on_progress([](const transfer_progress& p) {
-        double pct = 100.0 * p.bytes_transferred / p.total_bytes;
-        std::cout << "\rProgress: " << std::fixed << std::setprecision(1)
-                  << pct << "% (" << p.transfer_rate / 1e6 << " MB/s)" << std::flush;
-    });
-
-    // Send file
-    auto result = sender->send_file(
-        argv[1],
-        endpoint{argv[2], static_cast<uint16_t>(std::stoi(argv[3]))}
-    );
-
-    if (result) {
-        std::cout << "\nTransfer complete!\n";
-        return 0;
-    } else {
-        std::cerr << "\nTransfer failed: " << result.error().message() << "\n";
-        return 1;
-    }
-}
-```
-
-**Receiver (receive_file.cpp):**
+**Server (file_server.cpp):**
 
 ```cpp
 #include <kcenon/file_transfer/file_transfer.h>
@@ -144,47 +106,152 @@ void signal_handler(int) { running = false; }
 
 int main(int argc, char* argv[]) {
     if (argc != 3) {
-        std::cerr << "Usage: receive_file <port> <output_dir>\n";
+        std::cerr << "Usage: file_server <port> <storage_dir>\n";
         return 1;
     }
 
     std::signal(SIGINT, signal_handler);
 
-    // Create receiver
-    auto receiver = file_receiver::builder()
-        .with_output_directory(argv[2])
+    // Create server
+    auto server = file_transfer_server::builder()
+        .with_storage_directory(argv[2])
+        .with_max_connections(100)
         .build();
 
-    if (!receiver) {
-        std::cerr << "Failed to create receiver: " << receiver.error().message() << "\n";
+    if (!server) {
+        std::cerr << "Failed to create server: " << server.error().message() << "\n";
         return 1;
     }
 
-    // Accept all transfers
-    receiver->on_transfer_request([](const transfer_request&) {
-        return true;
+    // Accept all uploads and downloads
+    server->on_upload_request([](const upload_request& req) {
+        std::cout << "Upload request: " << req.filename
+                  << " (" << req.file_size << " bytes)\n";
+        return true;  // Accept
+    });
+
+    server->on_download_request([](const download_request& req) {
+        std::cout << "Download request: " << req.filename << "\n";
+        return true;  // Accept
     });
 
     // Handle completion
-    receiver->on_complete([](const transfer_result& r) {
-        if (r.verified) {
-            std::cout << "Received: " << r.output_path << "\n";
-        } else {
-            std::cerr << "Failed: " << r.error->message << "\n";
-        }
+    server->on_upload_complete([](const transfer_result& r) {
+        std::cout << "Upload complete: " << r.filename << "\n";
+    });
+
+    server->on_download_complete([](const transfer_result& r) {
+        std::cout << "Download complete: " << r.filename << "\n";
     });
 
     // Start listening
     auto port = static_cast<uint16_t>(std::stoi(argv[1]));
-    receiver->start(endpoint{"0.0.0.0", port});
+    auto result = server->start(endpoint{"0.0.0.0", port});
 
-    std::cout << "Listening on port " << port << "...\n";
+    if (!result) {
+        std::cerr << "Failed to start server: " << result.error().message() << "\n";
+        return 1;
+    }
+
+    std::cout << "Server listening on port " << port << "...\n";
+    std::cout << "Storage directory: " << argv[2] << "\n";
 
     while (running) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
-    receiver->stop();
+    std::cout << "\nShutting down...\n";
+    server->stop();
+    return 0;
+}
+```
+
+**Client (file_client.cpp):**
+
+```cpp
+#include <kcenon/file_transfer/file_transfer.h>
+#include <iostream>
+
+using namespace kcenon::file_transfer;
+
+int main(int argc, char* argv[]) {
+    if (argc < 4) {
+        std::cerr << "Usage: file_client <host> <port> <command> [args...]\n";
+        std::cerr << "Commands:\n";
+        std::cerr << "  upload <local_file> <remote_name>\n";
+        std::cerr << "  download <remote_name> <local_file>\n";
+        std::cerr << "  list [pattern]\n";
+        return 1;
+    }
+
+    // Create client with auto-reconnect
+    auto client = file_transfer_client::builder()
+        .with_auto_reconnect(true)
+        .with_compression(compression_mode::adaptive)
+        .build();
+
+    if (!client) {
+        std::cerr << "Failed to create client: " << client.error().message() << "\n";
+        return 1;
+    }
+
+    // Progress callback
+    client->on_progress([](const transfer_progress& p) {
+        double pct = 100.0 * p.bytes_transferred / p.total_bytes;
+        std::cout << "\rProgress: " << std::fixed << std::setprecision(1)
+                  << pct << "% (" << p.transfer_rate / 1e6 << " MB/s)" << std::flush;
+    });
+
+    // Connect to server
+    auto port = static_cast<uint16_t>(std::stoi(argv[2]));
+    auto connect_result = client->connect(endpoint{argv[1], port});
+
+    if (!connect_result) {
+        std::cerr << "Connection failed: " << connect_result.error().message() << "\n";
+        return 1;
+    }
+
+    std::cout << "Connected to " << argv[1] << ":" << port << "\n";
+
+    std::string command = argv[3];
+
+    if (command == "upload" && argc >= 6) {
+        auto result = client->upload_file(argv[4], argv[5]);
+        if (result) {
+            std::cout << "\nUpload complete!\n";
+        } else {
+            std::cerr << "\nUpload failed: " << result.error().message() << "\n";
+            return 1;
+        }
+    }
+    else if (command == "download" && argc >= 6) {
+        auto result = client->download_file(argv[4], argv[5]);
+        if (result) {
+            std::cout << "\nDownload complete: " << argv[5] << "\n";
+        } else {
+            std::cerr << "\nDownload failed: " << result.error().message() << "\n";
+            return 1;
+        }
+    }
+    else if (command == "list") {
+        std::string pattern = argc >= 5 ? argv[4] : "*";
+        auto result = client->list_files(pattern);
+        if (result) {
+            std::cout << "Files on server:\n";
+            for (const auto& file : *result) {
+                std::cout << "  " << file.name << " (" << file.size << " bytes)\n";
+            }
+        } else {
+            std::cerr << "List failed: " << result.error().message() << "\n";
+            return 1;
+        }
+    }
+    else {
+        std::cerr << "Unknown command: " << command << "\n";
+        return 1;
+    }
+
+    client->disconnect();
     return 0;
 }
 ```
@@ -192,174 +259,267 @@ int main(int argc, char* argv[]) {
 **Usage:**
 
 ```bash
-# Terminal 1 - Start receiver
-./receive_file 19000 /downloads
+# Terminal 1 - Start server
+./file_server 19000 /data/files
 
-# Terminal 2 - Send file
-./send_file /path/to/file.zip 127.0.0.1 19000
+# Terminal 2 - Upload file
+./file_client localhost 19000 upload /local/report.pdf report.pdf
+
+# Terminal 3 - List files
+./file_client localhost 19000 list
+
+# Terminal 4 - Download file
+./file_client localhost 19000 download report.pdf /local/downloaded.pdf
 ```
 
 ---
 
-## Basic Examples
+## Server Examples
 
-### Example 1: Send with Compression
+### Example 1: Basic Server
 
 ```cpp
-auto sender = file_sender::builder()
-    .with_compression(compression_mode::enabled)  // Always compress
-    .with_compression_level(compression_level::fast)  // Fast compression
+auto server = file_transfer_server::builder()
+    .with_storage_directory("/data/files")
     .build();
 
-auto result = sender->send_file(
-    "/path/to/logs.txt",
-    endpoint{"192.168.1.100", 19000}
-);
+server->start(endpoint{"0.0.0.0", 19000});
 ```
 
-### Example 2: Send Large Files with Bandwidth Limit
+### Example 2: Production Server with Limits
 
 ```cpp
-auto sender = file_sender::builder()
-    .with_chunk_size(512 * 1024)  // 512KB chunks
-    .with_bandwidth_limit(10 * 1024 * 1024)  // 10 MB/s limit
+auto server = file_transfer_server::builder()
+    .with_storage_directory("/data/files")
+    .with_max_connections(500)
+    .with_max_file_size(10ULL * 1024 * 1024 * 1024)  // 10GB
+    .with_storage_quota(1ULL * 1024 * 1024 * 1024 * 1024)  // 1TB
+    .with_connection_timeout(5min)
     .build();
 
-auto result = sender->send_file(
-    "/path/to/large_video.mp4",
-    endpoint{"192.168.1.100", 19000}
-);
+// Custom upload validation
+server->on_upload_request([](const upload_request& req) {
+    // Only allow specific extensions
+    auto ext = std::filesystem::path(req.filename).extension();
+    if (ext != ".pdf" && ext != ".doc" && ext != ".txt") {
+        return false;  // Reject
+    }
+
+    // Check file size
+    if (req.file_size > 1e9) {
+        return false;  // Reject > 1GB
+    }
+
+    return true;
+});
+
+// Connection events
+server->on_client_connected([](const client_info& info) {
+    std::cout << "Client connected: " << info.address << "\n";
+});
+
+server->on_client_disconnected([](const client_info& info, disconnect_reason reason) {
+    std::cout << "Client disconnected: " << info.address
+              << " (" << to_string(reason) << ")\n";
+});
+
+server->start(endpoint{"0.0.0.0", 19000});
 ```
 
-### Example 3: Send Multiple Files
+### Example 3: Server with Storage Monitoring
 
 ```cpp
-std::vector<std::filesystem::path> files = {
-    "/path/to/file1.txt",
-    "/path/to/file2.txt",
-    "/path/to/file3.txt"
+auto server = file_transfer_server::builder()
+    .with_storage_directory("/data/files")
+    .with_storage_quota(100ULL * 1024 * 1024 * 1024)  // 100GB
+    .build();
+
+// Monitor storage usage
+server->on_storage_warning([](const storage_warning& warning) {
+    if (warning.percent_used > 80) {
+        std::cout << "Warning: Storage " << warning.percent_used << "% full\n";
+    }
+});
+
+server->on_storage_full([]() {
+    std::cerr << "Error: Storage quota exceeded!\n";
+});
+
+// Periodically check storage status
+std::thread monitor([&server]() {
+    while (server->is_running()) {
+        auto status = server->get_storage_status();
+        std::cout << "Storage: " << (status.used_bytes / 1e9) << "GB / "
+                  << (status.quota_bytes / 1e9) << "GB\n";
+        std::this_thread::sleep_for(std::chrono::minutes(5));
+    }
+});
+```
+
+---
+
+## Client Examples
+
+### Example 1: Simple Upload
+
+```cpp
+auto client = file_transfer_client::builder().build();
+
+client->connect(endpoint{"192.168.1.100", 19000});
+
+auto result = client->upload_file("/local/data.zip", "data.zip");
+if (result) {
+    std::cout << "Upload successful!\n";
+}
+
+client->disconnect();
+```
+
+### Example 2: Upload with Compression Options
+
+```cpp
+auto client = file_transfer_client::builder()
+    .with_compression(compression_mode::enabled)
+    .with_compression_level(compression_level::high_compression)
+    .build();
+
+client->connect(endpoint{"192.168.1.100", 19000});
+
+// Override compression for specific upload
+upload_options opts{
+    .compression = compression_mode::disabled  // Don't compress this file
 };
 
-auto sender = file_sender::builder()
-    .with_compression(compression_mode::adaptive)
+auto result = client->upload_file("/local/video.mp4", "video.mp4", opts);
+```
+
+### Example 3: Client with Auto-Reconnect
+
+```cpp
+auto client = file_transfer_client::builder()
+    .with_auto_reconnect(true)
+    .with_reconnect_policy(reconnect_policy{
+        .initial_delay = std::chrono::milliseconds(500),
+        .max_delay = std::chrono::seconds(30),
+        .multiplier = 1.5,
+        .max_attempts = 20
+    })
     .build();
 
-auto result = sender->send_files(
-    files,
-    endpoint{"192.168.1.100", 19000}
-);
+// Connection event handlers
+client->on_connected([](const server_info& info) {
+    std::cout << "Connected to: " << info.address << "\n";
+});
 
+client->on_disconnected([](disconnect_reason reason) {
+    std::cout << "Disconnected: " << to_string(reason) << "\n";
+});
+
+client->on_reconnecting([](int attempt, auto delay) {
+    std::cout << "Reconnecting (attempt " << attempt << ")...\n";
+});
+
+client->on_reconnected([]() {
+    std::cout << "Reconnected successfully!\n";
+});
+
+client->connect(endpoint{"192.168.1.100", 19000});
+```
+
+### Example 4: Bandwidth-Limited Client
+
+```cpp
+auto client = file_transfer_client::builder()
+    .with_bandwidth_limit(10 * 1024 * 1024)  // 10 MB/s
+    .with_compression(compression_mode::enabled)  // Maximize effective throughput
+    .build();
+
+client->connect(endpoint{"192.168.1.100", 19000});
+client->upload_file("/local/large_file.dat", "large_file.dat");
+```
+
+---
+
+## Upload & Download
+
+### Upload File
+
+```cpp
+// Simple upload
+auto result = client->upload_file("/local/file.txt", "file.txt");
+
+// Upload with options
+upload_options opts{
+    .compression = compression_mode::enabled,
+    .level = compression_level::fast,
+    .verify_checksum = true
+};
+auto result = client->upload_file("/local/file.txt", "file.txt", opts);
+```
+
+### Upload Multiple Files
+
+```cpp
+std::vector<upload_entry> files = {
+    {"/local/file1.txt", "file1.txt"},
+    {"/local/file2.txt", "file2.txt"},
+    {"/local/file3.txt", "dir/file3.txt"}  // Server subdirectory
+};
+
+auto result = client->upload_files(files);
 if (result) {
-    std::cout << "Batch transfer ID: " << result->id.to_string() << "\n";
-    std::cout << "Files transferred: " << result->file_count << "\n";
+    std::cout << "Uploaded " << result->file_count << " files\n";
 }
 ```
 
-### Example 4: Receive with Size Limit
+### Download File
 
 ```cpp
-auto receiver = file_receiver::builder()
-    .with_output_directory("/downloads")
-    .build();
+// Simple download
+auto result = client->download_file("report.pdf", "/local/report.pdf");
 
-// Only accept files under 1GB
-receiver->on_transfer_request([](const transfer_request& req) {
-    for (const auto& file : req.files) {
-        if (file.file_size > 1ULL * 1024 * 1024 * 1024) {
-            return false;  // Reject
-        }
-    }
-    return true;  // Accept
-});
+// Download with options
+download_options opts{
+    .verify_checksum = true,
+    .overwrite = false  // Don't overwrite if exists
+};
+auto result = client->download_file("report.pdf", "/local/report.pdf", opts);
 
-receiver->start(endpoint{"0.0.0.0", 19000});
+if (!result && result.error().code() == error::file_already_exists) {
+    std::cout << "File already exists locally\n";
+}
 ```
 
-### Example 5: Receive with File Type Filter
+### Download Multiple Files
 
 ```cpp
-receiver->on_transfer_request([](const transfer_request& req) {
-    static const std::set<std::string> allowed_extensions = {
-        ".txt", ".pdf", ".doc", ".docx", ".xls", ".xlsx"
-    };
-
-    for (const auto& file : req.files) {
-        std::filesystem::path p(file.filename);
-        if (allowed_extensions.find(p.extension()) == allowed_extensions.end()) {
-            return false;  // Reject unknown file types
-        }
-    }
-    return true;
-});
-```
-
----
-
-## Configuration Options
-
-### Sender Configuration
-
-| Option | Method | Default | Description |
-|--------|--------|---------|-------------|
-| Compression Mode | `with_compression()` | `adaptive` | disabled, enabled, adaptive |
-| Compression Level | `with_compression_level()` | `fast` | fast, high_compression |
-| Chunk Size | `with_chunk_size()` | 256KB | 64KB - 1MB |
-| Bandwidth Limit | `with_bandwidth_limit()` | 0 (unlimited) | bytes/second |
-| Transport | `with_transport()` | `tcp` | tcp, quic (Phase 2) |
-
-```cpp
-auto sender = file_sender::builder()
-    .with_compression(compression_mode::adaptive)
-    .with_compression_level(compression_level::fast)
-    .with_chunk_size(256 * 1024)
-    .with_bandwidth_limit(0)
-    .with_transport(transport_type::tcp)
-    .build();
-```
-
-### Receiver Configuration
-
-| Option | Method | Default | Description |
-|--------|--------|---------|-------------|
-| Output Directory | `with_output_directory()` | Current dir | Where to save files |
-| Bandwidth Limit | `with_bandwidth_limit()` | 0 (unlimited) | bytes/second |
-| Transport | `with_transport()` | `tcp` | tcp, quic (Phase 2) |
-
-```cpp
-auto receiver = file_receiver::builder()
-    .with_output_directory("/downloads")
-    .with_bandwidth_limit(50 * 1024 * 1024)  // 50 MB/s
-    .build();
-```
-
-### Pipeline Configuration
-
-For advanced tuning:
-
-```cpp
-pipeline_config config{
-    .io_read_workers = 2,
-    .chunk_workers = 2,
-    .compression_workers = 4,
-    .network_workers = 2,
-    .io_write_workers = 2,
-
-    .read_queue_size = 16,
-    .compress_queue_size = 32,
-    .send_queue_size = 64
+std::vector<download_entry> files = {
+    {"file1.txt", "/local/file1.txt"},
+    {"file2.txt", "/local/file2.txt"}
 };
 
-auto sender = file_sender::builder()
-    .with_pipeline_config(config)
-    .build();
+auto result = client->download_files(files);
 ```
 
-Or use auto-detection:
+### List Files
 
 ```cpp
-auto sender = file_sender::builder()
-    .with_pipeline_config(pipeline_config::auto_detect())
-    .build();
+// List all files
+auto result = client->list_files();
+
+// List with pattern
+auto result = client->list_files("*.pdf");
+
+// List with pagination
+auto result = client->list_files("*", 0, 100);  // First 100 files
+
+if (result) {
+    for (const auto& file : *result) {
+        std::cout << file.name << "\t"
+                  << file.size << " bytes\t"
+                  << file.modified_time << "\n";
+    }
+}
 ```
 
 ---
@@ -371,7 +531,7 @@ auto sender = file_sender::builder()
 All operations return `Result<T>`:
 
 ```cpp
-auto result = sender->send_file(path, endpoint);
+auto result = client->upload_file(local, remote);
 
 if (result) {
     // Success - access the value
@@ -384,19 +544,55 @@ if (result) {
 }
 ```
 
-### Retryable Errors
+### Connection Errors
 
 ```cpp
-auto result = sender->send_file(path, endpoint);
-
+auto result = client->connect(endpoint);
 if (!result) {
-    if (error::is_retryable(result.error().code())) {
-        // Network errors - can retry
-        std::cout << "Retrying...\n";
-        result = sender->send_file(path, endpoint);
-    } else {
-        // Permanent error - don't retry
-        std::cerr << "Fatal error: " << result.error().message() << "\n";
+    switch (result.error().code()) {
+        case error::connection_failed:
+            std::cerr << "Cannot connect to server\n";
+            break;
+        case error::connection_timeout:
+            std::cerr << "Connection timed out\n";
+            break;
+        case error::server_unavailable:
+            std::cerr << "Server is not available\n";
+            break;
+    }
+}
+```
+
+### Transfer Errors
+
+```cpp
+auto result = client->upload_file(local, remote);
+if (!result) {
+    switch (result.error().code()) {
+        case error::upload_rejected:
+            std::cerr << "Server rejected the upload\n";
+            break;
+        case error::storage_full:
+            std::cerr << "Server storage is full\n";
+            break;
+        case error::file_already_exists:
+            std::cerr << "File already exists on server\n";
+            break;
+        case error::file_not_found:
+            std::cerr << "Local file not found\n";
+            break;
+    }
+}
+
+auto result = client->download_file(remote, local);
+if (!result) {
+    switch (result.error().code()) {
+        case error::download_rejected:
+            std::cerr << "Server rejected the download\n";
+            break;
+        case error::file_not_found_on_server:
+            std::cerr << "File not found on server\n";
+            break;
     }
 }
 ```
@@ -405,33 +601,16 @@ if (!result) {
 
 | Code | Name | Description | Action |
 |------|------|-------------|--------|
-| -700 | `transfer_init_failed` | Connection failed | Check network, retry |
-| -702 | `transfer_timeout` | Operation timed out | Retry or resume |
-| -703 | `transfer_rejected` | Receiver rejected | Check request |
+| -700 | `connection_failed` | Cannot connect | Check server address |
+| -703 | `connection_lost` | Connection dropped | Auto-reconnect or retry |
+| -704 | `reconnect_failed` | All reconnect attempts failed | Manual intervention |
+| -713 | `upload_rejected` | Server rejected upload | Check server rules |
+| -714 | `download_rejected` | Server rejected download | Check permissions |
 | -720 | `chunk_checksum_error` | Data corruption | Automatic retry |
-| -723 | `file_hash_mismatch` | File verification failed | Re-transfer |
-| -743 | `file_not_found` | Source file missing | Check path |
-| -744 | `disk_full` | No disk space | Free space |
-
-### Error Categories
-
-```cpp
-auto code = result.error().code();
-
-if (error::is_transfer_error(code)) {
-    // Network or connection issues
-} else if (error::is_chunk_error(code)) {
-    // Data integrity issues
-} else if (error::is_file_error(code)) {
-    // File system issues
-} else if (error::is_resume_error(code)) {
-    // Resume operation issues
-} else if (error::is_compression_error(code)) {
-    // Compression/decompression issues
-} else if (error::is_config_error(code)) {
-    // Configuration issues
-}
-```
+| -744 | `file_already_exists` | File exists on server | Use overwrite option |
+| -745 | `storage_full` | Server storage full | Contact admin |
+| -746 | `file_not_found_on_server` | Remote file not found | Check filename |
+| -750 | `file_not_found` | Local file not found | Check path |
 
 ---
 
@@ -440,7 +619,7 @@ if (error::is_transfer_error(code)) {
 ### Progress Callback
 
 ```cpp
-sender->on_progress([](const transfer_progress& p) {
+client->on_progress([](const transfer_progress& p) {
     // Calculate percentage
     double percent = 100.0 * p.bytes_transferred / p.total_bytes;
 
@@ -467,31 +646,34 @@ sender->on_progress([](const transfer_progress& p) {
 | Field | Type | Description |
 |-------|------|-------------|
 | `id` | `transfer_id` | Unique transfer identifier |
+| `direction` | `transfer_direction` | upload or download |
 | `bytes_transferred` | `uint64_t` | Raw bytes transferred |
 | `bytes_on_wire` | `uint64_t` | Actual bytes sent (compressed) |
 | `total_bytes` | `uint64_t` | Total file size |
 | `transfer_rate` | `double` | Current speed (bytes/sec) |
-| `effective_rate` | `double` | Effective rate with compression |
 | `compression_ratio` | `double` | Compression ratio |
 | `elapsed_time` | `duration` | Time since start |
 | `estimated_remaining` | `duration` | Estimated time to completion |
-| `state` | `transfer_state_enum` | Current state |
 
-### Transfer Statistics
+### Client Statistics
 
 ```cpp
-// Get aggregate statistics
-auto stats = manager->get_statistics();
-std::cout << "Total transferred: " << stats.total_bytes_transferred << "\n";
-std::cout << "Active transfers: " << stats.active_transfer_count << "\n";
-std::cout << "Average rate: " << stats.average_transfer_rate / 1e6 << " MB/s\n";
+auto stats = client->get_statistics();
+std::cout << "Total uploaded: " << stats.total_uploaded_bytes << "\n";
+std::cout << "Total downloaded: " << stats.total_downloaded_bytes << "\n";
+std::cout << "Current upload rate: " << stats.current_upload_rate_mbps << " MB/s\n";
+std::cout << "Current download rate: " << stats.current_download_rate_mbps << " MB/s\n";
+```
 
-// Get compression statistics
-auto comp_stats = manager->get_compression_stats();
-std::cout << "Compression ratio: " << comp_stats.compression_ratio() << ":1\n";
-std::cout << "Compression speed: " << comp_stats.compression_speed_mbps() << " MB/s\n";
-std::cout << "Chunks compressed: " << comp_stats.chunks_compressed << "\n";
-std::cout << "Chunks skipped: " << comp_stats.chunks_skipped << "\n";
+### Server Statistics
+
+```cpp
+auto stats = server->get_statistics();
+std::cout << "Active connections: " << stats.active_connections << "\n";
+std::cout << "Total uploaded: " << stats.total_uploaded_bytes << "\n";
+std::cout << "Total downloaded: " << stats.total_downloaded_bytes << "\n";
+std::cout << "Upload throughput: " << stats.upload_throughput_mbps << " MB/s\n";
+std::cout << "Download throughput: " << stats.download_throughput_mbps << " MB/s\n";
 ```
 
 ---
@@ -501,56 +683,38 @@ std::cout << "Chunks skipped: " << comp_stats.chunks_skipped << "\n";
 ### Transfer Control
 
 ```cpp
-// Start transfer
-auto handle = sender->send_file(path, endpoint);
+// Start upload
+auto handle = client->upload_file(local, remote);
 auto transfer_id = handle->id;
 
 // Pause transfer
-sender->pause(transfer_id);
+client->pause(transfer_id);
 
 // Resume transfer
-sender->resume(transfer_id);
+client->resume(transfer_id);
 
 // Cancel transfer
-sender->cancel(transfer_id);
+client->cancel(transfer_id);
 ```
 
 ### Transfer Resume After Disconnect
 
 ```cpp
-// Original transfer
-auto handle = sender->send_file(path, endpoint);
-auto transfer_id = handle->id;
-
-// ... connection lost ...
-
-// Resume transfer (automatically uses checkpoint)
-auto resume_result = sender->resume(transfer_id);
-if (resume_result) {
-    std::cout << "Resumed from " << resume_result->bytes_already_transferred
-              << " bytes\n";
-}
-```
-
-### Custom Transfer Options
-
-```cpp
-transfer_options opts{
-    .compression = compression_mode::enabled,
-    .level = compression_level::high_compression,
-    .chunk_size = 512 * 1024,
-    .verify_checksum = true,
-    .bandwidth_limit = 10 * 1024 * 1024,
-    .priority = 1  // Higher priority
-};
-
-auto result = sender->send_file(path, endpoint, opts);
+// Transfers automatically resume after reconnection
+client->on_reconnected([&client]() {
+    // Active transfers continue from where they left off
+    auto active = client->get_active_transfers();
+    for (const auto& transfer : active) {
+        std::cout << "Resuming: " << transfer.filename
+                  << " from " << transfer.bytes_transferred << " bytes\n";
+    }
+});
 ```
 
 ### Pipeline Statistics
 
 ```cpp
-auto pipeline_stats = sender->get_pipeline_stats();
+auto pipeline_stats = client->get_pipeline_stats();
 
 // Find bottleneck
 auto bottleneck = pipeline_stats.bottleneck_stage();
@@ -560,11 +724,6 @@ std::cout << "Bottleneck: " << stage_name(bottleneck) << "\n";
 std::cout << "IO Read: " << pipeline_stats.io_read_stats.throughput_mbps() << " MB/s\n";
 std::cout << "Compression: " << pipeline_stats.compression_stats.throughput_mbps() << " MB/s\n";
 std::cout << "Network: " << pipeline_stats.network_stats.throughput_mbps() << " MB/s\n";
-
-// Queue depths
-auto depths = sender->get_queue_depths();
-std::cout << "Read queue: " << depths.read_queue << "/" << depths.read_queue_max << "\n";
-std::cout << "Send queue: " << depths.send_queue << "/" << depths.send_queue_max << "\n";
 ```
 
 ---
@@ -575,16 +734,32 @@ std::cout << "Send queue: " << depths.send_queue << "/" << depths.send_queue_max
 
 #### "Connection refused" Error
 
-**Cause**: Receiver not running or wrong port.
+**Cause**: Server not running or wrong address/port.
 
 **Solution**:
 ```bash
-# Check if receiver is listening
+# Check if server is listening
 netstat -an | grep 19000
 
-# Ensure receiver starts before sender
-./receive_file 19000 /downloads &
-./send_file file.txt localhost 19000
+# Ensure server starts before client
+./file_server 19000 /data/files
+./file_client localhost 19000 list
+```
+
+#### "Upload rejected" Error
+
+**Cause**: Server rejected the upload request.
+
+**Solution**: Check server validation callbacks:
+```cpp
+// Server side - check what's being rejected
+server->on_upload_request([](const upload_request& req) {
+    std::cout << "Upload request: " << req.filename
+              << " (" << req.file_size << " bytes)\n";
+
+    // Temporarily accept all to debug
+    return true;
+});
 ```
 
 #### Slow Transfer Speed
@@ -594,28 +769,34 @@ netstat -an | grep 19000
 **Solution**:
 ```cpp
 // Check where the bottleneck is
-auto stats = sender->get_pipeline_stats();
+auto stats = client->get_pipeline_stats();
 std::cout << "Bottleneck: " << stage_name(stats.bottleneck_stage()) << "\n";
 
 // If compression bottleneck, add workers
 pipeline_config config = pipeline_config::auto_detect();
 config.compression_workers = 8;
 
-// If network bottleneck, check bandwidth
+// If network bottleneck, check bandwidth/latency
 // If IO bottleneck, consider faster storage
 ```
 
-#### "File hash mismatch" Error
+#### Frequent Disconnections
 
-**Cause**: File changed during transfer or data corruption.
+**Cause**: Network instability or server timeout.
 
 **Solution**:
 ```cpp
-// Don't modify source file during transfer
-// Or disable verification for streaming use cases
-transfer_options opts{
-    .verify_checksum = false  // Disable if source may change
-};
+// Enable aggressive reconnection
+auto client = file_transfer_client::builder()
+    .with_auto_reconnect(true)
+    .with_reconnect_policy(reconnect_policy::aggressive())
+    .build();
+
+// Or adjust server timeout
+auto server = file_transfer_server::builder()
+    .with_storage_directory("/data/files")
+    .with_connection_timeout(10min)  // Longer timeout
+    .build();
 ```
 
 #### High Memory Usage
@@ -625,11 +806,12 @@ transfer_options opts{
 **Solution**:
 ```cpp
 pipeline_config config{
-    .read_queue_size = 4,    // Reduce from default 16
-    .compress_queue_size = 8, // Reduce from default 32
-    .send_queue_size = 16    // Reduce from default 64
+    .read_queue_size = 4,
+    .compress_queue_size = 8,
+    .send_queue_size = 16,
+    .recv_queue_size = 16
 };
-// Memory: ~7MB vs default ~32MB
+// Memory: ~14MB vs default ~64MB
 ```
 
 ### Debug Logging
@@ -645,16 +827,17 @@ logger::set_level(log_level::debug);
 // Now file_trans_system will output detailed logs
 ```
 
-### Performance Tuning
+### Performance Tuning Guide
 
 | Scenario | Recommended Settings |
 |----------|---------------------|
 | **Text files** | `compression_mode::enabled`, `compression_level::fast` |
 | **Video/Images** | `compression_mode::disabled` |
 | **Mixed workload** | `compression_mode::adaptive` |
-| **Low bandwidth** | Larger chunk size, `high_compression` level |
-| **High bandwidth** | Smaller chunk size, more workers |
+| **Unreliable network** | Smaller chunks (64KB), aggressive reconnect |
+| **High bandwidth** | Larger chunks (512KB), more workers |
 | **Low memory** | Smaller queue sizes |
+| **Many clients** | Tune server thread pool |
 
 ---
 
@@ -664,7 +847,9 @@ logger::set_level(log_level::debug);
 - Explore [Pipeline Architecture](reference/pipeline-architecture.md) for advanced tuning
 - Check [Error Codes](reference/error-codes.md) for comprehensive error handling
 - Review [Protocol Specification](reference/protocol-spec.md) for wire protocol details
+- See [Configuration Guide](reference/configuration.md) for all configuration options
 
 ---
 
+*Version: 2.0.0*
 *Last updated: 2025-12-11*
