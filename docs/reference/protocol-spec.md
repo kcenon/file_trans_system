@@ -25,8 +25,10 @@ The file_trans_system uses a lightweight custom protocol designed for high-perfo
 | Protocol | Per-Chunk Overhead | Total (1GB, 256KB chunks) | Percentage |
 |----------|-------------------|---------------------------|------------|
 | HTTP/1.1 | ~800 bytes | ~3.2 MB | 0.31% |
-| **Custom/TCP** | **48 bytes** | **~196 KB** | **0.02%** |
-| Custom/QUIC | ~68 bytes | ~278 KB | 0.03% |
+| **Custom/TCP** | **61 bytes** | **~249 KB** | **0.02%** |
+| Custom/QUIC | ~81 bytes | ~331 KB | 0.03% |
+
+> **Note**: Custom protocol overhead includes 13-byte frame header (prefix 4B + type 1B + length 4B + postfix 4B) plus 48-byte CHUNK_DATA payload header.
 
 ---
 
@@ -57,16 +59,20 @@ Cipher Suites:
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
-│                      Protocol Frame                             │
+│                      Protocol Frame (v0.2)                      │
+├────────────────────────────────────────────────────────────────┤
+│ PREFIX (Magic)  │ 4 bytes: 0x46545331 ("FTS1")                  │
 ├────────────────────────────────────────────────────────────────┤
 │ Message Type    │ 1 byte                                        │
 ├────────────────────────────────────────────────────────────────┤
 │ Payload Length  │ 4 bytes (big-endian, unsigned)                │
 ├────────────────────────────────────────────────────────────────┤
 │ Payload         │ Variable length (0 to 2^32-1 bytes)           │
+├────────────────────────────────────────────────────────────────┤
+│ POSTFIX         │ 4 bytes: Checksum (2B) + Length Echo (2B)     │
 └────────────────────────────────────────────────────────────────┘
 
-Total frame overhead: 5 bytes
+Total frame overhead: 13 bytes
 ```
 
 ### Byte Layout
@@ -74,10 +80,61 @@ Total frame overhead: 5 bytes
 ```
 Offset  Size  Field
 ------  ----  -----
-0       1     message_type
-1       4     payload_length (big-endian)
-5       N     payload
+0       4     prefix (magic number: 0x46545331 = "FTS1")
+4       1     message_type
+5       4     payload_length (big-endian)
+9       N     payload
+9+N     2     checksum (sum of bytes [0..9+N-1] mod 65536, big-endian)
+11+N    2     length_echo (lower 16 bits of payload_length, big-endian)
 ```
+
+### Prefix (Magic Number)
+
+```
+Value: 0x46545331
+ASCII: "FTS1" (File Transfer System v1)
+
+Purpose:
+- Frame synchronization in byte streams
+- Protocol identification
+- Quick rejection of non-protocol data
+- Stream recovery after corruption
+```
+
+### Postfix (Integrity Check)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ Field          │ Size    │ Description                          │
+├─────────────────────────────────────────────────────────────────┤
+│ checksum       │ 2 bytes │ Sum of all preceding bytes mod 65536 │
+│ length_echo    │ 2 bytes │ Payload length (lower 16 bits)       │
+└─────────────────────────────────────────────────────────────────┘
+
+Checksum Calculation:
+  uint16_t checksum = 0;
+  for (size_t i = 0; i < 9 + payload_length; i++) {
+      checksum += frame_bytes[i];
+  }
+  // Store as big-endian
+
+Length Echo Purpose:
+- Double-verification of payload length
+- Detects length field corruption
+- Enables frame boundary validation
+```
+
+### Frame Validation
+
+Receivers MUST validate frames in this order:
+
+1. **Prefix Check**: First 4 bytes == 0x46545331
+2. **Length Sanity**: payload_length <= MAX_PAYLOAD_SIZE (default: 1MB + 48B header)
+3. **Read Payload**: Read exactly payload_length bytes
+4. **Checksum Verify**: Calculated checksum == stored checksum
+5. **Length Echo Verify**: (payload_length & 0xFFFF) == length_echo
+
+If any check fails, discard frame and scan for next valid prefix.
 
 ---
 
@@ -505,13 +562,26 @@ Per-entry: 58 bytes + filename
 Header: 48 bytes + data
 ```
 
-**Chunk Flags:**
+**Chunk Flags (1 byte):**
+
+| Bit | Hex Value | Name        | Description                    |
+|-----|-----------|-------------|--------------------------------|
+| 0   | `0x01`    | first_chunk | First chunk of file            |
+| 1   | `0x02`    | last_chunk  | Last chunk of file             |
+| 2   | `0x04`    | compressed  | Data is LZ4 compressed         |
+| 3   | `0x08`    | encrypted   | Reserved for encryption        |
+| 4-7 | -         | Reserved    | Must be 0                      |
+
+**Flag Combinations (Examples):**
 ```
-Bit 0: first_chunk   - First chunk of file
-Bit 1: last_chunk    - Last chunk of file
-Bit 2: compressed    - Data is LZ4 compressed
-Bit 3: encrypted     - Reserved for encryption
-Bit 4-7: Reserved
+0x00 = No flags (middle chunk, uncompressed)
+0x01 = First chunk only
+0x02 = Last chunk only
+0x03 = Single chunk file (first + last)
+0x04 = Compressed middle chunk
+0x05 = First compressed chunk (first + compressed)
+0x06 = Last compressed chunk (last + compressed)
+0x07 = Single compressed file (first + last + compressed)
 ```
 
 ### CHUNK_ACK (0x21)
@@ -865,22 +935,63 @@ Total: 49 bytes
 
 ### Protocol Version Format
 
-```
-Major: 1 byte (0-255)
-Minor: 1 byte (0-255)
+The protocol uses a 4-byte version format aligned with semantic versioning:
 
-Current version: 2.0
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ Field    │ Size   │ Range   │ Description                       │
+├─────────────────────────────────────────────────────────────────┤
+│ Major    │ 1 byte │ 0-255   │ Breaking changes                  │
+│ Minor    │ 1 byte │ 0-255   │ New features (backward compatible)│
+│ Patch    │ 1 byte │ 0-255   │ Bug fixes                         │
+│ Build    │ 1 byte │ 0-255   │ Build/revision number             │
+└─────────────────────────────────────────────────────────────────┘
+
+Current version: 0.2.0.0
+Wire encoding: 0x00020000 (4 bytes, big-endian)
+```
+
+### Version Encoding
+
+```cpp
+// Version structure
+struct protocol_version {
+    uint8_t major;    // Breaking changes
+    uint8_t minor;    // New features
+    uint8_t patch;    // Bug fixes
+    uint8_t build;    // Build number
+
+    // Encode to 4-byte wire format (big-endian)
+    uint32_t to_wire() const {
+        return (major << 24) | (minor << 16) | (patch << 8) | build;
+    }
+
+    // Decode from 4-byte wire format
+    static protocol_version from_wire(uint32_t wire) {
+        return {
+            static_cast<uint8_t>(wire >> 24),
+            static_cast<uint8_t>(wire >> 16),
+            static_cast<uint8_t>(wire >> 8),
+            static_cast<uint8_t>(wire)
+        };
+    }
+};
+
+// Current version constant
+constexpr uint32_t PROTOCOL_VERSION = 0x00020000;  // v0.2.0.0
 ```
 
 ### Version Compatibility
 
 | Client | Server | Result |
 |--------|--------|--------|
-| 2.0 | 2.0 | Compatible |
-| 2.0 | 2.1 | Compatible (server downgrades) |
-| 2.1 | 2.0 | Compatible (client downgrades) |
-| 3.0 | 2.x | Incompatible (major version mismatch) |
-| 1.x | 2.x | Incompatible (P2P vs Client-Server) |
+| 0.2.x.x | 0.2.x.x | Compatible |
+| 0.2.0.x | 0.2.1.x | Compatible (server has newer features) |
+| 0.2.1.x | 0.2.0.x | Compatible (client downgrades features) |
+| 0.3.x.x | 0.2.x.x | Incompatible (minor version mismatch in pre-1.0) |
+| 1.x.x.x | 0.x.x.x | Incompatible (major version mismatch) |
+
+> **Note**: In pre-1.0 versions (major=0), minor version changes may contain breaking changes. After 1.0 release, only major version changes will be breaking.
 
 ---
 

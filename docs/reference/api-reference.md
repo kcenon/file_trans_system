@@ -597,12 +597,15 @@ enum class sort_order {
 
 ```cpp
 enum class chunk_flags : uint8_t {
-    none            = 0x00,
-    first_chunk     = 0x01,
-    last_chunk      = 0x02,
-    compressed      = 0x04,
-    encrypted       = 0x08
+    none            = 0x00,  // No flags set
+    first_chunk     = 0x01,  // Bit 0: First chunk of file
+    last_chunk      = 0x02,  // Bit 1: Last chunk of file
+    compressed      = 0x04,  // Bit 2: Data is LZ4 compressed
+    encrypted       = 0x08   // Bit 3: Reserved for encryption
 };
+
+// Usage: Combine flags with bitwise OR
+// Example: First compressed chunk = chunk_flags::first_chunk | chunk_flags::compressed (0x05)
 ```
 
 #### pipeline_stage
@@ -620,6 +623,70 @@ enum class pipeline_stage : uint8_t {
 ---
 
 ### Structures
+
+#### protocol_version
+
+```cpp
+struct protocol_version {
+    uint8_t major;    // Breaking changes
+    uint8_t minor;    // New features (backward compatible)
+    uint8_t patch;    // Bug fixes
+    uint8_t build;    // Build/revision number
+
+    // Encode to 4-byte wire format (big-endian)
+    [[nodiscard]] auto to_wire() const -> uint32_t {
+        return (static_cast<uint32_t>(major) << 24) |
+               (static_cast<uint32_t>(minor) << 16) |
+               (static_cast<uint32_t>(patch) << 8)  |
+               static_cast<uint32_t>(build);
+    }
+
+    // Decode from 4-byte wire format
+    [[nodiscard]] static auto from_wire(uint32_t wire) -> protocol_version {
+        return {
+            static_cast<uint8_t>(wire >> 24),
+            static_cast<uint8_t>(wire >> 16),
+            static_cast<uint8_t>(wire >> 8),
+            static_cast<uint8_t>(wire)
+        };
+    }
+
+    [[nodiscard]] auto to_string() const -> std::string;
+    [[nodiscard]] auto is_compatible_with(const protocol_version& other) const -> bool;
+};
+
+// Current protocol version: v0.2.0.0
+inline constexpr uint32_t PROTOCOL_VERSION_WIRE = 0x00020000;
+inline constexpr protocol_version PROTOCOL_VERSION = {0, 2, 0, 0};
+```
+
+#### frame_header
+
+```cpp
+// Protocol frame constants
+inline constexpr uint32_t FRAME_MAGIC = 0x46545331;  // "FTS1"
+inline constexpr std::size_t FRAME_HEADER_SIZE = 9;   // prefix(4) + type(1) + length(4)
+inline constexpr std::size_t FRAME_FOOTER_SIZE = 4;   // checksum(2) + length_echo(2)
+inline constexpr std::size_t FRAME_OVERHEAD = 13;     // header + footer
+
+struct frame_header {
+    uint32_t magic;           // Must be FRAME_MAGIC (0x46545331)
+    uint8_t  message_type;    // Message type enumeration
+    uint32_t payload_length;  // Payload size in bytes (big-endian)
+};
+
+struct frame_footer {
+    uint16_t checksum;        // Sum of bytes [0..8+payload_length] mod 65536
+    uint16_t length_echo;     // Lower 16 bits of payload_length
+};
+
+// Frame validation helper
+[[nodiscard]] auto validate_frame(
+    const frame_header& header,
+    const std::span<const uint8_t>& payload,
+    const frame_footer& footer
+) -> bool;
+```
 
 #### endpoint
 

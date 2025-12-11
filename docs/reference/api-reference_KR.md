@@ -597,12 +597,15 @@ enum class sort_order {
 
 ```cpp
 enum class chunk_flags : uint8_t {
-    none            = 0x00,
-    first_chunk     = 0x01,
-    last_chunk      = 0x02,
-    compressed      = 0x04,
-    encrypted       = 0x08
+    none            = 0x00,  // 플래그 없음
+    first_chunk     = 0x01,  // 비트 0: 파일의 첫 번째 청크
+    last_chunk      = 0x02,  // 비트 1: 파일의 마지막 청크
+    compressed      = 0x04,  // 비트 2: 데이터가 LZ4 압축됨
+    encrypted       = 0x08   // 비트 3: 암호화 예약
 };
+
+// 사용법: 비트 OR로 플래그 조합
+// 예시: 첫 번째 압축 청크 = chunk_flags::first_chunk | chunk_flags::compressed (0x05)
 ```
 
 #### pipeline_stage
@@ -620,6 +623,70 @@ enum class pipeline_stage : uint8_t {
 ---
 
 ### 구조체
+
+#### protocol_version
+
+```cpp
+struct protocol_version {
+    uint8_t major;    // 호환성 깨지는 변경
+    uint8_t minor;    // 새 기능 (하위 호환)
+    uint8_t patch;    // 버그 수정
+    uint8_t build;    // 빌드/리비전 번호
+
+    // 4바이트 와이어 형식으로 인코딩 (빅엔디안)
+    [[nodiscard]] auto to_wire() const -> uint32_t {
+        return (static_cast<uint32_t>(major) << 24) |
+               (static_cast<uint32_t>(minor) << 16) |
+               (static_cast<uint32_t>(patch) << 8)  |
+               static_cast<uint32_t>(build);
+    }
+
+    // 4바이트 와이어 형식에서 디코딩
+    [[nodiscard]] static auto from_wire(uint32_t wire) -> protocol_version {
+        return {
+            static_cast<uint8_t>(wire >> 24),
+            static_cast<uint8_t>(wire >> 16),
+            static_cast<uint8_t>(wire >> 8),
+            static_cast<uint8_t>(wire)
+        };
+    }
+
+    [[nodiscard]] auto to_string() const -> std::string;
+    [[nodiscard]] auto is_compatible_with(const protocol_version& other) const -> bool;
+};
+
+// 현재 프로토콜 버전: v0.2.0.0
+inline constexpr uint32_t PROTOCOL_VERSION_WIRE = 0x00020000;
+inline constexpr protocol_version PROTOCOL_VERSION = {0, 2, 0, 0};
+```
+
+#### frame_header
+
+```cpp
+// 프로토콜 프레임 상수
+inline constexpr uint32_t FRAME_MAGIC = 0x46545331;  // "FTS1"
+inline constexpr std::size_t FRAME_HEADER_SIZE = 9;   // prefix(4) + type(1) + length(4)
+inline constexpr std::size_t FRAME_FOOTER_SIZE = 4;   // checksum(2) + length_echo(2)
+inline constexpr std::size_t FRAME_OVERHEAD = 13;     // header + footer
+
+struct frame_header {
+    uint32_t magic;           // 반드시 FRAME_MAGIC (0x46545331)
+    uint8_t  message_type;    // 메시지 타입 열거형
+    uint32_t payload_length;  // 페이로드 크기 (바이트, 빅엔디안)
+};
+
+struct frame_footer {
+    uint16_t checksum;        // 바이트 [0..8+payload_length] 합계 mod 65536
+    uint16_t length_echo;     // payload_length의 하위 16비트
+};
+
+// 프레임 유효성 검사 헬퍼
+[[nodiscard]] auto validate_frame(
+    const frame_header& header,
+    const std::span<const uint8_t>& payload,
+    const frame_footer& footer
+) -> bool;
+```
 
 #### endpoint
 

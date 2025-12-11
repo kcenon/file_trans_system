@@ -42,7 +42,8 @@
     │                     │                       │
     │                     │  CONNECT              │
     │                     │  ┌────────────────────────────────┐
-    │                     │  │ protocol_version: 0x0200      │
+    │                     │  │ protocol_version: 0x00020000  │
+    │                     │  │   (v0.2.0.0)                  │
     │                     │  │ capabilities: 0x0000001F      │
     │                     │  │ client_id: <16 bytes UUID>    │
     │                     │  └────────────────────────────────┘
@@ -56,7 +57,8 @@
     │                     │                       │
     │                     │  CONNECT_ACK          │
     │                     │  ┌────────────────────────────────┐
-    │                     │  │ protocol_version: 0x0200      │
+    │                     │  │ protocol_version: 0x00020000  │
+    │                     │  │   (v0.2.0.0)                  │
     │                     │  │ capabilities: 0x0000001F      │
     │                     │  │ session_id: <16 bytes UUID>   │
     │                     │  │ max_file_size: 10GB           │
