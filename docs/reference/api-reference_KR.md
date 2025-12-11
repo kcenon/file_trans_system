@@ -1,30 +1,30 @@
-# API Reference
+# API 레퍼런스
 
-Complete API documentation for the **file_trans_system** library.
+**file_trans_system** 라이브러리의 완전한 API 문서입니다.
 
-## Table of Contents
+## 목차
 
-1. [Core Classes](#core-classes)
+1. [핵심 클래스](#핵심-클래스)
    - [file_sender](#file_sender)
    - [file_receiver](#file_receiver)
    - [transfer_manager](#transfer_manager)
-2. [Data Types](#data-types)
-   - [Enumerations](#enumerations)
-   - [Structures](#structures)
-3. [Chunk Management](#chunk-management)
-4. [Compression](#compression)
-5. [Pipeline](#pipeline)
-6. [Transport](#transport)
+2. [데이터 타입](#데이터-타입)
+   - [열거형](#열거형)
+   - [구조체](#구조체)
+3. [청크 관리](#청크-관리)
+4. [압축](#압축)
+5. [파이프라인](#파이프라인)
+6. [전송](#전송)
 
 ---
 
-## Core Classes
+## 핵심 클래스
 
 ### file_sender
 
-Primary class for sending files to remote endpoints.
+원격 엔드포인트로 파일을 전송하는 기본 클래스입니다.
 
-#### Builder Pattern
+#### Builder 패턴
 
 ```cpp
 namespace kcenon::file_transfer {
@@ -33,25 +33,25 @@ class file_sender {
 public:
     class builder {
     public:
-        // Configure pipeline worker counts and queue sizes
+        // 파이프라인 워커 수 및 큐 크기 설정
         builder& with_pipeline_config(const pipeline_config& config);
 
-        // Set compression mode (disabled, enabled, adaptive)
+        // 압축 모드 설정 (disabled, enabled, adaptive)
         builder& with_compression(compression_mode mode);
 
-        // Set compression level (fast, high_compression)
+        // 압축 수준 설정 (fast, high_compression)
         builder& with_compression_level(compression_level level);
 
-        // Set chunk size (64KB - 1MB, default: 256KB)
+        // 청크 크기 설정 (64KB - 1MB, 기본값: 256KB)
         builder& with_chunk_size(std::size_t size);
 
-        // Set bandwidth limit in bytes per second (0 = unlimited)
+        // 대역폭 제한 설정 (바이트/초, 0 = 무제한)
         builder& with_bandwidth_limit(std::size_t bytes_per_second);
 
-        // Set transport type (tcp, quic)
+        // 전송 타입 설정 (tcp, quic)
         builder& with_transport(transport_type type);
 
-        // Build the sender instance
+        // 송신자 인스턴스 빌드
         [[nodiscard]] auto build() -> Result<file_sender>;
     };
 };
@@ -59,11 +59,11 @@ public:
 }
 ```
 
-#### Methods
+#### 메서드
 
 ##### send_file()
 
-Send a single file to a remote endpoint.
+원격 엔드포인트로 단일 파일 전송.
 
 ```cpp
 [[nodiscard]] auto send_file(
@@ -73,20 +73,20 @@ Send a single file to a remote endpoint.
 ) -> Result<transfer_handle>;
 ```
 
-**Parameters:**
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `file_path` | `std::filesystem::path` | Path to the file to send |
-| `destination` | `endpoint` | Remote endpoint (IP, port) |
-| `options` | `transfer_options` | Optional transfer configuration |
+**매개변수:**
+| 매개변수 | 타입 | 설명 |
+|---------|------|------|
+| `file_path` | `std::filesystem::path` | 전송할 파일 경로 |
+| `destination` | `endpoint` | 원격 엔드포인트 (IP, 포트) |
+| `options` | `transfer_options` | 선택적 전송 설정 |
 
-**Returns:** `Result<transfer_handle>` - Handle for tracking the transfer
+**반환:** `Result<transfer_handle>` - 전송 추적용 핸들
 
-**Example:**
+**예제:**
 ```cpp
 auto sender = file_sender::builder()
     .with_compression(compression_mode::adaptive)
-    .with_chunk_size(512 * 1024)  // 512KB chunks
+    .with_chunk_size(512 * 1024)  // 512KB 청크
     .build();
 
 if (sender) {
@@ -96,14 +96,14 @@ if (sender) {
     );
 
     if (handle) {
-        std::cout << "Transfer ID: " << handle->id.to_string() << "\n";
+        std::cout << "전송 ID: " << handle->id.to_string() << "\n";
     }
 }
 ```
 
 ##### send_files()
 
-Send multiple files in a batch operation.
+배치 작업으로 다중 파일 전송.
 
 ```cpp
 [[nodiscard]] auto send_files(
@@ -113,18 +113,18 @@ Send multiple files in a batch operation.
 ) -> Result<batch_transfer_handle>;
 ```
 
-**Parameters:**
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `files` | `std::span<const path>` | List of file paths to send |
-| `destination` | `endpoint` | Remote endpoint |
-| `options` | `transfer_options` | Optional transfer configuration |
+**매개변수:**
+| 매개변수 | 타입 | 설명 |
+|---------|------|------|
+| `files` | `std::span<const path>` | 전송할 파일 경로 목록 |
+| `destination` | `endpoint` | 원격 엔드포인트 |
+| `options` | `transfer_options` | 선택적 전송 설정 |
 
-**Returns:** `Result<batch_transfer_handle>` - Handle for tracking the batch
+**반환:** `Result<batch_transfer_handle>` - 배치 추적용 핸들
 
 ##### cancel()
 
-Cancel an active transfer.
+활성 전송 취소.
 
 ```cpp
 [[nodiscard]] auto cancel(const transfer_id& id) -> Result<void>;
@@ -132,7 +132,7 @@ Cancel an active transfer.
 
 ##### pause() / resume()
 
-Pause and resume a transfer.
+전송 일시 중지 및 재개.
 
 ```cpp
 [[nodiscard]] auto pause(const transfer_id& id) -> Result<void>;
@@ -141,20 +141,20 @@ Pause and resume a transfer.
 
 ##### on_progress()
 
-Register a callback for progress updates.
+진행 상황 업데이트를 위한 콜백 등록.
 
 ```cpp
 void on_progress(std::function<void(const transfer_progress&)> callback);
 ```
 
-**Example:**
+**예제:**
 ```cpp
 sender->on_progress([](const transfer_progress& p) {
     double percent = 100.0 * p.bytes_transferred / p.total_bytes;
     std::cout << std::fixed << std::setprecision(1)
               << percent << "% - "
               << p.transfer_rate / (1024*1024) << " MB/s"
-              << " (compression: " << p.compression_ratio << ":1)\n";
+              << " (압축: " << p.compression_ratio << ":1)\n";
 });
 ```
 
@@ -162,9 +162,9 @@ sender->on_progress([](const transfer_progress& p) {
 
 ### file_receiver
 
-Primary class for receiving files from remote senders.
+원격 송신자로부터 파일을 수신하는 기본 클래스입니다.
 
-#### Builder Pattern
+#### Builder 패턴
 
 ```cpp
 class file_receiver {
@@ -180,18 +180,18 @@ public:
 };
 ```
 
-#### Methods
+#### 메서드
 
 ##### start() / stop()
 
-Start and stop the receiver.
+수신자 시작 및 중지.
 
 ```cpp
 [[nodiscard]] auto start(const endpoint& listen_addr) -> Result<void>;
 [[nodiscard]] auto stop() -> Result<void>;
 ```
 
-**Example:**
+**예제:**
 ```cpp
 auto receiver = file_receiver::builder()
     .with_output_directory("/downloads")
@@ -200,7 +200,7 @@ auto receiver = file_receiver::builder()
 if (receiver) {
     receiver->start(endpoint{"0.0.0.0", 19000});
 
-    // ... wait for transfers ...
+    // ... 전송 대기 ...
 
     receiver->stop();
 }
@@ -208,45 +208,45 @@ if (receiver) {
 
 ##### set_output_directory()
 
-Change the output directory at runtime.
+런타임에 출력 디렉토리 변경.
 
 ```cpp
 void set_output_directory(const std::filesystem::path& dir);
 ```
 
-##### Callbacks
+##### 콜백
 
 ```cpp
-// Accept or reject incoming transfers
+// 들어오는 전송 수락 또는 거부
 void on_transfer_request(std::function<bool(const transfer_request&)> callback);
 
-// Progress updates
+// 진행 상황 업데이트
 void on_progress(std::function<void(const transfer_progress&)> callback);
 
-// Transfer completion
+// 전송 완료
 void on_complete(std::function<void(const transfer_result&)> callback);
 ```
 
-**Example:**
+**예제:**
 ```cpp
 receiver->on_transfer_request([](const transfer_request& req) {
-    // Check total size
+    // 총 크기 확인
     uint64_t total_size = 0;
     for (const auto& file : req.files) {
         total_size += file.file_size;
     }
 
-    // Accept if under 10GB
+    // 10GB 미만이면 수락
     return total_size < 10ULL * 1024 * 1024 * 1024;
 });
 
 receiver->on_complete([](const transfer_result& result) {
     if (result.verified) {
-        std::cout << "Received: " << result.output_path << "\n";
-        std::cout << "Compression ratio: "
+        std::cout << "수신됨: " << result.output_path << "\n";
+        std::cout << "압축 비율: "
                   << result.compression_stats.compression_ratio() << ":1\n";
     } else {
-        std::cerr << "Transfer failed: " << result.error->message << "\n";
+        std::cerr << "전송 실패: " << result.error->message << "\n";
     }
 });
 ```
@@ -255,9 +255,9 @@ receiver->on_complete([](const transfer_result& result) {
 
 ### transfer_manager
 
-Manages multiple concurrent transfers and provides statistics.
+다중 동시 전송 관리 및 통계 제공.
 
-#### Builder Pattern
+#### Builder 패턴
 
 ```cpp
 class transfer_manager {
@@ -272,11 +272,11 @@ public:
 };
 ```
 
-#### Methods
+#### 메서드
 
 ##### get_status()
 
-Get status of a specific transfer.
+특정 전송의 상태 가져오기.
 
 ```cpp
 [[nodiscard]] auto get_status(const transfer_id& id) -> Result<transfer_status>;
@@ -284,7 +284,7 @@ Get status of a specific transfer.
 
 ##### list_transfers()
 
-List all active transfers.
+모든 활성 전송 목록.
 
 ```cpp
 [[nodiscard]] auto list_transfers() -> Result<std::vector<transfer_info>>;
@@ -292,14 +292,14 @@ List all active transfers.
 
 ##### get_statistics()
 
-Get aggregate transfer statistics.
+집계 전송 통계 가져오기.
 
 ```cpp
 [[nodiscard]] auto get_statistics() -> transfer_statistics;
 [[nodiscard]] auto get_compression_stats() -> compression_statistics;
 ```
 
-##### Configuration
+##### 설정
 
 ```cpp
 void set_bandwidth_limit(std::size_t bytes_per_second);
@@ -309,17 +309,17 @@ void set_default_compression(compression_mode mode);
 
 ---
 
-## Data Types
+## 데이터 타입
 
-### Enumerations
+### 열거형
 
 #### compression_mode
 
 ```cpp
 enum class compression_mode {
-    disabled,   // No compression
-    enabled,    // Always compress
-    adaptive    // Auto-detect compressibility (default)
+    disabled,   // 압축 없음
+    enabled,    // 항상 압축
+    adaptive    // 압축 가능성 자동 감지 (기본값)
 };
 ```
 
@@ -327,8 +327,8 @@ enum class compression_mode {
 
 ```cpp
 enum class compression_level {
-    fast,             // LZ4 standard (~400 MB/s)
-    high_compression  // LZ4-HC (~50 MB/s, better ratio)
+    fast,             // LZ4 표준 (~400 MB/s)
+    high_compression  // LZ4-HC (~50 MB/s, 더 나은 비율)
 };
 ```
 
@@ -336,7 +336,7 @@ enum class compression_level {
 
 ```cpp
 enum class transport_type {
-    tcp,    // TCP + TLS 1.3 (default)
+    tcp,    // TCP + TLS 1.3 (기본값)
     quic    // QUIC (Phase 2)
 };
 ```
@@ -345,13 +345,13 @@ enum class transport_type {
 
 ```cpp
 enum class transfer_state_enum {
-    pending,        // Waiting to start
-    initializing,   // Setting up connection
-    transferring,   // Active transfer
-    verifying,      // Verifying integrity
-    completed,      // Successfully completed
-    failed,         // Transfer failed
-    cancelled       // User cancelled
+    pending,        // 시작 대기
+    initializing,   // 연결 설정 중
+    transferring,   // 활성 전송
+    verifying,      // 무결성 검증
+    completed,      // 성공적으로 완료
+    failed,         // 전송 실패
+    cancelled       // 사용자 취소
 };
 ```
 
@@ -371,17 +371,17 @@ enum class chunk_flags : uint8_t {
 
 ```cpp
 enum class pipeline_stage : uint8_t {
-    io_read,        // File read operations
-    chunk_process,  // Chunk assembly/disassembly
-    compression,    // LZ4 compress/decompress
-    network,        // Network send/receive
-    io_write        // File write operations
+    io_read,        // 파일 읽기 작업
+    chunk_process,  // 청크 조립/분해
+    compression,    // LZ4 압축/해제
+    network,        // 네트워크 송/수신
+    io_write        // 파일 쓰기 작업
 };
 ```
 
 ---
 
-### Structures
+### 구조체
 
 #### endpoint
 
@@ -422,11 +422,11 @@ struct transfer_options {
 ```cpp
 struct transfer_progress {
     transfer_id         id;
-    uint64_t            bytes_transferred;      // Raw bytes
-    uint64_t            bytes_on_wire;          // Compressed bytes
+    uint64_t            bytes_transferred;      // 원시 바이트
+    uint64_t            bytes_on_wire;          // 압축 바이트
     uint64_t            total_bytes;
-    double              transfer_rate;          // Bytes/second
-    double              effective_rate;         // With compression
+    double              transfer_rate;          // 바이트/초
+    double              effective_rate;         // 압축 포함
     double              compression_ratio;
     duration            elapsed_time;
     duration            estimated_remaining;
@@ -443,7 +443,7 @@ struct transfer_result {
     std::filesystem::path   output_path;
     uint64_t                bytes_transferred;
     uint64_t                bytes_on_wire;
-    bool                    verified;           // SHA-256 match
+    bool                    verified;           // SHA-256 일치
     std::optional<error>    error;
     duration                elapsed_time;
     compression_statistics  compression_stats;
@@ -467,9 +467,9 @@ struct file_metadata {
 
 ```cpp
 struct chunk_config {
-    std::size_t chunk_size     = 256 * 1024;    // 256KB default
-    std::size_t min_chunk_size = 64 * 1024;     // 64KB minimum
-    std::size_t max_chunk_size = 1024 * 1024;   // 1MB maximum
+    std::size_t chunk_size     = 256 * 1024;    // 256KB 기본값
+    std::size_t min_chunk_size = 64 * 1024;     // 64KB 최소
+    std::size_t max_chunk_size = 1024 * 1024;   // 1MB 최대
 };
 ```
 
@@ -477,14 +477,14 @@ struct chunk_config {
 
 ```cpp
 struct pipeline_config {
-    // Worker counts per stage
+    // 스테이지별 워커 수
     std::size_t io_read_workers      = 2;
     std::size_t chunk_workers        = 2;
     std::size_t compression_workers  = 4;
     std::size_t network_workers      = 2;
     std::size_t io_write_workers     = 2;
 
-    // Queue sizes (backpressure)
+    // 큐 크기 (백프레셔)
     std::size_t read_queue_size      = 16;
     std::size_t compress_queue_size  = 32;
     std::size_t send_queue_size      = 64;
@@ -514,11 +514,11 @@ struct compression_statistics {
 
 ---
 
-## Chunk Management
+## 청크 관리
 
 ### chunk_splitter
 
-Splits files into chunks for streaming transfer.
+스트리밍 전송을 위해 파일을 청크로 분할.
 
 ```cpp
 class chunk_splitter {
@@ -538,7 +538,7 @@ public:
 
 ### chunk_assembler
 
-Reassembles received chunks into files.
+수신된 청크를 파일로 재조립.
 
 ```cpp
 class chunk_assembler {
@@ -558,19 +558,19 @@ public:
 
 ### checksum
 
-Integrity verification utilities.
+무결성 검증 유틸리티.
 
 ```cpp
 class checksum {
 public:
-    // CRC32 for chunks
+    // 청크용 CRC32
     [[nodiscard]] static auto crc32(std::span<const std::byte> data) -> uint32_t;
     [[nodiscard]] static auto verify_crc32(
         std::span<const std::byte> data,
         uint32_t expected
     ) -> bool;
 
-    // SHA-256 for files
+    // 파일용 SHA-256
     [[nodiscard]] static auto sha256_file(const std::filesystem::path& path)
         -> Result<std::string>;
     [[nodiscard]] static auto verify_sha256(
@@ -582,36 +582,36 @@ public:
 
 ---
 
-## Compression
+## 압축
 
 ### lz4_engine
 
-Low-level LZ4 compression interface.
+저수준 LZ4 압축 인터페이스.
 
 ```cpp
 class lz4_engine {
 public:
-    // Standard LZ4 compression (~400 MB/s)
+    // 표준 LZ4 압축 (~400 MB/s)
     [[nodiscard]] static auto compress(
         std::span<const std::byte> input,
         std::span<std::byte> output
     ) -> Result<std::size_t>;
 
-    // LZ4-HC compression (~50 MB/s, better ratio)
+    // LZ4-HC 압축 (~50 MB/s, 더 나은 비율)
     [[nodiscard]] static auto compress_hc(
         std::span<const std::byte> input,
         std::span<std::byte> output,
         int level = 9
     ) -> Result<std::size_t>;
 
-    // Decompression (~1.5 GB/s)
+    // 압축 해제 (~1.5 GB/s)
     [[nodiscard]] static auto decompress(
         std::span<const std::byte> compressed,
         std::span<std::byte> output,
         std::size_t original_size
     ) -> Result<std::size_t>;
 
-    // Buffer sizing
+    // 버퍼 크기 계산
     [[nodiscard]] static auto max_compressed_size(std::size_t input_size)
         -> std::size_t;
 };
@@ -619,18 +619,18 @@ public:
 
 ### adaptive_compression
 
-Automatic compressibility detection.
+자동 압축 가능성 감지.
 
 ```cpp
 class adaptive_compression {
 public:
-    // Sample-based compressibility check (<100us)
+    // 샘플 기반 압축 가능성 검사 (<100us)
     [[nodiscard]] static auto is_compressible(
         std::span<const std::byte> data,
         double threshold = 0.9
     ) -> bool;
 
-    // File extension heuristic
+    // 파일 확장자 휴리스틱
     [[nodiscard]] static auto is_likely_compressible(
         const std::filesystem::path& file
     ) -> bool;
@@ -639,7 +639,7 @@ public:
 
 ### chunk_compressor
 
-High-level chunk compression with statistics.
+통계와 함께 고수준 청크 압축.
 
 ```cpp
 class chunk_compressor {
@@ -658,11 +658,11 @@ public:
 
 ---
 
-## Pipeline
+## 파이프라인
 
 ### sender_pipeline
 
-Multi-stage sender processing pipeline.
+다단계 송신자 처리 파이프라인.
 
 ```cpp
 class sender_pipeline {
@@ -691,7 +691,7 @@ public:
 
 ### receiver_pipeline
 
-Multi-stage receiver processing pipeline.
+다단계 수신자 처리 파이프라인.
 
 ```cpp
 class receiver_pipeline {
@@ -715,11 +715,11 @@ public:
 
 ---
 
-## Transport
+## 전송
 
 ### transport_interface
 
-Abstract transport layer interface.
+추상 전송 계층 인터페이스.
 
 ```cpp
 class transport_interface {
@@ -733,7 +733,7 @@ public:
     [[nodiscard]] virtual auto send(std::span<const std::byte> data) -> Result<void> = 0;
     [[nodiscard]] virtual auto receive(std::span<std::byte> buffer) -> Result<std::size_t> = 0;
 
-    // QUIC-specific (no-op for TCP)
+    // QUIC 전용 (TCP에서는 no-op)
     [[nodiscard]] virtual auto create_stream() -> Result<stream_id>;
     [[nodiscard]] virtual auto close_stream(stream_id) -> Result<void>;
 
@@ -742,7 +742,7 @@ public:
 };
 ```
 
-### Transport Configurations
+### 전송 설정
 
 ```cpp
 struct tcp_transport_config {
@@ -765,7 +765,7 @@ struct quic_transport_config {
 
 ### transport_factory
 
-Factory for creating transport instances.
+전송 인스턴스 생성을 위한 팩토리.
 
 ```cpp
 class transport_factory {
@@ -782,4 +782,4 @@ public:
 
 ---
 
-*Last updated: 2025-12-11*
+*최종 업데이트: 2025-12-11*

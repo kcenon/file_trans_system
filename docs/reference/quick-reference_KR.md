@@ -1,10 +1,10 @@
-# Quick Reference Card
+# 빠른 참조 카드
 
-Quick reference for common **file_trans_system** operations.
+**file_trans_system**의 일반적인 작업을 위한 빠른 참조입니다.
 
 ---
 
-## Include Header
+## 헤더 포함
 
 ```cpp
 #include <kcenon/file_transfer/file_transfer.h>
@@ -14,15 +14,15 @@ using namespace kcenon::file_transfer;
 
 ---
 
-## Sender Operations
+## 송신자 작업
 
-### Create Sender
+### 송신자 생성
 
 ```cpp
-// Minimal
+// 최소
 auto sender = file_sender::builder().build();
 
-// With options
+// 옵션과 함께
 auto sender = file_sender::builder()
     .with_compression(compression_mode::adaptive)
     .with_chunk_size(256 * 1024)
@@ -30,7 +30,7 @@ auto sender = file_sender::builder()
     .build();
 ```
 
-### Send File
+### 파일 전송
 
 ```cpp
 auto result = sender->send_file(
@@ -39,13 +39,13 @@ auto result = sender->send_file(
 );
 
 if (result) {
-    std::cout << "Transfer ID: " << result->id.to_string() << "\n";
+    std::cout << "전송 ID: " << result->id.to_string() << "\n";
 } else {
-    std::cerr << "Error: " << result.error().message() << "\n";
+    std::cerr << "오류: " << result.error().message() << "\n";
 }
 ```
 
-### Send Multiple Files
+### 다중 파일 전송
 
 ```cpp
 std::vector<std::filesystem::path> files = {
@@ -56,7 +56,7 @@ std::vector<std::filesystem::path> files = {
 auto result = sender->send_files(files, endpoint{"192.168.1.100", 19000});
 ```
 
-### Progress Callback
+### 진행 상황 콜백
 
 ```cpp
 sender->on_progress([](const transfer_progress& p) {
@@ -65,7 +65,7 @@ sender->on_progress([](const transfer_progress& p) {
 });
 ```
 
-### Control Transfer
+### 전송 제어
 
 ```cpp
 sender->pause(transfer_id);
@@ -75,9 +75,9 @@ sender->cancel(transfer_id);
 
 ---
 
-## Receiver Operations
+## 수신자 작업
 
-### Create Receiver
+### 수신자 생성
 
 ```cpp
 auto receiver = file_receiver::builder()
@@ -85,55 +85,55 @@ auto receiver = file_receiver::builder()
     .build();
 ```
 
-### Start/Stop
+### 시작/중지
 
 ```cpp
 receiver->start(endpoint{"0.0.0.0", 19000});
-// ... receiving ...
+// ... 수신 중 ...
 receiver->stop();
 ```
 
-### Callbacks
+### 콜백
 
 ```cpp
-// Accept/reject transfers
+// 전송 수락/거부
 receiver->on_transfer_request([](const transfer_request& req) {
-    return req.files[0].file_size < 1e9;  // Accept < 1GB
+    return req.files[0].file_size < 1e9;  // 1GB 미만 수락
 });
 
-// Progress updates
+// 진행 상황 업데이트
 receiver->on_progress([](const transfer_progress& p) {
     std::cout << p.bytes_transferred << "/" << p.total_bytes << "\n";
 });
 
-// Completion
+// 완료
 receiver->on_complete([](const transfer_result& result) {
     if (result.verified) {
-        std::cout << "Received: " << result.output_path << "\n";
+        std::cout << "수신됨: " << result.output_path << "\n";
     }
 });
 ```
 
 ---
 
-## Configuration
+## 설정
 
-### Compression Modes
+### 압축 모드
 
-| Mode | Description |
-|------|-------------|
-| `compression_mode::disabled` | No compression |
-| `compression_mode::enabled` | Always compress |
-| `compression_mode::adaptive` | Auto-detect (default) |
+| 모드 | 설명 |
+|------|------|
+| `compression_mode::disabled` | 압축 없음 |
+| `compression_mode::enabled` | 항상 압축 |
+| `compression_mode::adaptive` | 자동 감지 (기본값) |
 
-### Compression Levels
+### 압축 수준
 
-| Level | Speed | Ratio |
-|-------|-------|-------|
+| 수준 | 속도 | 비율 |
+|------|-----|------|
 | `compression_level::fast` | ~400 MB/s | ~2.1:1 |
 | `compression_level::high_compression` | ~50 MB/s | ~2.7:1 |
 
-### Pipeline Configuration
+### 파이프라인 설정
 
 ```cpp
 pipeline_config config{
@@ -143,11 +143,11 @@ pipeline_config config{
     .send_queue_size = 64
 };
 
-// Or auto-detect
+// 또는 자동 감지
 auto config = pipeline_config::auto_detect();
 ```
 
-### Transfer Options
+### 전송 옵션
 
 ```cpp
 transfer_options opts{
@@ -163,46 +163,46 @@ sender->send_file(path, endpoint, opts);
 
 ---
 
-## Statistics
+## 통계
 
-### Transfer Statistics
+### 전송 통계
 
 ```cpp
 auto stats = manager->get_statistics();
-std::cout << "Total transferred: " << stats.total_bytes_transferred << "\n";
-std::cout << "Active transfers: " << stats.active_transfer_count << "\n";
+std::cout << "총 전송량: " << stats.total_bytes_transferred << "\n";
+std::cout << "활성 전송: " << stats.active_transfer_count << "\n";
 ```
 
-### Compression Statistics
+### 압축 통계
 
 ```cpp
 auto stats = manager->get_compression_stats();
-std::cout << "Ratio: " << stats.compression_ratio() << ":1\n";
-std::cout << "Speed: " << stats.compression_speed_mbps() << " MB/s\n";
+std::cout << "비율: " << stats.compression_ratio() << ":1\n";
+std::cout << "속도: " << stats.compression_speed_mbps() << " MB/s\n";
 ```
 
-### Pipeline Statistics
+### 파이프라인 통계
 
 ```cpp
 auto stats = sender->get_pipeline_stats();
-std::cout << "Bottleneck: " << stage_name(stats.bottleneck_stage()) << "\n";
+std::cout << "병목: " << stage_name(stats.bottleneck_stage()) << "\n";
 ```
 
 ---
 
-## Error Handling
+## 오류 처리
 
-### Check Result
+### 결과 확인
 
 ```cpp
 auto result = sender->send_file(path, endpoint);
 if (!result) {
     switch (result.error().code()) {
         case error::file_not_found:
-            // Handle missing file
+            // 누락 파일 처리
             break;
         case error::transfer_timeout:
-            // Handle timeout
+            // 타임아웃 처리
             break;
         default:
             std::cerr << result.error().message() << "\n";
@@ -210,30 +210,30 @@ if (!result) {
 }
 ```
 
-### Common Error Codes
+### 일반 오류 코드
 
-| Code | Name | Description |
-|------|------|-------------|
-| -700 | `transfer_init_failed` | Connection failed |
-| -702 | `transfer_timeout` | Transfer timed out |
-| -720 | `chunk_checksum_error` | Data corruption |
-| -723 | `file_hash_mismatch` | File verification failed |
-| -743 | `file_not_found` | Source file not found |
-| -781 | `decompression_failed` | LZ4 decompression error |
+| 코드 | 이름 | 설명 |
+|------|------|------|
+| -700 | `transfer_init_failed` | 연결 실패 |
+| -702 | `transfer_timeout` | 전송 시간 초과 |
+| -720 | `chunk_checksum_error` | 데이터 손상 |
+| -723 | `file_hash_mismatch` | 파일 검증 실패 |
+| -743 | `file_not_found` | 소스 파일 없음 |
+| -781 | `decompression_failed` | LZ4 해제 오류 |
 
 ---
 
-## Chunk Configuration
+## 청크 설정
 
-### Chunk Size Limits
+### 청크 크기 제한
 
-| Limit | Value |
-|-------|-------|
-| Minimum | 64 KB |
-| Default | 256 KB |
-| Maximum | 1 MB |
+| 제한 | 값 |
+|------|---|
+| 최소 | 64 KB |
+| 기본값 | 256 KB |
+| 최대 | 1 MB |
 
-### Calculate Chunks
+### 청크 수 계산
 
 ```cpp
 uint64_t file_size = 1024 * 1024 * 1024;  // 1 GB
@@ -244,39 +244,39 @@ uint64_t num_chunks = (file_size + chunk_size - 1) / chunk_size;
 
 ---
 
-## Performance Targets
+## 성능 목표
 
-| Metric | Target |
-|--------|--------|
-| LAN Throughput | >= 500 MB/s |
-| WAN Throughput | >= 100 MB/s |
-| LZ4 Compress | >= 400 MB/s |
-| LZ4 Decompress | >= 1.5 GB/s |
-| Memory Baseline | < 50 MB |
-| Concurrent Transfers | >= 100 |
+| 지표 | 목표 |
+|------|-----|
+| LAN 처리량 | >= 500 MB/s |
+| WAN 처리량 | >= 100 MB/s |
+| LZ4 압축 | >= 400 MB/s |
+| LZ4 해제 | >= 1.5 GB/s |
+| 메모리 기준 | < 50 MB |
+| 동시 전송 | >= 100 |
 
 ---
 
-## Transport Types
+## 전송 타입
 
 ```cpp
-// TCP (default)
+// TCP (기본값)
 .with_transport(transport_type::tcp)
 
 // QUIC (Phase 2)
 .with_transport(transport_type::quic)
 ```
 
-### When to Use QUIC
+### QUIC 사용 시기
 
-- High packet loss (>0.5%)
-- Mobile networks
-- Frequent IP changes
-- Multiple concurrent transfers
+- 높은 패킷 손실 (>0.5%)
+- 모바일 네트워크
+- 빈번한 IP 변경
+- 다중 동시 전송
 
 ---
 
-## Transfer States
+## 전송 상태
 
 ```
 pending → initializing → transferring → verifying → completed
@@ -288,9 +288,9 @@ pending → initializing → transferring → verifying → completed
 
 ---
 
-## Memory Estimation
+## 메모리 추정
 
-### Sender Memory
+### 송신자 메모리
 
 ```
 (read_queue + compress_queue + send_queue) × chunk_size
@@ -298,7 +298,7 @@ pending → initializing → transferring → verifying → completed
 = 28 MB
 ```
 
-### Receiver Memory
+### 수신자 메모리
 
 ```
 (recv_queue + decompress_queue + write_queue) × chunk_size
@@ -308,21 +308,21 @@ pending → initializing → transferring → verifying → completed
 
 ---
 
-## Dependencies
+## 의존성
 
-| System | Required |
-|--------|----------|
-| common_system | Yes |
-| thread_system | Yes |
-| network_system | Yes |
-| container_system | Yes |
-| LZ4 | Yes |
-| logger_system | Optional |
-| monitoring_system | Optional |
+| 시스템 | 필수 |
+|--------|-----|
+| common_system | 예 |
+| thread_system | 예 |
+| network_system | 예 |
+| container_system | 예 |
+| LZ4 | 예 |
+| logger_system | 선택 |
+| monitoring_system | 선택 |
 
 ---
 
-## Namespace
+## 네임스페이스
 
 ```cpp
 namespace kcenon::file_transfer {
@@ -344,4 +344,4 @@ namespace kcenon::file_transfer {
 
 ---
 
-*file_trans_system v1.0.0 | Last updated: 2025-12-11*
+*file_trans_system v1.0.0 | 최종 업데이트: 2025-12-11*
