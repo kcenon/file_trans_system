@@ -239,12 +239,13 @@ enum class message_type : uint8_t {
 ┌─────────────────────────────────────────────────────────────────┐
 │ Field                │ Size    │ Description                    │
 ├─────────────────────────────────────────────────────────────────┤
-│ protocol_version     │ 2 bytes │ Protocol version (major.minor) │
+│ protocol_version     │ 4 bytes │ Protocol version (major.minor. │
+│                      │         │ patch.build)                   │
 │ capabilities         │ 4 bytes │ Client capabilities bitmap     │
 │ client_id            │ 16 bytes│ Client UUID (optional, or 0)   │
 └─────────────────────────────────────────────────────────────────┘
 
-Total: 22 bytes
+Total: 24 bytes
 ```
 
 **Capabilities Bitmap:**
@@ -263,7 +264,7 @@ Bit 5-31: Reserved
 ┌─────────────────────────────────────────────────────────────────┐
 │ Field                │ Size    │ Description                    │
 ├─────────────────────────────────────────────────────────────────┤
-│ protocol_version     │ 2 bytes │ Agreed protocol version        │
+│ protocol_version     │ 4 bytes │ Agreed protocol version        │
 │ capabilities         │ 4 bytes │ Negotiated capabilities        │
 │ session_id           │ 16 bytes│ Session UUID                   │
 │ max_chunk_size       │ 4 bytes │ Maximum chunk size (bytes)     │
@@ -272,7 +273,7 @@ Bit 5-31: Reserved
 │ server_name          │ variable│ UTF-8 server identifier        │
 └─────────────────────────────────────────────────────────────────┘
 
-Minimum: 36 bytes + server_name
+Minimum: 38 bytes + server_name
 ```
 
 ### DISCONNECT (0x03)
@@ -992,6 +993,21 @@ constexpr uint32_t PROTOCOL_VERSION = 0x00020000;  // v0.2.0.0
 | 1.x.x.x | 0.x.x.x | Incompatible (major version mismatch) |
 
 > **Note**: In pre-1.0 versions (major=0), minor version changes may contain breaking changes. After 1.0 release, only major version changes will be breaking.
+
+### Version Negotiation Strategy
+
+1. **Client Request**: The client sends its `protocol_version` in the `CONNECT` message.
+2. **Server Verification**: The server compares the client's version with its own.
+   - If `client.major != server.major`: Reject connection.
+   - If `client.minor > server.minor`: Accept, but downgrade protocol to `server.minor` level.
+   - If `client.minor < server.minor`: Accept, server supports backward compatibility.
+3. **Response**:
+   - **Success**: Server sends `CONNECT_ACK` with the **negotiated version** (min(client.ver, server.ver)).
+   - **Failure**: Server sends `UPLOAD_REJECT` (or dedicated error) with reason `incompatible_protocol_version`.
+
+### Version Mismatch Handling
+
+If the server rejects the version, it MUST close the connection immediately after sending the rejection message to prevent undefined behavior.
 
 ---
 
