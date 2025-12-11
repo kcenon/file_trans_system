@@ -2,7 +2,7 @@
 
 **file_trans_system** 라이브러리의 필수 의존성 요구사항입니다.
 
-**버전:** 2.0.0
+**버전:** 0.2.0
 **아키텍처:** 클라이언트-서버 모델
 
 ---
@@ -497,12 +497,12 @@ target_link_libraries(my_app PRIVATE
 
 ```txt
 [requires]
-kcenon-common/2.0.0
-kcenon-container/2.0.0
-kcenon-thread/2.0.0
-kcenon-logger/2.0.0
-kcenon-network/2.0.0
-kcenon-file-transfer/2.0.0
+kcenon-common/0.2.0
+kcenon-container/0.2.0
+kcenon-thread/0.2.0
+kcenon-logger/0.2.0
+kcenon-network/0.2.0
+kcenon-file-transfer/0.2.0
 
 [generators]
 cmake
@@ -516,12 +516,12 @@ cmake
 
 | 시스템 | 최소 버전 | 권장 |
 |--------|----------|------|
-| common_system | 2.0.0 | 2.0.0 |
-| container_system | 2.0.0 | 2.0.0 |
-| thread_system | 2.0.0 | 2.0.0 |
-| logger_system | 2.0.0 | 2.0.0 |
-| network_system | 2.0.0 | 2.0.0 |
-| file_trans_system | 2.0.0 | 2.0.0 |
+| common_system | 0.2.0 | 0.2.0 |
+| container_system | 0.2.0 | 0.2.0 |
+| thread_system | 0.2.0 | 0.2.0 |
+| logger_system | 0.2.0 | 0.2.0 |
+| network_system | 0.2.0 | 0.2.0 |
+| file_trans_system | 0.2.0 | 0.2.0 |
 
 ### ABI 호환성
 
@@ -564,4 +564,4 @@ cmake
 ---
 
 *최종 업데이트: 2025-12-11*
-*버전: 2.0.0*
+*버전: 0.2.0*

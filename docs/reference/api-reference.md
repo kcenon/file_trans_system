@@ -2,7 +2,7 @@
 
 Complete API documentation for the **file_trans_system** library.
 
-**Version**: 2.0.0
+**Version**: 0.2.0
 **Last Updated**: 2025-12-11
 
 ## Table of Contents
@@ -1286,4 +1286,4 @@ int main() {
 ---
 
 *Last updated: 2025-12-11*
-*Version: 2.0.0*
+*Version: 0.2.0*

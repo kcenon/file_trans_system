@@ -6,12 +6,12 @@
 |------|-------------|
 | **Project Name** | file_trans_system |
 | **Document Type** | Software Validation Specification (SVaS) |
-| **Version** | 2.0.0 |
+| **Version** | 0.2.0 |
 | **Status** | Draft |
 | **Created** | 2025-12-11 |
 | **Last Updated** | 2025-12-11 |
 | **Author** | kcenon@naver.com |
-| **Related Documents** | PRD.md v2.0.0, SRS.md v2.0.0, SDS.md v2.0.0, Verification.md v2.0.0 |
+| **Related Documents** | PRD.md v0.2.0, SRS.md v0.2.0, SDS.md v0.2.0, Verification.md v0.2.0 |
 
 ---
 
@@ -71,10 +71,10 @@ This document covers:
 
 | Document | Description |
 |----------|-------------|
-| PRD.md v2.0.0 | Product Requirements Document - User needs |
-| SRS.md v2.0.0 | Software Requirements Specification |
-| SDS.md v2.0.0 | Software Design Specification |
-| Verification.md v2.0.0 | Software Verification Specification |
+| PRD.md v0.2.0 | Product Requirements Document - User needs |
+| SRS.md v0.2.0 | Software Requirements Specification |
+| SDS.md v0.2.0 | Software Design Specification |
+| Verification.md v0.2.0 | Software Verification Specification |
 | IEEE 1012-2016 | Standard for System, Software, and Hardware V&V |
 
 ---
@@ -1582,14 +1582,14 @@ As a library integrator, I don't want to worry about chunking details.
 ### 7.1 Document Hierarchy
 
 ```
-PRD.md v2.0.0 (User Needs)
+PRD.md v0.2.0 (User Needs)
     │
     ├── FR-01 to FR-16 (Functional Requirements)
     ├── NFR-01 to NFR-24 (Non-Functional Requirements)
     └── UC-01 to UC-11 (Use Cases)
          │
          ▼
-SRS.md v2.0.0 (Technical Requirements)
+SRS.md v0.2.0 (Technical Requirements)
     │
     ├── SRS-UPLOAD-001 to SRS-UPLOAD-003
     ├── SRS-DOWNLOAD-001 to SRS-DOWNLOAD-003
@@ -1607,7 +1607,7 @@ SRS.md v2.0.0 (Technical Requirements)
     └── REL-001 to REL-006
          │
          ▼
-SDS.md v2.0.0 (Design)
+SDS.md v0.2.0 (Design)
     │
     ├── file_transfer_server component
     ├── file_transfer_client component
@@ -1621,7 +1621,7 @@ SDS.md v2.0.0 (Design)
     └── transport_interface, tcp_transport components
          │
          ▼
-Verification.md v2.0.0 (Technical Tests)
+Verification.md v0.2.0 (Technical Tests)
     │
     ├── TC-UPLOAD-001 to TC-UPLOAD-006
     ├── TC-DOWNLOAD-001 to TC-DOWNLOAD-005
@@ -1639,7 +1639,7 @@ Verification.md v2.0.0 (Technical Tests)
     └── TC-REL-001 to TC-REL-002
          │
          ▼
-Validation.md v2.0.0 (User Acceptance)
+Validation.md v0.2.0 (User Acceptance)
     │
     ├── VAL-SERVER-001 to VAL-SERVER-003
     ├── VAL-CLIENT-001 to VAL-CLIENT-002
@@ -1710,7 +1710,7 @@ Validation.md v2.0.0 (User Acceptance)
 | Version | Date | Author | Description |
 |---------|------|--------|-------------|
 | 1.0.0 | 2025-12-11 | kcenon@naver.com | Initial SVaS creation (P2P model) |
-| 2.0.0 | 2025-12-11 | kcenon@naver.com | Complete rewrite for Client-Server architecture |
+| 0.2.0 | 2025-12-11 | kcenon@naver.com | Complete rewrite for Client-Server architecture |
 
 ---
 

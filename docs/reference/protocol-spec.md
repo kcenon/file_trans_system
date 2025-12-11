@@ -2,7 +2,7 @@
 
 Wire protocol specification for the **file_trans_system** library.
 
-**Version**: 2.0.0
+**Version**: 0.2.0
 **Last Updated**: 2025-12-11
 
 ## Overview
@@ -918,4 +918,4 @@ Filenames in UPLOAD_REQUEST and DOWNLOAD_REQUEST are validated:
 ---
 
 *Last updated: 2025-12-11*
-*Version: 2.0.0*
+*Version: 0.2.0*

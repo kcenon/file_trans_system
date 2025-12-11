@@ -2,7 +2,7 @@
 
 Detailed guide to the multi-stage pipeline architecture in **file_trans_system**.
 
-**Version:** 2.0.0
+**Version:** 0.2.0
 **Architecture:** Client-Server Model
 
 ---
@@ -765,5 +765,5 @@ config.compression_workers *= 2;
 
 ---
 
-*Version: 2.0.0*
+*Version: 0.2.0*
 *Last updated: 2025-12-11*

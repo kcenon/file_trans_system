@@ -5,7 +5,7 @@
 | Item | Description |
 |------|-------------|
 | **Project Name** | file_trans_system |
-| **Version** | 2.0.0 |
+| **Version** | 0.2.0 |
 | **Status** | Draft |
 | **Created** | 2025-12-11 |
 | **Author** | kcenon@naver.com |

@@ -2,7 +2,7 @@
 
 This document provides a comprehensive overview of the **file_trans_system** architecture, including system layers, component relationships, and design patterns.
 
-**Version**: 2.0.0
+**Version**: 0.2.0
 **Last Updated**: 2025-12-11
 
 ## Table of Contents
@@ -964,4 +964,4 @@ auto storage_manager::validate_filename(const std::string& filename) -> Result<v
 ---
 
 *Last updated: 2025-12-11*
-*Version: 2.0.0*
+*Version: 0.2.0*

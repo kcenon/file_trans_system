@@ -2,7 +2,7 @@
 
 C++20 프로젝트에서 **file_trans_system**을 사용하기 위한 단계별 가이드입니다.
 
-**버전:** 2.0.0
+**버전:** 0.2.0
 **아키텍처:** 클라이언트-서버 모델
 
 ---
@@ -55,7 +55,7 @@ include(FetchContent)
 FetchContent_Declare(
     file_trans_system
     GIT_REPOSITORY https://github.com/kcenon/file_trans_system.git
-    GIT_TAG v2.0.0
+    GIT_TAG v0.2.0
 )
 
 FetchContent_MakeAvailable(file_trans_system)
@@ -851,5 +851,5 @@ logger::set_level(log_level::debug);
 
 ---
 
-*버전: 2.0.0*
+*버전: 0.2.0*
 *최종 업데이트: 2025-12-11*

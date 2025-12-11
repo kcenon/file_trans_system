@@ -2,7 +2,7 @@
 
 Detailed technical reference documentation index for **file_trans_system**.
 
-**Version**: 2.0.0
+**Version**: 0.2.0
 **Last Updated**: 2025-12-11
 
 ## Document Index
@@ -149,16 +149,16 @@ auto files = client->list_files();
 
 | Document | Version | Last Updated |
 |----------|---------|--------------|
-| API Reference | 2.0.0 | 2025-12-11 |
-| Pipeline Architecture | 2.0.0 | 2025-12-11 |
-| Protocol Specification | 2.0.0 | 2025-12-11 |
-| Configuration Guide | 2.0.0 | 2025-12-11 |
-| LZ4 Compression Guide | 2.0.0 | 2025-12-11 |
-| Error Codes | 2.0.0 | 2025-12-11 |
-| Quick Reference | 2.0.0 | 2025-12-11 |
-| Dependency Requirements | 2.0.0 | 2025-12-11 |
+| API Reference | 0.2.0 | 2025-12-11 |
+| Pipeline Architecture | 0.2.0 | 2025-12-11 |
+| Protocol Specification | 0.2.0 | 2025-12-11 |
+| Configuration Guide | 0.2.0 | 2025-12-11 |
+| LZ4 Compression Guide | 0.2.0 | 2025-12-11 |
+| Error Codes | 0.2.0 | 2025-12-11 |
+| Quick Reference | 0.2.0 | 2025-12-11 |
+| Dependency Requirements | 0.2.0 | 2025-12-11 |
 
 ---
 
 *Last Updated: 2025-12-11*
-*Version: 2.0.0*
+*Version: 0.2.0*

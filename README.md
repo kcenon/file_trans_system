@@ -2,7 +2,7 @@
 
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg)](https://isocpp.org/std/the-standard)
 [![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD_3--Clause-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.0-green.svg)](https://github.com/kcenon/file_trans_system)
+[![Version](https://img.shields.io/badge/version-0.2.0-green.svg)](https://github.com/kcenon/file_trans_system)
 
 A high-performance, production-ready C++20 library for reliable file transfer with Client-Server architecture, LZ4 compression, resume capability, and multi-stage pipeline processing.
 
@@ -449,4 +449,4 @@ Contributions are welcome! Please read our contributing guidelines before submit
 
 ---
 
-*file_trans_system v2.0.0 | High-Performance File Transfer Library with Client-Server Architecture*
+*file_trans_system v0.2.0 | High-Performance File Transfer Library with Client-Server Architecture*

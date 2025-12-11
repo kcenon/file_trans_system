@@ -6,12 +6,12 @@
 |------|------|
 | **프로젝트명** | file_trans_system |
 | **문서 유형** | 소프트웨어 유효성 검증 명세서 (SVaS) |
-| **버전** | 2.0.0 |
+| **버전** | 0.2.0 |
 | **상태** | 초안 |
 | **작성일** | 2025-12-11 |
 | **최종 수정일** | 2025-12-11 |
 | **작성자** | kcenon@naver.com |
-| **관련 문서** | PRD_KR.md v2.0.0, SRS_KR.md v2.0.0, SDS_KR.md v2.0.0, Verification_KR.md v2.0.0 |
+| **관련 문서** | PRD_KR.md v0.2.0, SRS_KR.md v0.2.0, SDS_KR.md v0.2.0, Verification_KR.md v0.2.0 |
 
 ---
 
@@ -71,10 +71,10 @@
 
 | 문서 | 설명 |
 |------|------|
-| PRD_KR.md v2.0.0 | 제품 요구사항 문서 - 사용자 요구 |
-| SRS_KR.md v2.0.0 | 소프트웨어 요구사항 명세서 |
-| SDS_KR.md v2.0.0 | 소프트웨어 설계 명세서 |
-| Verification_KR.md v2.0.0 | 소프트웨어 검증 명세서 |
+| PRD_KR.md v0.2.0 | 제품 요구사항 문서 - 사용자 요구 |
+| SRS_KR.md v0.2.0 | 소프트웨어 요구사항 명세서 |
+| SDS_KR.md v0.2.0 | 소프트웨어 설계 명세서 |
+| Verification_KR.md v0.2.0 | 소프트웨어 검증 명세서 |
 | IEEE 1012-2016 | 시스템, 소프트웨어 및 하드웨어 V&V 표준 |
 
 ---
@@ -1582,14 +1582,14 @@
 ### 7.1 문서 계층 구조
 
 ```
-PRD_KR.md v2.0.0 (사용자 요구)
+PRD_KR.md v0.2.0 (사용자 요구)
     │
     ├── FR-01 ~ FR-16 (기능 요구사항)
     ├── NFR-01 ~ NFR-24 (비기능 요구사항)
     └── UC-01 ~ UC-11 (유스케이스)
          │
          ▼
-SRS_KR.md v2.0.0 (기술 요구사항)
+SRS_KR.md v0.2.0 (기술 요구사항)
     │
     ├── SRS-UPLOAD-001 ~ SRS-UPLOAD-003
     ├── SRS-DOWNLOAD-001 ~ SRS-DOWNLOAD-003
@@ -1607,7 +1607,7 @@ SRS_KR.md v2.0.0 (기술 요구사항)
     └── REL-001 ~ REL-006
          │
          ▼
-SDS_KR.md v2.0.0 (설계)
+SDS_KR.md v0.2.0 (설계)
     │
     ├── file_transfer_server 컴포넌트
     ├── file_transfer_client 컴포넌트
@@ -1621,7 +1621,7 @@ SDS_KR.md v2.0.0 (설계)
     └── transport_interface, tcp_transport 컴포넌트
          │
          ▼
-Verification_KR.md v2.0.0 (기술 테스트)
+Verification_KR.md v0.2.0 (기술 테스트)
     │
     ├── TC-UPLOAD-001 ~ TC-UPLOAD-006
     ├── TC-DOWNLOAD-001 ~ TC-DOWNLOAD-005
@@ -1639,7 +1639,7 @@ Verification_KR.md v2.0.0 (기술 테스트)
     └── TC-REL-001 ~ TC-REL-002
          │
          ▼
-Validation_KR.md v2.0.0 (사용자 인수)
+Validation_KR.md v0.2.0 (사용자 인수)
     │
     ├── VAL-SERVER-001 ~ VAL-SERVER-003
     ├── VAL-CLIENT-001 ~ VAL-CLIENT-002
@@ -1710,7 +1710,7 @@ Validation_KR.md v2.0.0 (사용자 인수)
 | 버전 | 날짜 | 작성자 | 설명 |
 |------|------|--------|------|
 | 1.0.0 | 2025-12-11 | kcenon@naver.com | SVaS 초기 작성 (P2P 모델) |
-| 2.0.0 | 2025-12-11 | kcenon@naver.com | Client-Server 아키텍처로 전면 재작성 |
+| 0.2.0 | 2025-12-11 | kcenon@naver.com | Client-Server 아키텍처로 전면 재작성 |
 
 ---
 

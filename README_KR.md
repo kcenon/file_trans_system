@@ -2,7 +2,7 @@
 
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg)](https://isocpp.org/std/the-standard)
 [![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD_3--Clause-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.0-green.svg)](https://github.com/kcenon/file_trans_system)
+[![Version](https://img.shields.io/badge/version-0.2.0-green.svg)](https://github.com/kcenon/file_trans_system)
 
 클라이언트-서버 아키텍처, LZ4 압축, 재개 기능, 멀티 스테이지 파이프라인 처리를 갖춘 고성능 프로덕션급 C++20 파일 전송 라이브러리입니다.
 
@@ -449,4 +449,4 @@ client->on_connection_restored([]() {
 
 ---
 
-*file_trans_system v2.0.0 | 클라이언트-서버 아키텍처를 갖춘 고성능 파일 전송 라이브러리*
+*file_trans_system v0.2.0 | 클라이언트-서버 아키텍처를 갖춘 고성능 파일 전송 라이브러리*

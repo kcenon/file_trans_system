@@ -2,7 +2,7 @@
 
 This document provides detailed sequence diagrams for the key operations in **file_trans_system**.
 
-**Version:** 2.0.0
+**Version:** 0.2.0
 **Architecture:** Client-Server Model
 
 ---
@@ -868,5 +868,5 @@ T=22 Network sends one chunk
 
 ---
 
-*Version: 2.0.0*
+*Version: 0.2.0*
 *Last updated: 2025-12-11*

@@ -2,7 +2,7 @@
 
 A step-by-step guide to start using **file_trans_system** in your C++20 projects.
 
-**Version:** 2.0.0
+**Version:** 0.2.0
 **Architecture:** Client-Server Model
 
 ---
@@ -55,7 +55,7 @@ include(FetchContent)
 FetchContent_Declare(
     file_trans_system
     GIT_REPOSITORY https://github.com/kcenon/file_trans_system.git
-    GIT_TAG v2.0.0
+    GIT_TAG v0.2.0
 )
 
 FetchContent_MakeAvailable(file_trans_system)
@@ -851,5 +851,5 @@ logger::set_level(log_level::debug);
 
 ---
 
-*Version: 2.0.0*
+*Version: 0.2.0*
 *Last updated: 2025-12-11*

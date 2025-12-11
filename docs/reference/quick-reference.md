@@ -2,7 +2,7 @@
 
 Quick reference for common **file_trans_system** operations.
 
-**Version:** 2.0.0
+**Version:** 0.2.0
 **Architecture:** Client-Server Model
 
 ---
@@ -477,4 +477,4 @@ namespace kcenon::file_transfer {
 
 ---
 
-*file_trans_system v2.0.0 | Last updated: 2025-12-11*
+*file_trans_system v0.2.0 | Last updated: 2025-12-11*

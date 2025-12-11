@@ -6,11 +6,11 @@
 |------|-------------|
 | **Project Name** | file_trans_system |
 | **Document Type** | Software Requirements Specification (SRS) |
-| **Version** | 2.0.0 |
+| **Version** | 0.2.0 |
 | **Status** | Draft |
 | **Created** | 2025-12-11 |
 | **Author** | kcenon@naver.com |
-| **Related Documents** | PRD.md v2.0.0 |
+| **Related Documents** | PRD.md v0.2.0 |
 
 ---
 
@@ -58,7 +58,7 @@ The file_trans_system is a C++20 library implementing a **client-server architec
 
 | Document | Description |
 |----------|-------------|
-| PRD.md v2.0.0 | Product Requirements Document for file_trans_system |
+| PRD.md v0.2.0 | Product Requirements Document for file_trans_system |
 | common_system/README.md | Common system interfaces and Result<T> |
 | thread_system/README.md | Thread pool and async execution |
 | network_system/README.md | TCP/TLS and QUIC transport layer |
@@ -1586,7 +1586,7 @@ Following ecosystem conventions, file_trans_system uses error codes **-700 to -7
 |---------|------|--------|-------------|
 | 1.0.0 | 2025-12-11 | kcenon@naver.com | Initial SRS creation (P2P model) |
 | 1.1.0 | 2025-12-11 | kcenon@naver.com | Added TCP/QUIC transport layer requirements |
-| 2.0.0 | 2025-12-11 | kcenon@naver.com | Complete rewrite for Client-Server architecture |
+| 0.2.0 | 2025-12-11 | kcenon@naver.com | Complete rewrite for Client-Server architecture |
 
 ---
 

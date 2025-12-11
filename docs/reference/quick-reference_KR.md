@@ -2,7 +2,7 @@
 
 **file_trans_system**의 일반적인 작업을 위한 빠른 참조입니다.
 
-**버전:** 2.0.0
+**버전:** 0.2.0
 **아키텍처:** 클라이언트-서버 모델
 
 ---
@@ -477,4 +477,4 @@ namespace kcenon::file_transfer {
 
 ---
 
-*file_trans_system v2.0.0 | 최종 업데이트: 2025-12-11*
+*file_trans_system v0.2.0 | 최종 업데이트: 2025-12-11*

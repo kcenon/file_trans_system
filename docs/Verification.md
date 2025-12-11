@@ -6,12 +6,12 @@
 |------|-------------|
 | **Project Name** | file_trans_system |
 | **Document Type** | Software Verification Specification (SVS) |
-| **Version** | 2.0.0 |
+| **Version** | 0.2.0 |
 | **Status** | Draft |
 | **Created** | 2025-12-11 |
 | **Last Updated** | 2025-12-11 |
 | **Author** | kcenon@naver.com |
-| **Related Documents** | SRS.md v2.0.0, SDS.md v2.0.0 |
+| **Related Documents** | SRS.md v0.2.0, SDS.md v0.2.0 |
 
 ---
 
@@ -43,8 +43,8 @@ This document covers:
 
 | Document | Description |
 |----------|-------------|
-| SRS.md v2.0.0 | Software Requirements Specification |
-| SDS.md v2.0.0 | Software Design Specification |
+| SRS.md v0.2.0 | Software Requirements Specification |
+| SDS.md v0.2.0 | Software Design Specification |
 | IEEE 1012-2016 | Standard for System, Software, and Hardware V&V |
 | ISO/IEC 29119 | Software Testing Standard |
 
@@ -1903,7 +1903,7 @@ coverage:
 | Version | Date | Author | Description |
 |---------|------|--------|-------------|
 | 1.0.0 | 2025-12-11 | kcenon@naver.com | Initial SVS creation (P2P model) |
-| 2.0.0 | 2025-12-11 | kcenon@naver.com | Complete rewrite for Client-Server architecture |
+| 0.2.0 | 2025-12-11 | kcenon@naver.com | Complete rewrite for Client-Server architecture |
 
 ---
 

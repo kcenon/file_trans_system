@@ -6,11 +6,11 @@
 |------|-------------|
 | **Project Name** | file_trans_system |
 | **Document Type** | Software Design Specification (SDS) |
-| **Version** | 2.0.0 |
+| **Version** | 0.2.0 |
 | **Status** | Approved |
 | **Created** | 2025-12-11 |
 | **Author** | kcenon@naver.com |
-| **Related Documents** | SRS.md v2.0.0, PRD.md v2.0.0 |
+| **Related Documents** | SRS.md v0.2.0, PRD.md v0.2.0 |
 
 ---
 
@@ -1513,7 +1513,7 @@ The storage_manager ensures all file operations are confined within the configur
 | Version | Date | Author | Description |
 |---------|------|--------|-------------|
 | 1.0.0 | 2025-12-11 | kcenon@naver.com | Initial SDS creation (P2P model) |
-| 2.0.0 | 2025-12-11 | kcenon@naver.com | Complete rewrite for Client-Server architecture |
+| 0.2.0 | 2025-12-11 | kcenon@naver.com | Complete rewrite for Client-Server architecture |
 
 ---
 

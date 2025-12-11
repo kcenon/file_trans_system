@@ -2,7 +2,7 @@
 
 Mandatory dependency requirements for the **file_trans_system** library.
 
-**Version:** 2.0.0
+**Version:** 0.2.0
 **Architecture:** Client-Server Model
 
 ---
@@ -497,12 +497,12 @@ target_link_libraries(my_app PRIVATE
 
 ```txt
 [requires]
-kcenon-common/2.0.0
-kcenon-container/2.0.0
-kcenon-thread/2.0.0
-kcenon-logger/2.0.0
-kcenon-network/2.0.0
-kcenon-file-transfer/2.0.0
+kcenon-common/0.2.0
+kcenon-container/0.2.0
+kcenon-thread/0.2.0
+kcenon-logger/0.2.0
+kcenon-network/0.2.0
+kcenon-file-transfer/0.2.0
 
 [generators]
 cmake
@@ -516,12 +516,12 @@ cmake
 
 | System | Minimum Version | Recommended |
 |--------|-----------------|-------------|
-| common_system | 2.0.0 | 2.0.0 |
-| container_system | 2.0.0 | 2.0.0 |
-| thread_system | 2.0.0 | 2.0.0 |
-| logger_system | 2.0.0 | 2.0.0 |
-| network_system | 2.0.0 | 2.0.0 |
-| file_trans_system | 2.0.0 | 2.0.0 |
+| common_system | 0.2.0 | 0.2.0 |
+| container_system | 0.2.0 | 0.2.0 |
+| thread_system | 0.2.0 | 0.2.0 |
+| logger_system | 0.2.0 | 0.2.0 |
+| network_system | 0.2.0 | 0.2.0 |
+| file_trans_system | 0.2.0 | 0.2.0 |
 
 ### ABI Compatibility
 
@@ -564,4 +564,4 @@ All systems follow semantic versioning. Within a major version:
 ---
 
 *Last Updated: 2025-12-11*
-*Version: 2.0.0*
+*Version: 0.2.0*
