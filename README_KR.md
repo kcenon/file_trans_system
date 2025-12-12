@@ -360,6 +360,33 @@ UBSAN_OPTIONS="print_stacktrace=1:abort_on_error=1" ctest --test-dir build
 
 > **참고**: ASAN과 TSAN은 동시에 활성화할 수 없습니다.
 
+### 벤치마크
+
+성능 벤치마크를 빌드하고 실행합니다:
+
+```bash
+# 벤치마크 활성화로 빌드
+cmake -B build -DFILE_TRANS_BUILD_BENCHMARKS=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel
+
+# 처리량 벤치마크 실행
+./build/bin/throughput_benchmarks
+
+# JSON 출력으로 실행
+./build/bin/throughput_benchmarks --benchmark_format=json --benchmark_out=results.json
+
+# 특정 벤치마크 실행
+./build/bin/throughput_benchmarks --benchmark_filter="BM_SingleFile*"
+```
+
+#### 벤치마크 카테고리
+
+| 카테고리 | 설명 | 목표 |
+|---------|-----|-----|
+| **Throughput** | 파일 분할/조립 처리량 | ≥ 500 MB/s |
+| **Chunk Operations** | 청크 스플리터 및 어셈블러 성능 | - |
+| **Checksum** | CRC32 및 SHA-256 성능 | - |
+
 ### CMake 통합
 
 ```cmake
