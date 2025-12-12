@@ -74,12 +74,48 @@ set_target_properties(throughput_benchmarks PROPERTIES
 )
 
 ##################################################
-# Compression Benchmarks (Future)
+# Compression Benchmarks
 ##################################################
 
-# add_executable(compression_benchmarks
-#     compression/bench_lz4_compression.cpp
-# )
+add_executable(compression_benchmarks
+    compression/bench_lz4_compression.cpp
+)
+
+target_link_libraries(compression_benchmarks PRIVATE
+    FileTransSystem
+    benchmark_utils
+    benchmark::benchmark
+    benchmark::benchmark_main
+    Threads::Threads
+)
+
+set_target_properties(compression_benchmarks PROPERTIES
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
+##################################################
+# Latency Benchmarks
+##################################################
+
+add_executable(latency_benchmarks
+    latency/bench_latency.cpp
+)
+
+target_link_libraries(latency_benchmarks PRIVATE
+    FileTransSystem
+    benchmark_utils
+    benchmark::benchmark
+    benchmark::benchmark_main
+    Threads::Threads
+)
+
+set_target_properties(latency_benchmarks PROPERTIES
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
 
 ##################################################
 # Memory Benchmarks (Future)
@@ -110,8 +146,28 @@ add_custom_target(run_throughput_benchmarks
     COMMENT "Running throughput benchmarks..."
 )
 
+add_custom_target(run_compression_benchmarks
+    COMMAND $<TARGET_FILE:compression_benchmarks>
+        --benchmark_format=console
+        --benchmark_out=${CMAKE_BINARY_DIR}/benchmark_results/compression.json
+        --benchmark_out_format=json
+    DEPENDS compression_benchmarks
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    COMMENT "Running compression benchmarks..."
+)
+
+add_custom_target(run_latency_benchmarks
+    COMMAND $<TARGET_FILE:latency_benchmarks>
+        --benchmark_format=console
+        --benchmark_out=${CMAKE_BINARY_DIR}/benchmark_results/latency.json
+        --benchmark_out_format=json
+    DEPENDS latency_benchmarks
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    COMMENT "Running latency benchmarks..."
+)
+
 add_custom_target(run_benchmarks
-    DEPENDS run_throughput_benchmarks
+    DEPENDS run_throughput_benchmarks run_compression_benchmarks run_latency_benchmarks
     COMMENT "Running all benchmarks..."
 )
 
