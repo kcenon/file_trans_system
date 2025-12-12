@@ -141,8 +141,10 @@ endif()
 ##################################################
 
 add_library(FileTransSystem
-    # Placeholder source file (to be implemented)
     src/file_transfer.cpp
+    src/core/checksum.cpp
+    src/core/chunk_splitter.cpp
+    src/core/chunk_assembler.cpp
 )
 
 add_library(kcenon::file_transfer ALIAS FileTransSystem)
