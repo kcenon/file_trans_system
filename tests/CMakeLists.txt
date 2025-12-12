@@ -42,6 +42,7 @@ add_executable(file_trans_unit_tests
     unit/core/test_checksum.cpp
     unit/core/test_chunk_splitter.cpp
     unit/core/test_chunk_assembler.cpp
+    unit/compression/test_compression_engine.cpp
 )
 
 target_link_libraries(file_trans_unit_tests PRIVATE
