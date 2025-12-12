@@ -210,6 +210,47 @@ public:
      */
     [[nodiscard]] auto config() const -> const client_config&;
 
+    // Download control methods (for internal and network layer use)
+    /**
+     * @brief Process a received download chunk
+     * @param handle_id Transfer handle ID
+     * @param received_chunk The chunk to process
+     * @return Result indicating success or failure
+     */
+    [[nodiscard]] auto process_download_chunk(
+        uint64_t handle_id,
+        const chunk& received_chunk) -> result<void>;
+
+    /**
+     * @brief Finalize a completed download
+     * @param handle_id Transfer handle ID
+     * @return Result indicating success or failure
+     */
+    [[nodiscard]] auto finalize_download(uint64_t handle_id) -> result<void>;
+
+    /**
+     * @brief Cancel an ongoing download
+     * @param handle_id Transfer handle ID
+     * @return Result indicating success or failure
+     */
+    [[nodiscard]] auto cancel_download(uint64_t handle_id) -> result<void>;
+
+    /**
+     * @brief Set download metadata from server response
+     * @param handle_id Transfer handle ID
+     * @param file_size Total file size in bytes
+     * @param total_chunks Total number of chunks expected
+     * @param chunk_size Chunk size in bytes
+     * @param sha256_hash Expected SHA-256 hash for verification
+     * @return Result indicating success or failure
+     */
+    [[nodiscard]] auto set_download_metadata(
+        uint64_t handle_id,
+        uint64_t file_size,
+        uint64_t total_chunks,
+        uint32_t chunk_size,
+        const std::string& sha256_hash) -> result<void>;
+
 private:
     explicit file_transfer_client(client_config config);
 
