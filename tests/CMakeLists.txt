@@ -48,6 +48,7 @@ add_executable(file_trans_unit_tests
     unit/protocol/test_types.cpp
     unit/state/test_state_management.cpp
     unit/server/test_server_pipeline.cpp
+    unit/client/test_transfer_control.cpp
 )
 
 target_link_libraries(file_trans_unit_tests PRIVATE

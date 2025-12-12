@@ -210,6 +210,62 @@ public:
      */
     [[nodiscard]] auto config() const -> const client_config&;
 
+    // Transfer control methods
+    /**
+     * @brief Get transfer status
+     * @param handle_id Transfer handle ID
+     * @return Current transfer status
+     */
+    [[nodiscard]] auto get_transfer_status(uint64_t handle_id) const
+        -> transfer_status;
+
+    /**
+     * @brief Get transfer progress
+     * @param handle_id Transfer handle ID
+     * @return Current transfer progress
+     */
+    [[nodiscard]] auto get_transfer_progress(uint64_t handle_id) const
+        -> transfer_progress_info;
+
+    /**
+     * @brief Pause a transfer
+     * @param handle_id Transfer handle ID
+     * @return Success or error
+     */
+    [[nodiscard]] auto pause_transfer(uint64_t handle_id) -> result<void>;
+
+    /**
+     * @brief Resume a paused transfer
+     * @param handle_id Transfer handle ID
+     * @return Success or error
+     */
+    [[nodiscard]] auto resume_transfer(uint64_t handle_id) -> result<void>;
+
+    /**
+     * @brief Cancel a transfer
+     * @param handle_id Transfer handle ID
+     * @return Success or error
+     */
+    [[nodiscard]] auto cancel_transfer(uint64_t handle_id) -> result<void>;
+
+    /**
+     * @brief Wait for transfer completion
+     * @param handle_id Transfer handle ID
+     * @return Transfer result info or error
+     */
+    [[nodiscard]] auto wait_for_transfer(uint64_t handle_id)
+        -> result<transfer_result_info>;
+
+    /**
+     * @brief Wait for transfer completion with timeout
+     * @param handle_id Transfer handle ID
+     * @param timeout Maximum time to wait
+     * @return Transfer result info or error
+     */
+    [[nodiscard]] auto wait_for_transfer(
+        uint64_t handle_id,
+        std::chrono::milliseconds timeout) -> result<transfer_result_info>;
+
     // Download control methods (for internal and network layer use)
     /**
      * @brief Process a received download chunk

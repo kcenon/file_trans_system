@@ -388,22 +388,192 @@ Upload multiple files in a batch operation.
 
 #### Transfer Control
 
-##### cancel() / pause() / resume()
+Transfers can be controlled through the `transfer_handle` returned from upload/download operations.
 
-Control active transfers.
+##### transfer_handle Methods
 
 ```cpp
-[[nodiscard]] auto cancel(const transfer_id& id) -> Result<void>;
-[[nodiscard]] auto pause(const transfer_id& id) -> Result<void>;
-[[nodiscard]] auto resume(const transfer_id& id) -> Result<void>;
+class transfer_handle {
+public:
+    // Get handle ID
+    [[nodiscard]] auto get_id() const noexcept -> uint64_t;
+
+    // Check if handle is valid
+    [[nodiscard]] auto is_valid() const noexcept -> bool;
+
+    // Get current transfer status
+    [[nodiscard]] auto get_status() const -> transfer_status;
+
+    // Get current transfer progress
+    [[nodiscard]] auto get_progress() const -> transfer_progress_info;
+
+    // Pause the transfer (valid: in_progress -> paused)
+    [[nodiscard]] auto pause() -> Result<void>;
+
+    // Resume a paused transfer (valid: paused -> in_progress)
+    [[nodiscard]] auto resume() -> Result<void>;
+
+    // Cancel the transfer (valid from any non-terminal state)
+    [[nodiscard]] auto cancel() -> Result<void>;
+
+    // Wait for transfer completion
+    [[nodiscard]] auto wait() -> Result<transfer_result_info>;
+
+    // Wait for transfer completion with timeout
+    [[nodiscard]] auto wait_for(std::chrono::milliseconds timeout)
+        -> Result<transfer_result_info>;
+};
 ```
 
-##### get_transfer_status()
-
-Get status of a transfer.
+##### transfer_status Enum
 
 ```cpp
-[[nodiscard]] auto get_transfer_status(const transfer_id& id) -> Result<transfer_status>;
+enum class transfer_status {
+    pending,       // Waiting to start
+    in_progress,   // Transfer in progress
+    paused,        // Transfer paused
+    completing,    // Finalizing transfer
+    completed,     // Transfer completed successfully
+    failed,        // Transfer failed
+    cancelled      // Transfer cancelled by user
+};
+```
+
+##### transfer_progress_info
+
+```cpp
+struct transfer_progress_info {
+    uint64_t bytes_transferred;   // Bytes transferred so far
+    uint64_t total_bytes;         // Total file size
+    uint64_t chunks_transferred;  // Chunks transferred
+    uint64_t total_chunks;        // Total number of chunks
+    double transfer_rate;         // Bytes per second
+    std::chrono::milliseconds elapsed;  // Time elapsed
+
+    [[nodiscard]] auto completion_percentage() const noexcept -> double;
+};
+```
+
+##### transfer_result_info
+
+```cpp
+struct transfer_result_info {
+    bool success;                 // Whether transfer succeeded
+    uint64_t bytes_transferred;   // Total bytes transferred
+    std::chrono::milliseconds elapsed;  // Total time taken
+    std::optional<std::string> error_message;  // Error if failed
+};
+```
+
+**Example:**
+```cpp
+// Start upload
+auto handle_result = client->upload_file("/local/large_file.zip", "large_file.zip");
+if (!handle_result) {
+    std::cerr << "Failed to start upload: " << handle_result.error().message << "\n";
+    return;
+}
+
+auto& handle = handle_result.value();
+std::cout << "Upload started with ID: " << handle.get_id() << "\n";
+
+// Monitor progress
+while (handle.get_status() == transfer_status::in_progress) {
+    auto progress = handle.get_progress();
+    std::cout << progress.completion_percentage() << "% complete\n";
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+}
+
+// Pause if needed
+if (need_to_pause) {
+    auto pause_result = handle.pause();
+    if (pause_result) {
+        std::cout << "Transfer paused\n";
+    }
+
+    // Later, resume
+    handle.resume();
+}
+
+// Cancel if needed
+if (need_to_cancel) {
+    auto cancel_result = handle.cancel();
+    if (cancel_result) {
+        std::cout << "Transfer cancelled\n";
+    }
+}
+
+// Wait for completion
+auto result = handle.wait();
+if (result && result->success) {
+    std::cout << "Transfer completed: " << result->bytes_transferred << " bytes\n";
+} else {
+    std::cerr << "Transfer failed: " << result.error().message << "\n";
+}
+```
+
+##### Client-level Transfer Control
+
+The client also provides direct methods for transfer control:
+
+```cpp
+// Get transfer status by handle ID
+[[nodiscard]] auto get_transfer_status(uint64_t handle_id) const -> transfer_status;
+
+// Get transfer progress by handle ID
+[[nodiscard]] auto get_transfer_progress(uint64_t handle_id) const -> transfer_progress_info;
+
+// Pause a transfer
+[[nodiscard]] auto pause_transfer(uint64_t handle_id) -> Result<void>;
+
+// Resume a paused transfer
+[[nodiscard]] auto resume_transfer(uint64_t handle_id) -> Result<void>;
+
+// Cancel a transfer
+[[nodiscard]] auto cancel_transfer(uint64_t handle_id) -> Result<void>;
+
+// Wait for transfer completion
+[[nodiscard]] auto wait_for_transfer(uint64_t handle_id) -> Result<transfer_result_info>;
+
+// Wait for transfer completion with timeout
+[[nodiscard]] auto wait_for_transfer(
+    uint64_t handle_id,
+    std::chrono::milliseconds timeout) -> Result<transfer_result_info>;
+```
+
+##### State Transitions
+
+Valid state transitions for transfer control:
+
+```
+                      ┌──────────────────────────┐
+                      │         pending          │
+                      └────────────┬─────────────┘
+                                   │
+                                   ▼
+                      ┌──────────────────────────┐
+          ┌───────────│       in_progress        │───────────┐
+          │           └────────────┬─────────────┘           │
+          │                        │                         │
+          │ pause()                │ complete                │ error
+          ▼                        │                         ▼
+┌──────────────────┐               │               ┌─────────────────┐
+│      paused      │               │               │      failed     │
+└────────┬─────────┘               │               └─────────────────┘
+         │                         │
+         │ resume()                │
+         └─────────────────────────┤
+                                   ▼
+                      ┌──────────────────────────┐
+                      │       completing         │
+                      └────────────┬─────────────┘
+                                   │
+                                   ▼
+                      ┌──────────────────────────┐
+                      │       completed          │
+                      └──────────────────────────┘
+
+cancel() can be called from any non-terminal state → cancelled
 ```
 
 #### Callbacks

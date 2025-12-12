@@ -485,24 +485,27 @@ class TransferHandleTest : public ::testing::Test {};
 
 TEST_F(TransferHandleTest, DefaultConstruction) {
     transfer_handle handle;
-    EXPECT_EQ(handle.id, 0);
+    EXPECT_EQ(handle.get_id(), 0);
     EXPECT_FALSE(handle.is_valid());
 }
 
 TEST_F(TransferHandleTest, ExplicitConstruction) {
-    transfer_handle handle(12345);
-    EXPECT_EQ(handle.id, 12345);
-    EXPECT_TRUE(handle.is_valid());
+    // Note: transfer_handle now requires a client pointer, so without client
+    // it's still invalid even with a non-zero ID
+    transfer_handle handle(12345, nullptr);
+    EXPECT_EQ(handle.get_id(), 12345);
+    EXPECT_FALSE(handle.is_valid());  // Invalid because client is nullptr
 }
 
 TEST_F(TransferHandleTest, IsValid_Zero) {
-    transfer_handle handle(0);
+    transfer_handle handle(0, nullptr);
     EXPECT_FALSE(handle.is_valid());
 }
 
-TEST_F(TransferHandleTest, IsValid_NonZero) {
-    transfer_handle handle(1);
-    EXPECT_TRUE(handle.is_valid());
+TEST_F(TransferHandleTest, IsValid_NullClient) {
+    // Even with non-zero ID, handle is invalid without client
+    transfer_handle handle(1, nullptr);
+    EXPECT_FALSE(handle.is_valid());
 }
 
 // =============================================================================
