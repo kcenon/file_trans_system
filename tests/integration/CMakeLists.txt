@@ -4,6 +4,7 @@
 
 add_executable(file_trans_integration_tests
     test_basic_scenarios.cpp
+    test_error_advanced_scenarios.cpp
 )
 
 target_include_directories(file_trans_integration_tests PRIVATE
