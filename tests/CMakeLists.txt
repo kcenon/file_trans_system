@@ -49,6 +49,7 @@ add_executable(file_trans_unit_tests
     unit/state/test_state_management.cpp
     unit/server/test_server_pipeline.cpp
     unit/client/test_transfer_control.cpp
+    unit/client/test_batch_transfer.cpp
 )
 
 target_link_libraries(file_trans_unit_tests PRIVATE
