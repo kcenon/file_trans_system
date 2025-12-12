@@ -15,8 +15,11 @@
 #include <iomanip>
 #include <atomic>
 #include <mutex>
+#include <iostream>
 
-#ifdef BUILD_WITH_LOGGER_SYSTEM
+// logger_system integration requires common_system
+#if defined(BUILD_WITH_LOGGER_SYSTEM) && defined(BUILD_WITH_COMMON_SYSTEM)
+#define FILE_TRANSFER_USE_LOGGER_SYSTEM 1
 #include <kcenon/logger/core/logger.h>
 #include <kcenon/logger/core/logger_builder.h>
 #include <kcenon/logger/writers/console_writer.h>
@@ -94,21 +97,27 @@ struct transfer_log_context {
             oss << "\"" << name << "\":\"" << value << "\"";
             first = false;
         };
-        auto add_numeric = [&](const char* name, auto value) {
+        auto add_uint = [&](const char* name, uint64_t value) {
             if (!first) oss << ",";
+            oss << "\"" << name << "\":" << value;
+            first = false;
+        };
+        auto add_double = [&](const char* name, double value) {
+            if (!first) oss << ",";
+            oss << std::fixed << std::setprecision(2);
             oss << "\"" << name << "\":" << value;
             first = false;
         };
 
         if (!transfer_id.empty()) add_field("transfer_id", transfer_id);
         if (!filename.empty()) add_field("filename", filename);
-        if (file_size) add_numeric("file_size", *file_size);
-        if (bytes_transferred) add_numeric("bytes_transferred", *bytes_transferred);
-        if (chunk_index) add_numeric("chunk_index", *chunk_index);
-        if (total_chunks) add_numeric("total_chunks", *total_chunks);
-        if (progress_percent) add_numeric("progress_percent", std::fixed << std::setprecision(2) << *progress_percent);
-        if (rate_mbps) add_numeric("rate_mbps", std::fixed << std::setprecision(2) << *rate_mbps);
-        if (duration_ms) add_numeric("duration_ms", *duration_ms);
+        if (file_size) add_uint("file_size", *file_size);
+        if (bytes_transferred) add_uint("bytes_transferred", *bytes_transferred);
+        if (chunk_index) add_uint("chunk_index", *chunk_index);
+        if (total_chunks) add_uint("total_chunks", *total_chunks);
+        if (progress_percent) add_double("progress_percent", *progress_percent);
+        if (rate_mbps) add_double("rate_mbps", *rate_mbps);
+        if (duration_ms) add_uint("duration_ms", *duration_ms);
         if (error_message) add_field("error_message", *error_message);
         if (client_id) add_field("client_id", *client_id);
         if (server_address) add_field("server_address", *server_address);
@@ -143,7 +152,7 @@ public:
      * @brief Initialize the logger
      */
     void initialize() {
-#ifdef BUILD_WITH_LOGGER_SYSTEM
+#ifdef FILE_TRANSFER_USE_LOGGER_SYSTEM
         auto result = kcenon::logger::logger_builder()
             .with_async(true)
             .with_min_level(kcenon::logger::log_level::info)
@@ -161,7 +170,7 @@ public:
      * @brief Shutdown the logger
      */
     void shutdown() {
-#ifdef BUILD_WITH_LOGGER_SYSTEM
+#ifdef FILE_TRANSFER_USE_LOGGER_SYSTEM
         if (logger_) {
             logger_->flush();
             logger_->stop();
@@ -174,14 +183,14 @@ public:
     /**
      * @brief Check if logger is initialized
      */
-    bool is_initialized() const { return initialized_; }
+    bool is_initialized() const { return initialized_.load(); }
 
     /**
      * @brief Set minimum log level
      */
     void set_level(log_level level) {
-        min_level_ = level;
-#ifdef BUILD_WITH_LOGGER_SYSTEM
+        min_level_.store(level);
+#ifdef FILE_TRANSFER_USE_LOGGER_SYSTEM
         if (logger_) {
             logger_->set_min_level(to_logger_level(level));
         }
@@ -191,7 +200,7 @@ public:
     /**
      * @brief Get current log level
      */
-    log_level get_level() const { return min_level_; }
+    log_level get_level() const { return min_level_.load(); }
 
     /**
      * @brief Set custom log callback
@@ -205,7 +214,7 @@ public:
      * @brief Check if logging is enabled for level
      */
     bool is_enabled(log_level level) const {
-        return static_cast<int>(level) >= static_cast<int>(min_level_);
+        return static_cast<int>(level) >= static_cast<int>(min_level_.load());
     }
 
     /**
@@ -215,9 +224,9 @@ public:
              std::string_view category,
              std::string_view message,
              const transfer_log_context* context = nullptr,
-             const char* file = nullptr,
-             int line = 0,
-             const char* function = nullptr) {
+             [[maybe_unused]] const char* file = nullptr,
+             [[maybe_unused]] int line = 0,
+             [[maybe_unused]] const char* function = nullptr) {
 
         if (!is_enabled(level)) return;
 
@@ -229,7 +238,7 @@ public:
             }
         }
 
-#ifdef BUILD_WITH_LOGGER_SYSTEM
+#ifdef FILE_TRANSFER_USE_LOGGER_SYSTEM
         if (logger_) {
             std::string full_message = format_message(category, message, context);
             if (file && line > 0 && function) {
@@ -263,7 +272,7 @@ public:
      * @brief Flush pending logs
      */
     void flush() {
-#ifdef BUILD_WITH_LOGGER_SYSTEM
+#ifdef FILE_TRANSFER_USE_LOGGER_SYSTEM
         if (logger_) {
             logger_->flush();
         }
@@ -271,7 +280,7 @@ public:
     }
 
 private:
-#ifdef BUILD_WITH_LOGGER_SYSTEM
+#ifdef FILE_TRANSFER_USE_LOGGER_SYSTEM
     static kcenon::logger::log_level to_logger_level(log_level level) {
         switch (level) {
             case log_level::trace: return kcenon::logger::log_level::trace;

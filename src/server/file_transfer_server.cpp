@@ -4,6 +4,7 @@
  */
 
 #include "kcenon/file_transfer/server/file_transfer_server.h"
+#include "kcenon/file_transfer/core/logging.h"
 
 #include <chrono>
 #include <filesystem>
@@ -132,9 +133,13 @@ file_transfer_server::~file_transfer_server() {
 
 auto file_transfer_server::start(const endpoint& listen_addr) -> result<void> {
     if (impl_->current_state != server_state::stopped) {
+        FT_LOG_WARN(log_category::server, "Server start failed: already running");
         return unexpected{error{error_code::already_initialized,
                                "Server is already running"}};
     }
+
+    FT_LOG_INFO(log_category::server,
+        "Starting server on " + listen_addr.host + ":" + std::to_string(listen_addr.port));
 
     impl_->current_state = server_state::starting;
     impl_->listen_port = listen_addr.port;
@@ -143,27 +148,35 @@ auto file_transfer_server::start(const endpoint& listen_addr) -> result<void> {
     auto result = impl_->network_server->start_server(listen_addr.port);
     if (!result) {
         impl_->current_state = server_state::stopped;
+        FT_LOG_ERROR(log_category::server,
+            "Failed to start network server: " + result.error().message);
         return unexpected{error{error_code::internal_error,
                                "Failed to start network server: " + result.error().message}};
     }
 #endif
 
     impl_->current_state = server_state::running;
+    FT_LOG_INFO(log_category::server,
+        "Server started successfully on port " + std::to_string(listen_addr.port));
     return {};
 }
 
 auto file_transfer_server::stop() -> result<void> {
     if (impl_->current_state != server_state::running) {
+        FT_LOG_WARN(log_category::server, "Server stop called but server is not running");
         return unexpected{error{error_code::not_initialized,
                                "Server is not running"}};
     }
 
+    FT_LOG_INFO(log_category::server, "Stopping server");
     impl_->current_state = server_state::stopping;
 
 #ifdef BUILD_WITH_NETWORK_SYSTEM
     auto result = impl_->network_server->stop_server();
     if (!result) {
         impl_->current_state = server_state::running;
+        FT_LOG_ERROR(log_category::server,
+            "Failed to stop network server: " + result.error().message);
         return unexpected{error{error_code::internal_error,
                                "Failed to stop network server: " + result.error().message}};
     }
@@ -171,6 +184,7 @@ auto file_transfer_server::stop() -> result<void> {
 
     impl_->current_state = server_state::stopped;
     impl_->listen_port = 0;
+    FT_LOG_INFO(log_category::server, "Server stopped");
     return {};
 }
 

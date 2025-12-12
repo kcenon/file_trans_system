@@ -7,6 +7,7 @@
 
 #include "kcenon/file_transfer/core/checksum.h"
 #include "kcenon/file_transfer/core/compression_engine.h"
+#include "kcenon/file_transfer/core/logging.h"
 
 #include <condition_variable>
 #include <deque>
