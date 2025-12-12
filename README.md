@@ -364,6 +364,7 @@ ctest --output-on-failure
 | **Unit Tests - State** | Connection/server state, config validation, statistics | `tests/unit/state/` |
 | **Integration Tests - Basic** | Server/client lifecycle, connection, basic transfers | `test_basic_scenarios.cpp` |
 | **Integration Tests - Advanced** | Error handling, large files, compression, stress tests | `test_error_advanced_scenarios.cpp` |
+| **Integration Tests - Concurrency** | Multi-client connections, 100-connection load test, concurrent transfers | `test_concurrency.cpp` |
 
 ### CMake Integration
 
