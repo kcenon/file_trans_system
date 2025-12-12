@@ -319,6 +319,221 @@ struct client_statistics {
     std::size_t active_transfers = 0;
 };
 
+// ============================================================================
+// Batch Transfer Types
+// ============================================================================
+
+/**
+ * @brief Entry for batch upload operation
+ *
+ * Specifies a local file to upload with an optional remote filename.
+ */
+struct upload_entry {
+    std::filesystem::path local_path;   ///< Local file path to upload
+    std::string remote_name;            ///< Remote filename (optional, uses local filename if empty)
+
+    upload_entry() = default;
+    upload_entry(std::filesystem::path path, std::string name = {})
+        : local_path(std::move(path)), remote_name(std::move(name)) {}
+};
+
+/**
+ * @brief Entry for batch download operation
+ *
+ * Specifies a remote file to download with a local destination path.
+ */
+struct download_entry {
+    std::string remote_name;            ///< Remote filename to download
+    std::filesystem::path local_path;   ///< Local destination path
+
+    download_entry() = default;
+    download_entry(std::string name, std::filesystem::path path)
+        : remote_name(std::move(name)), local_path(std::move(path)) {}
+};
+
+/**
+ * @brief Progress information for a batch transfer
+ */
+struct batch_progress {
+    std::size_t total_files = 0;        ///< Total number of files in batch
+    std::size_t completed_files = 0;    ///< Number of completed files
+    std::size_t failed_files = 0;       ///< Number of failed files
+    std::size_t in_progress_files = 0;  ///< Number of files currently transferring
+    uint64_t total_bytes = 0;           ///< Total bytes across all files
+    uint64_t transferred_bytes = 0;     ///< Total bytes transferred so far
+    double overall_rate = 0.0;          ///< Overall transfer rate (bytes/sec)
+
+    [[nodiscard]] auto completion_percentage() const noexcept -> double {
+        if (total_bytes == 0) return 0.0;
+        return static_cast<double>(transferred_bytes) /
+               static_cast<double>(total_bytes) * 100.0;
+    }
+
+    [[nodiscard]] auto pending_files() const noexcept -> std::size_t {
+        return total_files - completed_files - failed_files - in_progress_files;
+    }
+};
+
+/**
+ * @brief Result of a single file in a batch operation
+ */
+struct batch_file_result {
+    std::string filename;               ///< Filename
+    bool success = false;               ///< Whether this file succeeded
+    uint64_t bytes_transferred = 0;     ///< Bytes transferred for this file
+    std::chrono::milliseconds elapsed{0};  ///< Time taken
+    std::optional<std::string> error_message;  ///< Error message if failed
+};
+
+/**
+ * @brief Result of a completed batch transfer
+ */
+struct batch_result {
+    std::size_t total_files = 0;        ///< Total files in batch
+    std::size_t succeeded = 0;          ///< Files that succeeded
+    std::size_t failed = 0;             ///< Files that failed
+    uint64_t total_bytes = 0;           ///< Total bytes transferred
+    std::chrono::milliseconds elapsed{0};  ///< Total time taken
+    std::vector<batch_file_result> file_results;  ///< Per-file results
+
+    [[nodiscard]] auto all_succeeded() const noexcept -> bool {
+        return failed == 0 && succeeded == total_files;
+    }
+};
+
+/**
+ * @brief Options for batch transfers
+ */
+struct batch_options {
+    std::size_t max_concurrent = 4;     ///< Maximum concurrent transfers
+    bool continue_on_error = true;      ///< Continue if individual files fail
+    bool overwrite = false;             ///< Overwrite existing files
+    std::optional<compression_mode> compression;  ///< Compression mode override
+};
+
+// Forward declaration
+class batch_transfer_handle;
+
+/**
+ * @brief Handle for tracking and controlling batch transfers
+ *
+ * Provides methods to monitor, pause, resume, and cancel batch operations.
+ *
+ * @code
+ * auto batch_result = client.upload_files(files, options);
+ * if (batch_result.has_value()) {
+ *     auto& batch = batch_result.value();
+ *
+ *     // Monitor progress
+ *     auto progress = batch.get_batch_progress();
+ *
+ *     // Pause all transfers
+ *     batch.pause_all();
+ *
+ *     // Wait for completion
+ *     auto result = batch.wait();
+ * }
+ * @endcode
+ */
+class batch_transfer_handle {
+public:
+    /**
+     * @brief Default constructor (invalid handle)
+     */
+    batch_transfer_handle();
+
+    /**
+     * @brief Construct with ID and client reference
+     * @param batch_id Unique batch identifier
+     * @param client Pointer to owning client
+     */
+    batch_transfer_handle(uint64_t batch_id, file_transfer_client* client);
+
+    // Copyable and movable
+    batch_transfer_handle(const batch_transfer_handle&) = default;
+    batch_transfer_handle(batch_transfer_handle&&) noexcept = default;
+    auto operator=(const batch_transfer_handle&) -> batch_transfer_handle& = default;
+    auto operator=(batch_transfer_handle&&) noexcept -> batch_transfer_handle& = default;
+
+    /**
+     * @brief Get batch ID
+     * @return Batch identifier
+     */
+    [[nodiscard]] auto get_id() const noexcept -> uint64_t;
+
+    /**
+     * @brief Check if handle is valid
+     * @return true if handle is valid
+     */
+    [[nodiscard]] auto is_valid() const noexcept -> bool;
+
+    /**
+     * @brief Get total number of files in batch
+     * @return Total file count
+     */
+    [[nodiscard]] auto get_total_files() const -> std::size_t;
+
+    /**
+     * @brief Get number of completed files
+     * @return Completed file count
+     */
+    [[nodiscard]] auto get_completed_files() const -> std::size_t;
+
+    /**
+     * @brief Get number of failed files
+     * @return Failed file count
+     */
+    [[nodiscard]] auto get_failed_files() const -> std::size_t;
+
+    /**
+     * @brief Get handles for individual transfers
+     * @return Vector of individual transfer handles
+     */
+    [[nodiscard]] auto get_individual_handles() const -> std::vector<transfer_handle>;
+
+    /**
+     * @brief Get current batch progress
+     * @return Batch progress information
+     */
+    [[nodiscard]] auto get_batch_progress() const -> batch_progress;
+
+    /**
+     * @brief Pause all active transfers in batch
+     * @return Success or error
+     */
+    [[nodiscard]] auto pause_all() -> result<void>;
+
+    /**
+     * @brief Resume all paused transfers in batch
+     * @return Success or error
+     */
+    [[nodiscard]] auto resume_all() -> result<void>;
+
+    /**
+     * @brief Cancel all transfers in batch
+     * @return Success or error
+     */
+    [[nodiscard]] auto cancel_all() -> result<void>;
+
+    /**
+     * @brief Wait for all transfers to complete
+     * @return Batch result or error
+     */
+    [[nodiscard]] auto wait() -> result<batch_result>;
+
+    /**
+     * @brief Wait for completion with timeout
+     * @param timeout Maximum time to wait
+     * @return Batch result or error
+     */
+    [[nodiscard]] auto wait_for(std::chrono::milliseconds timeout)
+        -> result<batch_result>;
+
+private:
+    uint64_t id_ = 0;
+    file_transfer_client* client_ = nullptr;
+};
+
 /**
  * @brief Compression statistics
  */
