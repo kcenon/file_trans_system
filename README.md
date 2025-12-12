@@ -358,7 +358,10 @@ ctest --output-on-failure
 
 | Category | Description | File |
 |----------|-------------|------|
-| **Unit Tests** | Core component tests (chunk, checksum, compression) | `tests/unit/` |
+| **Unit Tests - Core** | Chunk splitter, assembler, checksum (CRC32, SHA-256) | `tests/unit/core/` |
+| **Unit Tests - Compression** | LZ4 compression engine tests | `tests/unit/compression/` |
+| **Unit Tests - Protocol** | Protocol types, error codes, result handling, chunk flags | `tests/unit/protocol/` |
+| **Unit Tests - State** | Connection/server state, config validation, statistics | `tests/unit/state/` |
 | **Integration Tests - Basic** | Server/client lifecycle, connection, basic transfers | `test_basic_scenarios.cpp` |
 | **Integration Tests - Advanced** | Error handling, large files, compression, stress tests | `test_error_advanced_scenarios.cpp` |
 
