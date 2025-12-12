@@ -19,6 +19,12 @@ cmake --build build --parallel
 # Run all throughput benchmarks
 ./build/bin/throughput_benchmarks
 
+# Run compression benchmarks
+./build/bin/compression_benchmarks
+
+# Run latency benchmarks
+./build/bin/latency_benchmarks
+
 # Run with detailed output
 ./build/bin/throughput_benchmarks --benchmark_counters_tabular=true
 ```
@@ -85,17 +91,44 @@ cmake --build build --parallel
 | `BM_Checksum_SHA256` | SHA-256 calculation speed | Data size: 1KB - 1MB |
 | `BM_Checksum_SHA256_File` | File hash calculation | File size: 100KB - 100MB |
 
+### Compression Benchmarks (`compression/`)
+
+| Benchmark | Description | Parameters |
+|-----------|-------------|------------|
+| `BM_LZ4_Compression_Fast` | LZ4 fast compression speed | Data size: 64KB - 16MB |
+| `BM_LZ4_Compression_High` | LZ4 HC compression speed | Data size: 64KB - 4MB |
+| `BM_LZ4_Decompression` | LZ4 decompression speed | Data size: 64KB - 16MB |
+| `BM_Compression_Ratio_Text` | Compression ratio (text) | Data size: 256KB - 4MB |
+| `BM_Compression_Ratio_Binary` | Compression ratio (binary) | Data size: 256KB - 4MB |
+| `BM_Adaptive_Compression_Check` | is_compressible() overhead | Data size: 4KB - 256KB |
+| `BM_Adaptive_Compression_Skip` | Skip rate for random data | Data size: 256KB - 1MB |
+| `BM_Adaptive_Compression_Full` | Full adaptive pipeline | Compressibility: 0-100% |
+
+### Latency Benchmarks (`latency/`)
+
+| Benchmark | Description | Parameters |
+|-----------|-------------|------------|
+| `BM_Connection_Setup` | Client connection time | - |
+| `BM_Connection_Teardown` | Client disconnect time | - |
+| `BM_FileList_Response` | File listing latency | Files: 100 - 10K |
+| `BM_Protocol_RTT` | Protocol round-trip time | - |
+| `BM_Upload_TTFB` | Upload time to first byte | File size: 64KB - 1MB |
+| `BM_Download_TTFB` | Download time to first byte | File size: 64KB - 1MB |
+| `BM_Concurrent_Connections` | Multi-client connection | Clients: 5 - 50 |
+
 ## Performance Targets
 
 Based on SRS requirements:
 
-| Metric | Target | Benchmark |
-|--------|--------|-----------|
-| LAN Throughput | >= 500 MB/s | `BM_SingleFile_*Throughput` |
-| LZ4 Compression | >= 400 MB/s | (Future: compression benchmarks) |
-| LZ4 Decompression | >= 1.5 GB/s | (Future: compression benchmarks) |
-| Server Memory | < 100 MB | (Future: memory benchmarks) |
-| Client Memory | < 50 MB | (Future: memory benchmarks) |
+| Metric | Target | Benchmark | Status |
+|--------|--------|-----------|--------|
+| LAN Throughput | >= 500 MB/s | `BM_SingleFile_*Throughput` | Verified |
+| LZ4 Compression | >= 400 MB/s | `BM_LZ4_Compression_Fast` | Verified |
+| LZ4 Decompression | >= 1.5 GB/s | `BM_LZ4_Decompression` | Verified |
+| File List (10K files) | < 100ms | `BM_FileList_Response` | Pending |
+| Connection Setup | < 100ms | `BM_Connection_Setup` | Pending |
+| Server Memory | < 100 MB | (Future: memory benchmarks) | - |
+| Client Memory | < 50 MB | (Future: memory benchmarks) | - |
 
 ## Directory Structure
 
@@ -106,9 +139,13 @@ benchmarks/
 ├── utils/
 │   ├── benchmark_helpers.h  # Test data generation utilities
 │   └── benchmark_helpers.cpp
-└── throughput/
-    ├── bench_single_file_throughput.cpp  # End-to-end throughput
-    └── bench_chunk_operations.cpp        # Component benchmarks
+├── throughput/
+│   ├── bench_single_file_throughput.cpp  # End-to-end throughput
+│   └── bench_chunk_operations.cpp        # Component benchmarks
+├── compression/
+│   └── bench_lz4_compression.cpp  # Compression/decompression benchmarks
+└── latency/
+    └── bench_latency.cpp          # Connection and response latency
 ```
 
 ## Adding New Benchmarks
