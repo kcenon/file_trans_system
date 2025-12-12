@@ -437,10 +437,13 @@ See the [examples/](examples/) directory for:
 - `batch_upload_example.cpp` - Multi-file parallel upload with batch progress tracking
 - `batch_download_example.cpp` - Multi-file parallel download with pattern matching
 
-### Advanced Examples (planned)
-- `resume_transfer.cpp` - Transfer resume handling
-- `custom_pipeline.cpp` - Pipeline configuration tuning
-- `auto_reconnect.cpp` - Auto-reconnect demonstration
+### Advanced Examples
+- `resume_transfer.cpp` - Transfer pause/resume with interruption handling
+- `auto_reconnect.cpp` - Auto-reconnection configuration and callback handling
+- `custom_pipeline.cpp` - Pipeline customization (chunk size, compression settings)
+- `bandwidth_throttling.cpp` - Upload/download bandwidth limiting
+- `server_callbacks.cpp` - Server-side request validation and access control
+- `quota_management.cpp` - Storage quota configuration and monitoring
 
 ## Error Handling
 
