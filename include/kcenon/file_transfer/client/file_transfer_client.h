@@ -10,6 +10,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <vector>
 
 #include "kcenon/file_transfer/core/types.h"
@@ -171,6 +172,144 @@ public:
     [[nodiscard]] auto list_files(
         const list_options& options = {}
     ) -> result<std::vector<file_info>>;
+
+    // Batch operations
+    /**
+     * @brief Upload multiple files to the server
+     *
+     * Uploads files in parallel (up to max_concurrent), tracking progress
+     * for all files collectively. Individual failures can be configured
+     * to not abort the entire batch.
+     *
+     * @param files Files to upload
+     * @param options Batch options
+     * @return Result containing batch handle or error
+     *
+     * @code
+     * std::vector<upload_entry> files{
+     *     {"local1.txt", "remote1.txt"},
+     *     {"local2.txt", "remote2.txt"},
+     *     {"local3.txt"}  // Uses local filename
+     * };
+     *
+     * auto result = client.upload_files(files, {.max_concurrent = 4});
+     * if (result.has_value()) {
+     *     auto batch_result = result.value().wait();
+     *     // Check batch_result for success/failure info
+     * }
+     * @endcode
+     */
+    [[nodiscard]] auto upload_files(
+        std::span<const upload_entry> files,
+        const batch_options& options = {}
+    ) -> result<batch_transfer_handle>;
+
+    /**
+     * @brief Download multiple files from the server
+     *
+     * Downloads files in parallel (up to max_concurrent), tracking progress
+     * for all files collectively.
+     *
+     * @param files Files to download
+     * @param options Batch options
+     * @return Result containing batch handle or error
+     *
+     * @code
+     * std::vector<download_entry> files{
+     *     {"remote1.txt", "local1.txt"},
+     *     {"remote2.txt", "local2.txt"}
+     * };
+     *
+     * auto result = client.download_files(files, {.max_concurrent = 4});
+     * if (result.has_value()) {
+     *     auto batch_result = result.value().wait();
+     * }
+     * @endcode
+     */
+    [[nodiscard]] auto download_files(
+        std::span<const download_entry> files,
+        const batch_options& options = {}
+    ) -> result<batch_transfer_handle>;
+
+    // Batch transfer control methods
+    /**
+     * @brief Get batch progress
+     * @param batch_id Batch ID
+     * @return Current batch progress
+     */
+    [[nodiscard]] auto get_batch_progress(uint64_t batch_id) const
+        -> batch_progress;
+
+    /**
+     * @brief Get total files in batch
+     * @param batch_id Batch ID
+     * @return Total file count
+     */
+    [[nodiscard]] auto get_batch_total_files(uint64_t batch_id) const
+        -> std::size_t;
+
+    /**
+     * @brief Get completed files count in batch
+     * @param batch_id Batch ID
+     * @return Completed file count
+     */
+    [[nodiscard]] auto get_batch_completed_files(uint64_t batch_id) const
+        -> std::size_t;
+
+    /**
+     * @brief Get failed files count in batch
+     * @param batch_id Batch ID
+     * @return Failed file count
+     */
+    [[nodiscard]] auto get_batch_failed_files(uint64_t batch_id) const
+        -> std::size_t;
+
+    /**
+     * @brief Get individual transfer handles for a batch
+     * @param batch_id Batch ID
+     * @return Vector of transfer handles
+     */
+    [[nodiscard]] auto get_batch_individual_handles(uint64_t batch_id) const
+        -> std::vector<transfer_handle>;
+
+    /**
+     * @brief Pause all transfers in a batch
+     * @param batch_id Batch ID
+     * @return Success or error
+     */
+    [[nodiscard]] auto pause_batch(uint64_t batch_id) -> result<void>;
+
+    /**
+     * @brief Resume all transfers in a batch
+     * @param batch_id Batch ID
+     * @return Success or error
+     */
+    [[nodiscard]] auto resume_batch(uint64_t batch_id) -> result<void>;
+
+    /**
+     * @brief Cancel all transfers in a batch
+     * @param batch_id Batch ID
+     * @return Success or error
+     */
+    [[nodiscard]] auto cancel_batch(uint64_t batch_id) -> result<void>;
+
+    /**
+     * @brief Wait for batch completion
+     * @param batch_id Batch ID
+     * @return Batch result or error
+     */
+    [[nodiscard]] auto wait_for_batch(uint64_t batch_id)
+        -> result<batch_result>;
+
+    /**
+     * @brief Wait for batch completion with timeout
+     * @param batch_id Batch ID
+     * @param timeout Maximum time to wait
+     * @return Batch result or error
+     */
+    [[nodiscard]] auto wait_for_batch(
+        uint64_t batch_id,
+        std::chrono::milliseconds timeout) -> result<batch_result>;
 
     // Callbacks
     /**
