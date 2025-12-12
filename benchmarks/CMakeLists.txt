@@ -118,12 +118,48 @@ set_target_properties(latency_benchmarks PROPERTIES
 )
 
 ##################################################
-# Memory Benchmarks (Future)
+# Memory Benchmarks
 ##################################################
 
-# add_executable(memory_benchmarks
-#     memory/bench_memory_usage.cpp
-# )
+add_executable(memory_benchmarks
+    memory/bench_memory_usage.cpp
+)
+
+target_link_libraries(memory_benchmarks PRIVATE
+    FileTransSystem
+    benchmark_utils
+    benchmark::benchmark
+    benchmark::benchmark_main
+    Threads::Threads
+)
+
+set_target_properties(memory_benchmarks PROPERTIES
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
+##################################################
+# Scalability Benchmarks
+##################################################
+
+add_executable(scalability_benchmarks
+    scalability/bench_scalability.cpp
+)
+
+target_link_libraries(scalability_benchmarks PRIVATE
+    FileTransSystem
+    benchmark_utils
+    benchmark::benchmark
+    benchmark::benchmark_main
+    Threads::Threads
+)
+
+set_target_properties(scalability_benchmarks PROPERTIES
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
 
 ##################################################
 # Benchmark Data Setup
@@ -166,8 +202,28 @@ add_custom_target(run_latency_benchmarks
     COMMENT "Running latency benchmarks..."
 )
 
+add_custom_target(run_memory_benchmarks
+    COMMAND $<TARGET_FILE:memory_benchmarks>
+        --benchmark_format=console
+        --benchmark_out=${CMAKE_BINARY_DIR}/benchmark_results/memory.json
+        --benchmark_out_format=json
+    DEPENDS memory_benchmarks
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    COMMENT "Running memory benchmarks..."
+)
+
+add_custom_target(run_scalability_benchmarks
+    COMMAND $<TARGET_FILE:scalability_benchmarks>
+        --benchmark_format=console
+        --benchmark_out=${CMAKE_BINARY_DIR}/benchmark_results/scalability.json
+        --benchmark_out_format=json
+    DEPENDS scalability_benchmarks
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    COMMENT "Running scalability benchmarks..."
+)
+
 add_custom_target(run_benchmarks
-    DEPENDS run_throughput_benchmarks run_compression_benchmarks run_latency_benchmarks
+    DEPENDS run_throughput_benchmarks run_compression_benchmarks run_latency_benchmarks run_memory_benchmarks run_scalability_benchmarks
     COMMENT "Running all benchmarks..."
 )
 
