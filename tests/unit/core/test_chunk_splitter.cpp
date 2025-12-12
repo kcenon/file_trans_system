@@ -141,7 +141,7 @@ TEST_F(ChunkSplitterTest, Split_FileNotFound) {
     chunk_splitter splitter;
     auto path = test_dir_ / "nonexistent.txt";
 
-    auto result = splitter.split(path, transfer_id{1});
+    auto result = splitter.split(path, transfer_id::generate());
     EXPECT_FALSE(result.has_value());
     EXPECT_EQ(result.error().code, error_code::file_not_found);
 }
@@ -150,7 +150,7 @@ TEST_F(ChunkSplitterTest, Split_EmptyFile) {
     auto path = create_test_file("empty.txt", 0);
     chunk_splitter splitter;
 
-    auto result = splitter.split(path, transfer_id{1});
+    auto result = splitter.split(path, transfer_id::generate());
     ASSERT_TRUE(result.has_value());
 
     auto& iterator = result.value();
@@ -161,7 +161,7 @@ TEST_F(ChunkSplitterTest, Split_EmptyFile) {
     auto chunk_result = iterator.next();
     ASSERT_TRUE(chunk_result.has_value());
     EXPECT_EQ(chunk_result.value().data.size(), 0);
-    EXPECT_TRUE(has_flag(chunk_result.value().flags, chunk_flags::last_chunk));
+    EXPECT_TRUE(has_flag(chunk_result.value().header.flags, chunk_flags::last_chunk));
 
     EXPECT_FALSE(iterator.has_next());
 }
@@ -172,7 +172,7 @@ TEST_F(ChunkSplitterTest, Split_SingleChunk) {
     auto path = create_test_file("small.txt", file_size);
 
     chunk_splitter splitter;
-    auto result = splitter.split(path, transfer_id{1});
+    auto result = splitter.split(path, transfer_id::generate());
     ASSERT_TRUE(result.has_value());
 
     auto& iterator = result.value();
@@ -187,7 +187,7 @@ TEST_F(ChunkSplitterTest, Split_ExactlyOneChunk) {
     chunk_splitter splitter(config);
 
     auto path = create_test_file("exact.txt", chunk_size);
-    auto result = splitter.split(path, transfer_id{1});
+    auto result = splitter.split(path, transfer_id::generate());
     ASSERT_TRUE(result.has_value());
 
     auto& iterator = result.value();
@@ -202,7 +202,7 @@ TEST_F(ChunkSplitterTest, Split_MultipleChunks) {
     chunk_splitter splitter(config);
 
     auto path = create_test_file("multi.txt", file_size);
-    auto result = splitter.split(path, transfer_id{1});
+    auto result = splitter.split(path, transfer_id::generate());
     ASSERT_TRUE(result.has_value());
 
     auto& iterator = result.value();
@@ -217,7 +217,7 @@ TEST_F(ChunkSplitterTest, Split_LastChunkSmaller) {
     chunk_splitter splitter(config);
 
     auto path = create_test_file("partial.txt", file_size);
-    auto result = splitter.split(path, transfer_id{1});
+    auto result = splitter.split(path, transfer_id::generate());
     ASSERT_TRUE(result.has_value());
 
     auto& iterator = result.value();
@@ -234,7 +234,7 @@ TEST_F(ChunkSplitterTest, Iterator_SequentialRead) {
     chunk_splitter splitter(config);
 
     auto path = create_test_file("sequential.txt", file_size);
-    auto result = splitter.split(path, transfer_id{1});
+    auto result = splitter.split(path, transfer_id::generate());
     ASSERT_TRUE(result.has_value());
 
     auto& iterator = result.value();
@@ -245,14 +245,16 @@ TEST_F(ChunkSplitterTest, Iterator_SequentialRead) {
         ASSERT_TRUE(chunk_result.has_value());
 
         auto& chunk = chunk_result.value();
-        EXPECT_EQ(chunk.index, expected_index);
-        EXPECT_EQ(chunk.total_chunks, 3);
-        EXPECT_EQ(chunk.offset, expected_index * chunk_size);
+        EXPECT_EQ(chunk.header.chunk_index, expected_index);
+        EXPECT_EQ(chunk.header.chunk_offset, expected_index * chunk_size);
 
+        if (expected_index == 0) {
+            EXPECT_TRUE(has_flag(chunk.header.flags, chunk_flags::first_chunk));
+        }
         if (expected_index == 2) {
-            EXPECT_TRUE(has_flag(chunk.flags, chunk_flags::last_chunk));
+            EXPECT_TRUE(has_flag(chunk.header.flags, chunk_flags::last_chunk));
         } else {
-            EXPECT_FALSE(has_flag(chunk.flags, chunk_flags::last_chunk));
+            EXPECT_FALSE(has_flag(chunk.header.flags, chunk_flags::last_chunk));
         }
 
         ++expected_index;
@@ -273,7 +275,7 @@ TEST_F(ChunkSplitterTest, Iterator_ChunkDataIntegrity) {
     chunk_config config(64 * 1024);  // Chunk size larger than file
     chunk_splitter splitter(config);
 
-    auto result = splitter.split(path, transfer_id{1});
+    auto result = splitter.split(path, transfer_id::generate());
     ASSERT_TRUE(result.has_value());
 
     auto& iterator = result.value();
@@ -291,7 +293,7 @@ TEST_F(ChunkSplitterTest, Iterator_ChunkCRC32) {
     auto path = create_test_file("crc_test.txt", 1000);
 
     chunk_splitter splitter;
-    auto result = splitter.split(path, transfer_id{1});
+    auto result = splitter.split(path, transfer_id::generate());
     ASSERT_TRUE(result.has_value());
 
     auto& iterator = result.value();
@@ -302,14 +304,14 @@ TEST_F(ChunkSplitterTest, Iterator_ChunkCRC32) {
 
     // Verify CRC32 is correct
     auto calculated_crc = checksum::crc32(chunk.data);
-    EXPECT_EQ(chunk.checksum, calculated_crc);
-    EXPECT_TRUE(checksum::verify_crc32(chunk.data, chunk.checksum));
+    EXPECT_EQ(chunk.header.checksum, calculated_crc);
+    EXPECT_TRUE(checksum::verify_crc32(chunk.data, chunk.header.checksum));
 }
 
 TEST_F(ChunkSplitterTest, Iterator_TransferIdPropagation) {
     auto path = create_test_file("transfer_id.txt", 1000);
 
-    transfer_id test_id{12345};
+    auto test_id = transfer_id::generate();
     chunk_splitter splitter;
     auto result = splitter.split(path, test_id);
     ASSERT_TRUE(result.has_value());
@@ -318,7 +320,7 @@ TEST_F(ChunkSplitterTest, Iterator_TransferIdPropagation) {
     auto chunk_result = iterator.next();
     ASSERT_TRUE(chunk_result.has_value());
 
-    EXPECT_EQ(chunk_result.value().id, test_id);
+    EXPECT_EQ(chunk_result.value().header.id, test_id);
 }
 
 TEST_F(ChunkSplitterTest, Iterator_CurrentIndex) {
@@ -329,7 +331,7 @@ TEST_F(ChunkSplitterTest, Iterator_CurrentIndex) {
     chunk_splitter splitter(config);
 
     auto path = create_test_file("index_test.txt", file_size);
-    auto result = splitter.split(path, transfer_id{1});
+    auto result = splitter.split(path, transfer_id::generate());
     ASSERT_TRUE(result.has_value());
 
     auto& iterator = result.value();
@@ -350,7 +352,7 @@ TEST_F(ChunkSplitterTest, Iterator_NoMoreChunksError) {
     auto path = create_test_file("no_more.txt", 100);
 
     chunk_splitter splitter;
-    auto result = splitter.split(path, transfer_id{1});
+    auto result = splitter.split(path, transfer_id::generate());
     ASSERT_TRUE(result.has_value());
 
     auto& iterator = result.value();
@@ -428,7 +430,7 @@ TEST_F(ChunkSplitterTest, Split_OneByteLessThanChunk) {
     chunk_splitter splitter(config);
 
     auto path = create_test_file("less_one.txt", file_size);
-    auto result = splitter.split(path, transfer_id{1});
+    auto result = splitter.split(path, transfer_id::generate());
     ASSERT_TRUE(result.has_value());
 
     auto& iterator = result.value();
@@ -447,7 +449,7 @@ TEST_F(ChunkSplitterTest, Split_OneByteMoreThanChunk) {
     chunk_splitter splitter(config);
 
     auto path = create_test_file("more_one.txt", file_size);
-    auto result = splitter.split(path, transfer_id{1});
+    auto result = splitter.split(path, transfer_id::generate());
     ASSERT_TRUE(result.has_value());
 
     auto& iterator = result.value();
@@ -470,7 +472,7 @@ TEST_F(ChunkSplitterTest, Iterator_MoveConstruct) {
     auto path = create_test_file("move_test.txt", 1000);
 
     chunk_splitter splitter;
-    auto result = splitter.split(path, transfer_id{1});
+    auto result = splitter.split(path, transfer_id::generate());
     ASSERT_TRUE(result.has_value());
 
     auto iterator1 = std::move(result.value());

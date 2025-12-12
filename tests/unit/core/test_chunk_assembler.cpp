@@ -57,13 +57,20 @@ protected:
         const std::vector<std::byte>& data,
         bool is_last = false) -> chunk {
         chunk c;
-        c.id = id;
-        c.index = index;
-        c.total_chunks = total_chunks;
-        c.offset = offset;
+        c.header.id = id;
+        c.header.chunk_index = index;
+        c.header.chunk_offset = offset;
+        c.header.original_size = static_cast<uint32_t>(data.size());
+        c.header.compressed_size = static_cast<uint32_t>(data.size());
         c.data = data;
-        c.flags = is_last ? chunk_flags::last_chunk : chunk_flags::none;
-        c.checksum = checksum::crc32(data);
+        c.header.flags = chunk_flags::none;
+        if (index == 0) {
+            c.header.flags = c.header.flags | chunk_flags::first_chunk;
+        }
+        if (is_last) {
+            c.header.flags = c.header.flags | chunk_flags::last_chunk;
+        }
+        c.header.checksum = checksum::crc32(data);
         return c;
     }
 
@@ -86,7 +93,7 @@ protected:
 TEST_F(ChunkAssemblerTest, StartSession_Success) {
     chunk_assembler assembler(output_dir_);
 
-    transfer_id id{1};
+    auto id = transfer_id::generate();
     auto result = assembler.start_session(id, "test.txt", 1000, 1);
 
     EXPECT_TRUE(result.has_value());
@@ -96,7 +103,7 @@ TEST_F(ChunkAssemblerTest, StartSession_Success) {
 TEST_F(ChunkAssemblerTest, StartSession_DuplicateSession) {
     chunk_assembler assembler(output_dir_);
 
-    transfer_id id{1};
+    auto id = transfer_id::generate();
     auto result1 = assembler.start_session(id, "test1.txt", 1000, 1);
     EXPECT_TRUE(result1.has_value());
 
@@ -108,13 +115,13 @@ TEST_F(ChunkAssemblerTest, StartSession_DuplicateSession) {
 TEST_F(ChunkAssemblerTest, HasSession_NotExists) {
     chunk_assembler assembler(output_dir_);
 
-    EXPECT_FALSE(assembler.has_session(transfer_id{999}));
+    EXPECT_FALSE(assembler.has_session(transfer_id::generate()));
 }
 
 TEST_F(ChunkAssemblerTest, CancelSession_RemovesSession) {
     chunk_assembler assembler(output_dir_);
 
-    transfer_id id{1};
+    auto id = transfer_id::generate();
     assembler.start_session(id, "test.txt", 1000, 1);
     EXPECT_TRUE(assembler.has_session(id));
 
@@ -126,7 +133,7 @@ TEST_F(ChunkAssemblerTest, CancelSession_NonExistent) {
     chunk_assembler assembler(output_dir_);
 
     // Should not throw
-    EXPECT_NO_THROW(assembler.cancel_session(transfer_id{999}));
+    EXPECT_NO_THROW(assembler.cancel_session(transfer_id::generate()));
 }
 
 // Process Chunk Tests
@@ -135,7 +142,7 @@ TEST_F(ChunkAssemblerTest, ProcessChunk_SessionNotFound) {
     chunk_assembler assembler(output_dir_);
 
     std::vector<std::byte> data = {std::byte{0x01}, std::byte{0x02}};
-    auto c = create_chunk(transfer_id{1}, 0, 1, 0, data, true);
+    auto c = create_chunk(transfer_id::generate(), 0, 1, 0, data, true);
 
     auto result = assembler.process_chunk(c);
     EXPECT_FALSE(result.has_value());
@@ -145,7 +152,7 @@ TEST_F(ChunkAssemblerTest, ProcessChunk_SessionNotFound) {
 TEST_F(ChunkAssemblerTest, ProcessChunk_SingleChunk) {
     chunk_assembler assembler(output_dir_);
 
-    transfer_id id{1};
+    auto id = transfer_id::generate();
     std::vector<std::byte> data = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}};
 
     auto start_result = assembler.start_session(id, "single.txt", data.size(), 1);
@@ -161,7 +168,7 @@ TEST_F(ChunkAssemblerTest, ProcessChunk_SingleChunk) {
 TEST_F(ChunkAssemblerTest, ProcessChunk_InvalidIndex) {
     chunk_assembler assembler(output_dir_);
 
-    transfer_id id{1};
+    auto id = transfer_id::generate();
     assembler.start_session(id, "test.txt", 100, 2);
 
     std::vector<std::byte> data = {std::byte{0x01}};
@@ -175,7 +182,7 @@ TEST_F(ChunkAssemblerTest, ProcessChunk_InvalidIndex) {
 TEST_F(ChunkAssemblerTest, ProcessChunk_DuplicateChunk) {
     chunk_assembler assembler(output_dir_);
 
-    transfer_id id{1};
+    auto id = transfer_id::generate();
     std::vector<std::byte> data = {std::byte{0x01}};
 
     assembler.start_session(id, "dup.txt", data.size(), 1);
@@ -193,19 +200,20 @@ TEST_F(ChunkAssemblerTest, ProcessChunk_DuplicateChunk) {
 TEST_F(ChunkAssemblerTest, ProcessChunk_InvalidChecksum) {
     chunk_assembler assembler(output_dir_);
 
-    transfer_id id{1};
+    auto id = transfer_id::generate();
     std::vector<std::byte> data = {std::byte{0x01}, std::byte{0x02}};
 
     assembler.start_session(id, "bad_crc.txt", data.size(), 1);
 
     chunk c;
-    c.id = id;
-    c.index = 0;
-    c.total_chunks = 1;
-    c.offset = 0;
+    c.header.id = id;
+    c.header.chunk_index = 0;
+    c.header.chunk_offset = 0;
+    c.header.original_size = static_cast<uint32_t>(data.size());
+    c.header.compressed_size = static_cast<uint32_t>(data.size());
     c.data = data;
-    c.flags = chunk_flags::last_chunk;
-    c.checksum = 0x12345678;  // Wrong checksum
+    c.header.flags = chunk_flags::first_chunk | chunk_flags::last_chunk;
+    c.header.checksum = 0x12345678;  // Wrong checksum
 
     auto result = assembler.process_chunk(c);
     EXPECT_FALSE(result.has_value());
@@ -217,7 +225,7 @@ TEST_F(ChunkAssemblerTest, ProcessChunk_InvalidChecksum) {
 TEST_F(ChunkAssemblerTest, ProcessChunk_SequentialAssembly) {
     chunk_assembler assembler(output_dir_);
 
-    transfer_id id{1};
+    auto id = transfer_id::generate();
     std::size_t chunk_size = 10;
     std::size_t total_size = 25;  // 3 chunks: 10, 10, 5
 
@@ -251,7 +259,7 @@ TEST_F(ChunkAssemblerTest, ProcessChunk_SequentialAssembly) {
 TEST_F(ChunkAssemblerTest, ProcessChunk_OutOfOrderAssembly) {
     chunk_assembler assembler(output_dir_);
 
-    transfer_id id{1};
+    auto id = transfer_id::generate();
     std::size_t chunk_size = 10;
     std::size_t total_size = 30;  // 3 chunks of 10 bytes each
 
@@ -283,7 +291,7 @@ TEST_F(ChunkAssemblerTest, ProcessChunk_OutOfOrderAssembly) {
 TEST_F(ChunkAssemblerTest, GetMissingChunks_AllMissing) {
     chunk_assembler assembler(output_dir_);
 
-    transfer_id id{1};
+    auto id = transfer_id::generate();
     assembler.start_session(id, "missing.txt", 100, 5);
 
     auto missing = assembler.get_missing_chunks(id);
@@ -297,7 +305,7 @@ TEST_F(ChunkAssemblerTest, GetMissingChunks_AllMissing) {
 TEST_F(ChunkAssemblerTest, GetMissingChunks_SomeMissing) {
     chunk_assembler assembler(output_dir_);
 
-    transfer_id id{1};
+    auto id = transfer_id::generate();
     std::size_t chunk_size = 10;
     assembler.start_session(id, "some_missing.txt", 50, 5);
 
@@ -317,7 +325,7 @@ TEST_F(ChunkAssemblerTest, GetMissingChunks_SomeMissing) {
 TEST_F(ChunkAssemblerTest, GetMissingChunks_NoneMissing) {
     chunk_assembler assembler(output_dir_);
 
-    transfer_id id{1};
+    auto id = transfer_id::generate();
     std::size_t chunk_size = 10;
     assembler.start_session(id, "none_missing.txt", 20, 2);
 
@@ -333,7 +341,7 @@ TEST_F(ChunkAssemblerTest, GetMissingChunks_NoneMissing) {
 TEST_F(ChunkAssemblerTest, GetMissingChunks_SessionNotFound) {
     chunk_assembler assembler(output_dir_);
 
-    auto missing = assembler.get_missing_chunks(transfer_id{999});
+    auto missing = assembler.get_missing_chunks(transfer_id::generate());
     EXPECT_TRUE(missing.empty());
 }
 
@@ -342,7 +350,7 @@ TEST_F(ChunkAssemblerTest, GetMissingChunks_SessionNotFound) {
 TEST_F(ChunkAssemblerTest, IsComplete_NotComplete) {
     chunk_assembler assembler(output_dir_);
 
-    transfer_id id{1};
+    auto id = transfer_id::generate();
     assembler.start_session(id, "incomplete.txt", 100, 3);
 
     EXPECT_FALSE(assembler.is_complete(id));
@@ -351,7 +359,7 @@ TEST_F(ChunkAssemblerTest, IsComplete_NotComplete) {
 TEST_F(ChunkAssemblerTest, IsComplete_SessionNotFound) {
     chunk_assembler assembler(output_dir_);
 
-    EXPECT_FALSE(assembler.is_complete(transfer_id{999}));
+    EXPECT_FALSE(assembler.is_complete(transfer_id::generate()));
 }
 
 // Progress Tests
@@ -359,7 +367,7 @@ TEST_F(ChunkAssemblerTest, IsComplete_SessionNotFound) {
 TEST_F(ChunkAssemblerTest, GetProgress_Initial) {
     chunk_assembler assembler(output_dir_);
 
-    transfer_id id{1};
+    auto id = transfer_id::generate();
     assembler.start_session(id, "progress.txt", 100, 5);
 
     auto progress = assembler.get_progress(id);
@@ -374,7 +382,7 @@ TEST_F(ChunkAssemblerTest, GetProgress_Initial) {
 TEST_F(ChunkAssemblerTest, GetProgress_Partial) {
     chunk_assembler assembler(output_dir_);
 
-    transfer_id id{1};
+    auto id = transfer_id::generate();
     std::size_t chunk_size = 10;
     assembler.start_session(id, "partial_progress.txt", 50, 5);
 
@@ -393,7 +401,7 @@ TEST_F(ChunkAssemblerTest, GetProgress_Partial) {
 TEST_F(ChunkAssemblerTest, GetProgress_Complete) {
     chunk_assembler assembler(output_dir_);
 
-    transfer_id id{1};
+    auto id = transfer_id::generate();
     std::vector<std::byte> data = {std::byte{0x01}};
     assembler.start_session(id, "complete_progress.txt", 1, 1);
 
@@ -408,7 +416,7 @@ TEST_F(ChunkAssemblerTest, GetProgress_Complete) {
 TEST_F(ChunkAssemblerTest, GetProgress_SessionNotFound) {
     chunk_assembler assembler(output_dir_);
 
-    auto progress = assembler.get_progress(transfer_id{999});
+    auto progress = assembler.get_progress(transfer_id::generate());
     EXPECT_FALSE(progress.has_value());
 }
 
@@ -417,7 +425,7 @@ TEST_F(ChunkAssemblerTest, GetProgress_SessionNotFound) {
 TEST_F(ChunkAssemblerTest, Finalize_Success) {
     chunk_assembler assembler(output_dir_);
 
-    transfer_id id{1};
+    auto id = transfer_id::generate();
     std::vector<std::byte> data = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}};
 
     assembler.start_session(id, "finalize.txt", data.size(), 1);
@@ -441,7 +449,7 @@ TEST_F(ChunkAssemblerTest, Finalize_Success) {
 TEST_F(ChunkAssemblerTest, Finalize_WithSHA256Verification) {
     chunk_assembler assembler(output_dir_);
 
-    transfer_id id{1};
+    auto id = transfer_id::generate();
     std::vector<std::byte> data = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}};
 
     // Calculate expected hash
@@ -457,7 +465,7 @@ TEST_F(ChunkAssemblerTest, Finalize_WithSHA256Verification) {
 TEST_F(ChunkAssemblerTest, Finalize_SHA256Mismatch) {
     chunk_assembler assembler(output_dir_);
 
-    transfer_id id{1};
+    auto id = transfer_id::generate();
     std::vector<std::byte> data = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}};
 
     assembler.start_session(id, "sha256_mismatch.txt", data.size(), 1);
@@ -475,7 +483,7 @@ TEST_F(ChunkAssemblerTest, Finalize_SHA256Mismatch) {
 TEST_F(ChunkAssemblerTest, Finalize_SessionNotFound) {
     chunk_assembler assembler(output_dir_);
 
-    auto result = assembler.finalize(transfer_id{999});
+    auto result = assembler.finalize(transfer_id::generate());
     EXPECT_FALSE(result.has_value());
     EXPECT_EQ(result.error().code, error_code::not_initialized);
 }
@@ -483,7 +491,7 @@ TEST_F(ChunkAssemblerTest, Finalize_SessionNotFound) {
 TEST_F(ChunkAssemblerTest, Finalize_MissingChunks) {
     chunk_assembler assembler(output_dir_);
 
-    transfer_id id{1};
+    auto id = transfer_id::generate();
     assembler.start_session(id, "missing_finalize.txt", 100, 3);
 
     std::vector<std::byte> data(10);
@@ -522,7 +530,7 @@ TEST_F(ChunkAssemblerTest, Integration_SplitAndReassemble) {
     // Create assembler
     chunk_assembler assembler(output_dir_);
 
-    transfer_id id{42};
+    auto id = transfer_id::generate();
     auto start_result = assembler.start_session(
         id, "reassembled.bin", metadata.file_size, metadata.total_chunks);
     ASSERT_TRUE(start_result.has_value());
@@ -564,7 +572,7 @@ TEST_F(ChunkAssemblerTest, Integration_SplitAndReassembleOutOfOrder) {
     auto& metadata = metadata_result.value();
 
     chunk_assembler assembler(output_dir_);
-    transfer_id id{43};
+    auto id = transfer_id::generate();
     assembler.start_session(id, "reassembled_ooo.bin", metadata.file_size, metadata.total_chunks);
 
     // Collect all chunks first
@@ -603,7 +611,7 @@ TEST_F(ChunkAssemblerTest, Integration_SplitAndReassembleOutOfOrder) {
 
 TEST_F(ChunkAssemblerTest, MoveConstruct) {
     chunk_assembler assembler1(output_dir_);
-    transfer_id id{1};
+    auto id = transfer_id::generate();
     assembler1.start_session(id, "move.txt", 100, 1);
 
     chunk_assembler assembler2(std::move(assembler1));
@@ -613,7 +621,7 @@ TEST_F(ChunkAssemblerTest, MoveConstruct) {
 
 TEST_F(ChunkAssemblerTest, MoveAssign) {
     chunk_assembler assembler1(output_dir_);
-    transfer_id id{1};
+    auto id = transfer_id::generate();
     assembler1.start_session(id, "move_assign.txt", 100, 1);
 
     auto other_dir = test_dir_ / "other_output";

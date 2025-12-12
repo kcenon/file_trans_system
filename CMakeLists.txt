@@ -193,6 +193,7 @@ add_library(FileTransSystem
     src/core/chunk_splitter.cpp
     src/core/chunk_assembler.cpp
     src/core/compression_engine.cpp
+    src/core/transfer_id.cpp
     src/server/file_transfer_server.cpp
     src/client/file_transfer_client.cpp
 )

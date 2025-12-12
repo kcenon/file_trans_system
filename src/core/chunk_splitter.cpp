@@ -97,22 +97,30 @@ auto chunk_splitter::chunk_iterator::next() -> result<chunk> {
 
     // Create chunk
     chunk c;
-    c.id = transfer_id_;
-    c.index = current_index_;
-    c.total_chunks = total_chunks_;
-    c.offset = offset;
-    c.flags = chunk_flags::none;
+    c.header.id = transfer_id_;
+    c.header.chunk_index = current_index_;
+    c.header.chunk_offset = offset;
+    c.header.flags = chunk_flags::none;
+
+    // Set first chunk flag
+    if (current_index_ == 0) {
+        c.header.flags = c.header.flags | chunk_flags::first_chunk;
+    }
 
     // Set last chunk flag
     if (current_index_ == total_chunks_ - 1) {
-        c.flags = c.flags | chunk_flags::last_chunk;
+        c.header.flags = c.header.flags | chunk_flags::last_chunk;
     }
 
     // Copy data
     c.data.assign(buffer_.begin(), buffer_.begin() + bytes_read);
 
+    // Set sizes
+    c.header.original_size = static_cast<uint32_t>(bytes_read);
+    c.header.compressed_size = static_cast<uint32_t>(bytes_read);  // No compression yet
+
     // Calculate CRC32
-    c.checksum = checksum::crc32(std::span<const std::byte>(c.data));
+    c.header.checksum = checksum::crc32(std::span<const std::byte>(c.data));
 
     // Move to next chunk
     ++current_index_;
