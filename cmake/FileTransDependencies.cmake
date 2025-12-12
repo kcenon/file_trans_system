@@ -107,4 +107,28 @@ function(find_file_trans_dependencies)
         endif()
     endif()
 
+    # logger_system (structured logging support)
+    if(BUILD_WITH_LOGGER_SYSTEM)
+        if(NOT LOGGER_SYSTEM_INCLUDE_DIR)
+            set(_logger_paths
+                "${CMAKE_CURRENT_SOURCE_DIR}/../logger_system/include"
+                "${CMAKE_SOURCE_DIR}/../logger_system/include"
+            )
+
+            foreach(_path ${_logger_paths})
+                if(EXISTS "${_path}/kcenon/logger")
+                    get_filename_component(LOGGER_SYSTEM_INCLUDE_DIR "${_path}" ABSOLUTE)
+                    break()
+                endif()
+            endforeach()
+        endif()
+
+        if(LOGGER_SYSTEM_INCLUDE_DIR)
+            message(STATUS "Found logger_system: ${LOGGER_SYSTEM_INCLUDE_DIR}")
+            set(LOGGER_SYSTEM_INCLUDE_DIR ${LOGGER_SYSTEM_INCLUDE_DIR} PARENT_SCOPE)
+        else()
+            message(WARNING "logger_system not found - logging features will be unavailable")
+        endif()
+    endif()
+
 endfunction()
