@@ -2,8 +2,8 @@
 
 Complete API documentation for the **file_trans_system** library.
 
-**Version**: 0.2.0
-**Last Updated**: 2025-12-11
+**Version**: 0.2.1
+**Last Updated**: 2025-12-13
 
 ## Table of Contents
 
@@ -381,9 +381,253 @@ Upload multiple files in a batch operation.
 
 ```cpp
 [[nodiscard]] auto upload_files(
-    std::span<const file_upload_entry> files,
-    const upload_options& options = {}
+    std::span<const upload_entry> files,
+    const batch_options& options = {}
 ) -> Result<batch_transfer_handle>;
+```
+
+**Parameters:**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `files` | `std::span<const upload_entry>` | Files to upload |
+| `options` | `batch_options` | Batch transfer configuration |
+
+**Returns:** `Result<batch_transfer_handle>` - Handle for tracking and controlling the batch
+
+**Example:**
+```cpp
+std::vector<upload_entry> files{
+    {"/local/file1.txt", "remote1.txt"},
+    {"/local/file2.txt", "remote2.txt"},
+    {"/local/file3.txt"}  // Uses local filename
+};
+
+batch_options options;
+options.max_concurrent = 4;
+options.continue_on_error = true;
+
+auto result = client->upload_files(files, options);
+if (result) {
+    auto& batch = result.value();
+
+    // Monitor progress
+    auto progress = batch.get_batch_progress();
+    std::cout << progress.completion_percentage() << "% complete\n";
+
+    // Wait for all transfers
+    auto batch_result = batch.wait();
+    if (batch_result && batch_result->all_succeeded()) {
+        std::cout << "All files uploaded successfully\n";
+    }
+}
+```
+
+##### download_files()
+
+Download multiple files in a batch operation.
+
+```cpp
+[[nodiscard]] auto download_files(
+    std::span<const download_entry> files,
+    const batch_options& options = {}
+) -> Result<batch_transfer_handle>;
+```
+
+**Parameters:**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `files` | `std::span<const download_entry>` | Files to download |
+| `options` | `batch_options` | Batch transfer configuration |
+
+**Returns:** `Result<batch_transfer_handle>` - Handle for tracking and controlling the batch
+
+**Example:**
+```cpp
+std::vector<download_entry> files{
+    {"remote1.txt", "/local/downloads/file1.txt"},
+    {"remote2.txt", "/local/downloads/file2.txt"}
+};
+
+auto result = client->download_files(files);
+if (result) {
+    auto batch_result = result.value().wait();
+    std::cout << "Downloaded " << batch_result->succeeded
+              << " of " << batch_result->total_files << " files\n";
+}
+```
+
+#### Batch Transfer Types
+
+##### upload_entry
+
+Entry for batch upload operation.
+
+```cpp
+struct upload_entry {
+    std::filesystem::path local_path;  // Local file path to upload
+    std::string remote_name;           // Remote filename (optional)
+
+    upload_entry() = default;
+    upload_entry(std::filesystem::path path, std::string name = {});
+};
+```
+
+##### download_entry
+
+Entry for batch download operation.
+
+```cpp
+struct download_entry {
+    std::string remote_name;           // Remote filename to download
+    std::filesystem::path local_path;  // Local destination path
+
+    download_entry() = default;
+    download_entry(std::string name, std::filesystem::path path);
+};
+```
+
+##### batch_options
+
+Configuration for batch transfers.
+
+```cpp
+struct batch_options {
+    std::size_t max_concurrent = 4;    // Maximum concurrent transfers
+    bool continue_on_error = true;     // Continue if individual files fail
+    bool overwrite = false;            // Overwrite existing files
+    std::optional<compression_mode> compression;  // Compression mode override
+};
+```
+
+##### batch_progress
+
+Progress information for a batch transfer.
+
+```cpp
+struct batch_progress {
+    std::size_t total_files;        // Total number of files in batch
+    std::size_t completed_files;    // Number of completed files
+    std::size_t failed_files;       // Number of failed files
+    std::size_t in_progress_files;  // Number of files currently transferring
+    uint64_t total_bytes;           // Total bytes across all files
+    uint64_t transferred_bytes;     // Total bytes transferred so far
+    double overall_rate;            // Overall transfer rate (bytes/sec)
+
+    [[nodiscard]] auto completion_percentage() const noexcept -> double;
+    [[nodiscard]] auto pending_files() const noexcept -> std::size_t;
+};
+```
+
+##### batch_result
+
+Result of a completed batch transfer.
+
+```cpp
+struct batch_result {
+    std::size_t total_files;        // Total files in batch
+    std::size_t succeeded;          // Files that succeeded
+    std::size_t failed;             // Files that failed
+    uint64_t total_bytes;           // Total bytes transferred
+    std::chrono::milliseconds elapsed;  // Total time taken
+    std::vector<batch_file_result> file_results;  // Per-file results
+
+    [[nodiscard]] auto all_succeeded() const noexcept -> bool;
+};
+```
+
+##### batch_file_result
+
+Result of a single file in a batch operation.
+
+```cpp
+struct batch_file_result {
+    std::string filename;               // Filename
+    bool success;                       // Whether this file succeeded
+    uint64_t bytes_transferred;         // Bytes transferred for this file
+    std::chrono::milliseconds elapsed;  // Time taken
+    std::optional<std::string> error_message;  // Error message if failed
+};
+```
+
+##### batch_transfer_handle
+
+Handle for tracking and controlling batch transfers.
+
+```cpp
+class batch_transfer_handle {
+public:
+    // Get batch ID
+    [[nodiscard]] auto get_id() const noexcept -> uint64_t;
+
+    // Check if handle is valid
+    [[nodiscard]] auto is_valid() const noexcept -> bool;
+
+    // Get total number of files in batch
+    [[nodiscard]] auto get_total_files() const -> std::size_t;
+
+    // Get number of completed files
+    [[nodiscard]] auto get_completed_files() const -> std::size_t;
+
+    // Get number of failed files
+    [[nodiscard]] auto get_failed_files() const -> std::size_t;
+
+    // Get handles for individual transfers
+    [[nodiscard]] auto get_individual_handles() const -> std::vector<transfer_handle>;
+
+    // Get current batch progress
+    [[nodiscard]] auto get_batch_progress() const -> batch_progress;
+
+    // Pause all active transfers in batch
+    [[nodiscard]] auto pause_all() -> Result<void>;
+
+    // Resume all paused transfers in batch
+    [[nodiscard]] auto resume_all() -> Result<void>;
+
+    // Cancel all transfers in batch
+    [[nodiscard]] auto cancel_all() -> Result<void>;
+
+    // Wait for all transfers to complete
+    [[nodiscard]] auto wait() -> Result<batch_result>;
+
+    // Wait for completion with timeout
+    [[nodiscard]] auto wait_for(std::chrono::milliseconds timeout)
+        -> Result<batch_result>;
+};
+```
+
+**Example:**
+```cpp
+auto batch_result = client->upload_files(files, {.max_concurrent = 4});
+if (batch_result) {
+    auto& batch = batch_result.value();
+
+    // Monitor progress periodically
+    while (batch.get_completed_files() + batch.get_failed_files()
+           < batch.get_total_files()) {
+        auto progress = batch.get_batch_progress();
+        std::cout << progress.completed_files << "/" << progress.total_files
+                  << " files complete (" << progress.completion_percentage()
+                  << "%), rate: " << progress.overall_rate / (1024*1024)
+                  << " MB/s\n";
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+
+    // Get final result
+    auto result = batch.wait();
+    if (result) {
+        std::cout << "Batch complete: " << result->succeeded << " succeeded, "
+                  << result->failed << " failed\n";
+
+        // Check individual file results
+        for (const auto& file_result : result->file_results) {
+            if (!file_result.success) {
+                std::cerr << "Failed: " << file_result.filename << " - "
+                          << file_result.error_message.value_or("unknown error")
+                          << "\n";
+            }
+        }
+    }
+}
 ```
 
 #### Transfer Control
@@ -1718,5 +1962,5 @@ int main() {
 
 ---
 
-*Last updated: 2025-12-11*
-*Version: 0.2.0*
+*Last updated: 2025-12-13*
+*Version: 0.2.1*
