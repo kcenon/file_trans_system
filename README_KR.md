@@ -337,6 +337,29 @@ cmake .. -DCMAKE_BUILD_TYPE=Release
 cmake --build . --parallel
 ```
 
+### Sanitizer 테스트
+
+메모리 문제와 정의되지 않은 동작을 감지하기 위해 sanitizer로 빌드:
+
+```bash
+# AddressSanitizer (메모리 오류)
+cmake -B build -DFILE_TRANS_ENABLE_ASAN=ON
+cmake --build build
+ASAN_OPTIONS="abort_on_error=1" ctest --test-dir build
+
+# ThreadSanitizer (데이터 경쟁)
+cmake -B build -DFILE_TRANS_ENABLE_TSAN=ON
+cmake --build build
+TSAN_OPTIONS="abort_on_error=1" ctest --test-dir build
+
+# UndefinedBehaviorSanitizer
+cmake -B build -DFILE_TRANS_ENABLE_UBSAN=ON
+cmake --build build
+UBSAN_OPTIONS="print_stacktrace=1:abort_on_error=1" ctest --test-dir build
+```
+
+> **참고**: ASAN과 TSAN은 동시에 활성화할 수 없습니다.
+
 ### CMake 통합
 
 ```cmake
