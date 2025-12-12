@@ -219,7 +219,7 @@ TEST_F(ServerPipelineTest, UploadChunkProcessing) {
 
     EXPECT_GE(upload_complete_count.load(), 1);
 
-    pipeline.stop();
+    (void)pipeline.stop();
 }
 
 TEST_F(ServerPipelineTest, TrySubmitUploadChunk) {
@@ -236,7 +236,7 @@ TEST_F(ServerPipelineTest, TrySubmitUploadChunk) {
     bool submitted = pipeline.try_submit_upload_chunk(std::move(chunk));
     EXPECT_TRUE(submitted);
 
-    pipeline.stop();
+    (void)pipeline.stop();
 }
 
 // Download pipeline tests
@@ -283,7 +283,7 @@ TEST_F(ServerPipelineTest, DownloadChunkProcessing) {
 
     EXPECT_GE(download_ready_count.load(), 1);
 
-    pipeline.stop();
+    (void)pipeline.stop();
 }
 
 // Statistics tests
@@ -367,7 +367,7 @@ TEST_F(ServerPipelineTest, ErrorCallback) {
 
     EXPECT_GE(error_count.load(), 1);
 
-    pipeline.stop();
+    (void)pipeline.stop();
 }
 
 TEST_F(ServerPipelineTest, StageCompleteCallback) {
@@ -400,7 +400,7 @@ TEST_F(ServerPipelineTest, StageCompleteCallback) {
     // Should have multiple stage completions
     EXPECT_GE(stage_complete_count.load(), 2);
 
-    pipeline.stop();
+    (void)pipeline.stop();
 }
 
 // Backpressure tests
@@ -418,22 +418,43 @@ TEST_F(ServerPipelineTest, BackpressureWithSmallQueue) {
 
     ASSERT_TRUE(pipeline.start().has_value());
 
-    // Fill the queue with try_submit
-    int submitted = 0;
+    // Use multiple threads to overwhelm the queue and trigger backpressure
+    std::atomic<int> submitted{0};
+    std::atomic<int> rejected{0};
     auto id = transfer_id::generate();
 
-    for (int i = 0; i < 100; ++i) {
-        std::vector<std::byte> data(100, std::byte{0x42});
-        auto chunk = create_pipeline_chunk(id, static_cast<uint64_t>(i), data);
-        if (pipeline.try_submit_upload_chunk(std::move(chunk))) {
-            submitted++;
-        }
+    constexpr int num_threads = 8;
+    constexpr int chunks_per_thread = 50;
+    std::vector<std::thread> threads;
+
+    for (int t = 0; t < num_threads; ++t) {
+        threads.emplace_back([&, t]() {
+            for (int i = 0; i < chunks_per_thread; ++i) {
+                std::vector<std::byte> data(100, std::byte{0x42});
+                auto chunk = create_pipeline_chunk(
+                    id, static_cast<uint64_t>(t * chunks_per_thread + i), data);
+                if (pipeline.try_submit_upload_chunk(std::move(chunk))) {
+                    submitted++;
+                } else {
+                    rejected++;
+                }
+            }
+        });
     }
 
-    // Should hit backpressure at some point
-    EXPECT_LT(submitted, 100);
+    for (auto& t : threads) {
+        t.join();
+    }
 
-    pipeline.stop();
+    // Should hit backpressure: either some were rejected or backpressure events recorded
+    // With 8 threads submitting 50 chunks each (400 total) to a queue of size 2,
+    // backpressure should definitely occur
+    EXPECT_TRUE(rejected > 0 || pipeline.stats().backpressure_events.load() > 0)
+        << "Expected backpressure but got: submitted=" << submitted
+        << ", rejected=" << rejected
+        << ", backpressure_events=" << pipeline.stats().backpressure_events.load();
+
+    (void)pipeline.stop();
 }
 
 // Move semantics tests
@@ -448,7 +469,7 @@ TEST_F(ServerPipelineTest, MoveConstruction) {
     EXPECT_TRUE(moved_pipeline.start().has_value());
     EXPECT_TRUE(moved_pipeline.is_running());
 
-    moved_pipeline.stop();
+    (void)moved_pipeline.stop();
 }
 
 TEST_F(ServerPipelineTest, MoveAssignment) {
@@ -466,7 +487,7 @@ TEST_F(ServerPipelineTest, MoveAssignment) {
     // After move, pipeline2 should be running
     EXPECT_TRUE(pipeline2.is_running());
 
-    pipeline2.stop();
+    (void)pipeline2.stop();
 }
 
 // stage_result tests

@@ -15,9 +15,13 @@ Complete API documentation for the **file_trans_system** library.
    - [Enumerations](#enumerations)
    - [Structures](#structures)
 3. [Chunk Management](#chunk-management)
-4. [Compression](#compression)
-5. [Pipeline](#pipeline)
-6. [Transport](#transport)
+4. [Resume Handler](#resume-handler)
+   - [transfer_state](#transfer_state)
+   - [resume_handler_config](#resume_handler_config)
+   - [resume_handler](#resume_handler)
+5. [Compression](#compression)
+6. [Pipeline](#pipeline)
+7. [Transport](#transport)
 
 ---
 
@@ -1024,6 +1028,141 @@ public:
         const std::string& expected
     ) -> bool;
 };
+```
+
+---
+
+## Resume Handler
+
+The resume handler provides functionality for persisting and resuming interrupted file transfers.
+
+### transfer_state
+
+Structure containing all information needed to resume an interrupted transfer.
+
+```cpp
+struct transfer_state {
+    transfer_id id;                    // Unique transfer identifier
+    std::string filename;              // Original filename
+    uint64_t total_size;               // Total file size in bytes
+    uint64_t transferred_bytes;        // Bytes successfully transferred
+    uint32_t total_chunks;             // Total number of chunks
+    std::vector<bool> chunk_bitmap;    // Bitmap of received chunks
+    std::string sha256;                // SHA-256 hash of the file
+    std::chrono::system_clock::time_point started_at;    // Transfer start time
+    std::chrono::system_clock::time_point last_activity; // Last activity time
+
+    // Constructor for new transfer
+    transfer_state(
+        const transfer_id& id,
+        std::string filename,
+        uint64_t file_size,
+        uint32_t num_chunks,
+        std::string file_hash);
+
+    // Query methods
+    [[nodiscard]] auto received_chunk_count() const -> uint32_t;
+    [[nodiscard]] auto completion_percentage() const -> double;
+    [[nodiscard]] auto is_complete() const -> bool;
+};
+```
+
+### resume_handler_config
+
+Configuration for the resume handler.
+
+```cpp
+struct resume_handler_config {
+    std::filesystem::path state_directory;  // Directory for state files
+    uint32_t checkpoint_interval = 10;      // Save state every N chunks
+    std::chrono::seconds state_ttl{86400};  // State file TTL (default: 24h)
+    bool auto_cleanup = true;               // Auto cleanup expired states
+
+    resume_handler_config();
+    explicit resume_handler_config(std::filesystem::path dir);
+};
+```
+
+### resume_handler
+
+Handler class for resumable file transfers.
+
+```cpp
+class resume_handler {
+public:
+    explicit resume_handler(const resume_handler_config& config);
+
+    // State persistence
+    [[nodiscard]] auto save_state(const transfer_state& state) -> result<void>;
+    [[nodiscard]] auto load_state(const transfer_id& id) -> result<transfer_state>;
+    [[nodiscard]] auto delete_state(const transfer_id& id) -> result<void>;
+    [[nodiscard]] auto has_state(const transfer_id& id) const -> bool;
+
+    // Chunk tracking
+    [[nodiscard]] auto mark_chunk_received(
+        const transfer_id& id,
+        uint32_t chunk_index) -> result<void>;
+    [[nodiscard]] auto mark_chunks_received(
+        const transfer_id& id,
+        const std::vector<uint32_t>& chunk_indices) -> result<void>;
+    [[nodiscard]] auto get_missing_chunks(const transfer_id& id)
+        -> result<std::vector<uint32_t>>;
+    [[nodiscard]] auto is_chunk_received(
+        const transfer_id& id,
+        uint32_t chunk_index) const -> bool;
+
+    // State query
+    [[nodiscard]] auto list_resumable_transfers() -> std::vector<transfer_state>;
+    [[nodiscard]] auto cleanup_expired_states() -> std::size_t;
+    [[nodiscard]] auto config() const -> const resume_handler_config&;
+
+    // Transfer progress
+    [[nodiscard]] auto update_transferred_bytes(
+        const transfer_id& id,
+        uint64_t bytes) -> result<void>;
+};
+```
+
+**Example:**
+```cpp
+#include <kcenon/file_transfer/core/resume_handler.h>
+
+using namespace kcenon::file_transfer;
+
+// Create resume handler
+resume_handler_config config("/data/transfer_states");
+config.checkpoint_interval = 5;  // Save every 5 chunks
+resume_handler handler(config);
+
+// Create new transfer state
+auto id = transfer_id::generate();
+transfer_state state(id, "large_file.dat", file_size, num_chunks, sha256_hash);
+
+// Save initial state
+handler.save_state(state);
+
+// During transfer, mark chunks as received
+handler.mark_chunk_received(id, 0);
+handler.mark_chunk_received(id, 1);
+// ... (auto-checkpoints at interval)
+
+// On reconnection, get missing chunks
+auto missing = handler.get_missing_chunks(id);
+if (missing) {
+    for (auto chunk_idx : *missing) {
+        // Request retransmission of missing chunks
+    }
+}
+
+// List all resumable transfers
+auto transfers = handler.list_resumable_transfers();
+for (const auto& t : transfers) {
+    std::cout << t.filename << ": "
+              << t.completion_percentage() << "% complete\n";
+}
+
+// Cleanup old states
+auto removed = handler.cleanup_expired_states();
 ```
 
 ---
