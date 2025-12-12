@@ -11,12 +11,14 @@
 
 #include <kcenon/file_transfer/client/file_transfer_client.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <numeric>
 #include <thread>
 #include <vector>
 
