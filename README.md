@@ -337,6 +337,31 @@ cmake .. -DCMAKE_BUILD_TYPE=Release
 cmake --build . --parallel
 ```
 
+### Testing
+
+Build and run tests:
+
+```bash
+mkdir build && cd build
+cmake .. -DBUILD_TESTING=ON
+cmake --build . --parallel
+
+# Run all tests
+ctest --output-on-failure
+
+# Or run specific test executables
+./bin/file_trans_unit_tests          # Unit tests
+./bin/file_trans_integration_tests   # Integration tests
+```
+
+#### Test Categories
+
+| Category | Description | File |
+|----------|-------------|------|
+| **Unit Tests** | Core component tests (chunk, checksum, compression) | `tests/unit/` |
+| **Integration Tests - Basic** | Server/client lifecycle, connection, basic transfers | `test_basic_scenarios.cpp` |
+| **Integration Tests - Advanced** | Error handling, large files, compression, stress tests | `test_error_advanced_scenarios.cpp` |
+
 ### CMake Integration
 
 ```cmake
