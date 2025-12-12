@@ -70,6 +70,12 @@ enum class error_code {
     internal_error = -200,
     not_initialized = -201,
     already_initialized = -202,
+
+    // Transfer control errors (-220 to -239)
+    invalid_state_transition = -220,
+    transfer_not_found = -221,
+    transfer_already_completed = -222,
+    transfer_timeout = -223,
 };
 
 /**
@@ -129,6 +135,14 @@ enum class error_code {
             return "not initialized";
         case error_code::already_initialized:
             return "already initialized";
+        case error_code::invalid_state_transition:
+            return "invalid state transition";
+        case error_code::transfer_not_found:
+            return "transfer not found";
+        case error_code::transfer_already_completed:
+            return "transfer already completed";
+        case error_code::transfer_timeout:
+            return "transfer timeout";
         default:
             return "unknown error";
     }
