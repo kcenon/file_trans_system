@@ -611,13 +611,18 @@ enum class chunk_flags : uint8_t {
 #### pipeline_stage
 
 ```cpp
-enum class pipeline_stage : uint8_t {
-    io_read,        // File read operations
-    chunk_process,  // Chunk assembly/disassembly
-    compression,    // LZ4 compress/decompress
-    network,        // Network send/receive
-    io_write        // File write operations
+enum class pipeline_stage {
+    network_recv,   // Network receive stage
+    decompress,     // LZ4 decompression stage
+    chunk_verify,   // CRC32 verification stage
+    file_write,     // Disk write stage
+    network_send,   // Network send stage
+    file_read,      // Disk read stage
+    compress        // LZ4 compression stage
 };
+
+// Convert to string representation
+[[nodiscard]] constexpr auto to_string(pipeline_stage stage) -> const char*;
 ```
 
 ---
@@ -892,21 +897,47 @@ struct storage_statistics {
 
 ```cpp
 struct pipeline_config {
-    // Worker counts per stage
-    std::size_t io_read_workers      = 2;
-    std::size_t chunk_workers        = 2;
-    std::size_t compression_workers  = 4;
-    std::size_t network_workers      = 2;
-    std::size_t io_write_workers     = 2;
+    std::size_t io_workers = 2;            // Number of I/O worker threads
+    std::size_t compression_workers = 4;   // Number of compression worker threads
+    std::size_t network_workers = 2;       // Number of network worker threads
+    std::size_t queue_size = 64;           // Maximum queue size per stage
+    std::size_t max_memory_per_transfer = 32 * 1024 * 1024;  // ~32MB per transfer
 
-    // Queue sizes (backpressure)
-    std::size_t read_queue_size      = 16;
-    std::size_t compress_queue_size  = 32;
-    std::size_t send_queue_size      = 64;
-    std::size_t decompress_queue_size = 32;
-    std::size_t write_queue_size     = 16;
-
+    // Auto-detect optimal configuration based on hardware
     [[nodiscard]] static auto auto_detect() -> pipeline_config;
+
+    // Validate configuration
+    [[nodiscard]] auto is_valid() const -> bool;
+};
+```
+
+#### pipeline_stats
+
+```cpp
+struct pipeline_stats {
+    std::atomic<uint64_t> chunks_processed{0};
+    std::atomic<uint64_t> bytes_processed{0};
+    std::atomic<uint64_t> compression_saved_bytes{0};
+    std::atomic<uint64_t> stalls_detected{0};
+    std::atomic<uint64_t> backpressure_events{0};
+
+    auto reset() -> void;
+};
+```
+
+#### pipeline_chunk
+
+```cpp
+struct pipeline_chunk {
+    transfer_id id;
+    uint64_t chunk_index;
+    std::vector<std::byte> data;
+    uint32_t checksum;
+    bool is_compressed;
+    std::size_t original_size;
+
+    pipeline_chunk() = default;
+    explicit pipeline_chunk(const chunk& c);
 };
 ```
 
@@ -1077,28 +1108,54 @@ public:
 
 ### server_pipeline
 
-Multi-stage pipeline for server-side processing.
+Multi-stage pipeline for server-side processing with backpressure control.
 
 ```cpp
 class server_pipeline {
 public:
-    class builder {
-    public:
-        builder& with_config(const pipeline_config& config);
-        builder& with_storage_manager(std::shared_ptr<storage_manager> storage);
-        builder& with_compressor(std::shared_ptr<chunk_compressor> compressor);
-        [[nodiscard]] auto build() -> Result<server_pipeline>;
-    };
+    // Factory method
+    [[nodiscard]] static auto create(const pipeline_config& config = pipeline_config{})
+        -> result<server_pipeline>;
 
-    // Upload pipeline (receive from client, write to storage)
-    [[nodiscard]] auto start_upload_pipeline() -> Result<void>;
+    // Non-copyable, movable
+    server_pipeline(const server_pipeline&) = delete;
+    server_pipeline(server_pipeline&&) noexcept;
 
-    // Download pipeline (read from storage, send to client)
-    [[nodiscard]] auto start_download_pipeline() -> Result<void>;
+    // Lifecycle
+    [[nodiscard]] auto start() -> result<void>;
+    [[nodiscard]] auto stop(bool wait_for_completion = true) -> result<void>;
+    [[nodiscard]] auto is_running() const -> bool;
 
-    [[nodiscard]] auto stop(bool wait_for_completion = true) -> Result<void>;
-    [[nodiscard]] auto get_stats() const -> pipeline_statistics;
+    // Upload pipeline: decompress -> verify -> write
+    [[nodiscard]] auto submit_upload_chunk(pipeline_chunk data) -> result<void>;
+    [[nodiscard]] auto try_submit_upload_chunk(pipeline_chunk data) -> bool;
+
+    // Download pipeline: read -> compress -> send
+    [[nodiscard]] auto submit_download_request(
+        const transfer_id& id,
+        uint64_t chunk_index,
+        const std::filesystem::path& file_path,
+        uint64_t offset,
+        std::size_t size) -> result<void>;
+
+    // Callbacks
+    auto on_stage_complete(stage_callback callback) -> void;
+    auto on_error(error_callback callback) -> void;
+    auto on_upload_complete(completion_callback callback) -> void;
+    auto on_download_ready(std::function<void(const pipeline_chunk&)> callback) -> void;
+
+    // Statistics
+    [[nodiscard]] auto stats() const -> const pipeline_stats&;
+    auto reset_stats() -> void;
+    [[nodiscard]] auto queue_sizes() const
+        -> std::vector<std::pair<pipeline_stage, std::size_t>>;
+    [[nodiscard]] auto config() const -> const pipeline_config&;
 };
+
+// Callback types
+using stage_callback = std::function<void(pipeline_stage, const pipeline_chunk&)>;
+using error_callback = std::function<void(pipeline_stage, const std::string&)>;
+using completion_callback = std::function<void(const transfer_id&, uint64_t bytes)>;
 ```
 
 ### client_pipeline
