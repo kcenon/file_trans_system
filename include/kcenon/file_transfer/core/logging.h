@@ -8,6 +8,7 @@
 #include <string>
 #include <string_view>
 #include <chrono>
+#include <ctime>
 #include <optional>
 #include <memory>
 #include <functional>
@@ -309,12 +310,19 @@ private:
 
     static std::string get_timestamp() {
         auto now = std::chrono::system_clock::now();
-        auto time_t = std::chrono::system_clock::to_time_t(now);
+        auto time_t_val = std::chrono::system_clock::to_time_t(now);
         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             now.time_since_epoch()) % 1000;
 
+        std::tm tm_buf{};
+#if defined(_WIN32)
+        localtime_s(&tm_buf, &time_t_val);
+#else
+        localtime_r(&time_t_val, &tm_buf);
+#endif
+
         std::ostringstream oss;
-        oss << std::put_time(std::localtime(&time_t), "%Y-%m-%d %H:%M:%S")
+        oss << std::put_time(&tm_buf, "%Y-%m-%d %H:%M:%S")
             << '.' << std::setfill('0') << std::setw(3) << ms.count();
         return oss.str();
     }
