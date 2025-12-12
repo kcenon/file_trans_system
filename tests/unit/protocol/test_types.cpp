@@ -233,33 +233,35 @@ TEST_F(ResultVoidTest, MoveConstruction) {
 }
 
 // =============================================================================
-// transfer_id Tests
+// transfer_id Tests (UUID-based)
 // =============================================================================
 
 class TransferIdTest : public ::testing::Test {};
 
 TEST_F(TransferIdTest, DefaultConstruction) {
     transfer_id id;
-    EXPECT_EQ(id.value, 0);
+    EXPECT_TRUE(id.is_null());
 }
 
-TEST_F(TransferIdTest, ExplicitConstruction) {
-    transfer_id id(12345);
-    EXPECT_EQ(id.value, 12345);
+TEST_F(TransferIdTest, Generate) {
+    auto id = transfer_id::generate();
+    EXPECT_FALSE(id.is_null());
 }
 
 TEST_F(TransferIdTest, EqualityOperator) {
-    transfer_id id1(100);
-    transfer_id id2(100);
-    transfer_id id3(200);
+    auto id1 = transfer_id::generate();
+    auto id2 = id1;
+    auto id3 = transfer_id::generate();
 
     EXPECT_TRUE(id1 == id2);
     EXPECT_FALSE(id1 == id3);
 }
 
 TEST_F(TransferIdTest, LessThanOperator) {
-    transfer_id id1(100);
-    transfer_id id2(200);
+    transfer_id id1;
+    transfer_id id2;
+    id1.bytes[0] = 1;
+    id2.bytes[0] = 2;
 
     EXPECT_TRUE(id1 < id2);
     EXPECT_FALSE(id2 < id1);
@@ -267,9 +269,9 @@ TEST_F(TransferIdTest, LessThanOperator) {
 }
 
 TEST_F(TransferIdTest, HashSupport) {
-    transfer_id id1(100);
-    transfer_id id2(100);
-    transfer_id id3(200);
+    auto id1 = transfer_id::generate();
+    auto id2 = id1;
+    auto id3 = transfer_id::generate();
 
     std::hash<transfer_id> hasher;
     EXPECT_EQ(hasher(id1), hasher(id2));
@@ -278,22 +280,28 @@ TEST_F(TransferIdTest, HashSupport) {
 
 TEST_F(TransferIdTest, UseInUnorderedSet) {
     std::unordered_set<transfer_id> ids;
-    ids.insert(transfer_id(1));
-    ids.insert(transfer_id(2));
-    ids.insert(transfer_id(1));  // Duplicate
+    auto id1 = transfer_id::generate();
+    auto id2 = transfer_id::generate();
+
+    ids.insert(id1);
+    ids.insert(id2);
+    ids.insert(id1);  // Duplicate
 
     EXPECT_EQ(ids.size(), 2);
-    EXPECT_TRUE(ids.count(transfer_id(1)) == 1);
-    EXPECT_TRUE(ids.count(transfer_id(2)) == 1);
+    EXPECT_TRUE(ids.count(id1) == 1);
+    EXPECT_TRUE(ids.count(id2) == 1);
 }
 
 TEST_F(TransferIdTest, UseInUnorderedMap) {
     std::unordered_map<transfer_id, std::string> map;
-    map[transfer_id(1)] = "first";
-    map[transfer_id(2)] = "second";
+    auto id1 = transfer_id::generate();
+    auto id2 = transfer_id::generate();
 
-    EXPECT_EQ(map[transfer_id(1)], "first");
-    EXPECT_EQ(map[transfer_id(2)], "second");
+    map[id1] = "first";
+    map[id2] = "second";
+
+    EXPECT_EQ(map[id1], "first");
+    EXPECT_EQ(map[id2], "second");
 }
 
 // =============================================================================
@@ -307,24 +315,26 @@ TEST_F(ChunkFlagsTest, NoneFlag) {
 }
 
 TEST_F(ChunkFlagsTest, IndividualFlagValues) {
-    EXPECT_EQ(static_cast<uint8_t>(chunk_flags::compressed), 1);
-    EXPECT_EQ(static_cast<uint8_t>(chunk_flags::last_chunk), 2);
-    EXPECT_EQ(static_cast<uint8_t>(chunk_flags::encrypted), 4);
+    // New flag values per protocol spec
+    EXPECT_EQ(static_cast<uint8_t>(chunk_flags::first_chunk), 0x01);
+    EXPECT_EQ(static_cast<uint8_t>(chunk_flags::last_chunk), 0x02);
+    EXPECT_EQ(static_cast<uint8_t>(chunk_flags::compressed), 0x04);
+    EXPECT_EQ(static_cast<uint8_t>(chunk_flags::encrypted), 0x08);
 }
 
 TEST_F(ChunkFlagsTest, BitwiseOr) {
-    auto combined = chunk_flags::compressed | chunk_flags::last_chunk;
-    EXPECT_EQ(static_cast<uint8_t>(combined), 3);
+    auto combined = chunk_flags::first_chunk | chunk_flags::last_chunk;
+    EXPECT_EQ(static_cast<uint8_t>(combined), 0x03);
 
-    combined = combined | chunk_flags::encrypted;
-    EXPECT_EQ(static_cast<uint8_t>(combined), 7);
+    combined = combined | chunk_flags::compressed;
+    EXPECT_EQ(static_cast<uint8_t>(combined), 0x07);
 }
 
 TEST_F(ChunkFlagsTest, BitwiseAnd) {
     auto combined = chunk_flags::compressed | chunk_flags::last_chunk | chunk_flags::encrypted;
 
     auto result = combined & chunk_flags::compressed;
-    EXPECT_EQ(static_cast<uint8_t>(result), 1);
+    EXPECT_EQ(static_cast<uint8_t>(result), 0x04);
 
     result = combined & chunk_flags::none;
     EXPECT_EQ(static_cast<uint8_t>(result), 0);
@@ -341,7 +351,7 @@ TEST_F(ChunkFlagsTest, HasFlag_False) {
     auto flags = chunk_flags::compressed | chunk_flags::encrypted;
 
     EXPECT_FALSE(has_flag(flags, chunk_flags::last_chunk));
-    EXPECT_FALSE(has_flag(flags, chunk_flags::none));
+    EXPECT_FALSE(has_flag(flags, chunk_flags::first_chunk));
 }
 
 TEST_F(ChunkFlagsTest, HasFlag_None) {
@@ -351,48 +361,65 @@ TEST_F(ChunkFlagsTest, HasFlag_None) {
 }
 
 TEST_F(ChunkFlagsTest, HasFlag_AllFlags) {
-    auto all = chunk_flags::compressed | chunk_flags::last_chunk | chunk_flags::encrypted;
+    auto all = chunk_flags::first_chunk | chunk_flags::compressed |
+               chunk_flags::last_chunk | chunk_flags::encrypted;
 
+    EXPECT_TRUE(has_flag(all, chunk_flags::first_chunk));
     EXPECT_TRUE(has_flag(all, chunk_flags::compressed));
     EXPECT_TRUE(has_flag(all, chunk_flags::last_chunk));
     EXPECT_TRUE(has_flag(all, chunk_flags::encrypted));
 }
 
 // =============================================================================
-// chunk struct Tests
+// chunk struct Tests (header-based)
 // =============================================================================
 
 class ChunkStructTest : public ::testing::Test {};
 
 TEST_F(ChunkStructTest, DefaultConstruction) {
     chunk c;
-    EXPECT_EQ(c.id.value, 0);
-    EXPECT_EQ(c.index, 0);
-    EXPECT_EQ(c.total_chunks, 0);
-    EXPECT_EQ(c.offset, 0);
-    EXPECT_EQ(c.checksum, 0);
-    EXPECT_EQ(c.flags, chunk_flags::none);
+    EXPECT_TRUE(c.header.id.is_null());
+    EXPECT_EQ(c.header.chunk_index, 0);
+    EXPECT_EQ(c.header.chunk_offset, 0);
+    EXPECT_EQ(c.header.original_size, 0);
+    EXPECT_EQ(c.header.compressed_size, 0);
+    EXPECT_EQ(c.header.checksum, 0);
+    EXPECT_EQ(c.header.flags, chunk_flags::none);
     EXPECT_TRUE(c.data.empty());
 }
 
 TEST_F(ChunkStructTest, PopulateFields) {
     chunk c;
-    c.id = transfer_id(123);
-    c.index = 5;
-    c.total_chunks = 10;
-    c.offset = 1024 * 5;
-    c.checksum = 0xDEADBEEF;
-    c.flags = chunk_flags::compressed | chunk_flags::last_chunk;
+    c.header.id = transfer_id::generate();
+    c.header.chunk_index = 5;
+    c.header.chunk_offset = 1024 * 5;
+    c.header.original_size = 1024;
+    c.header.compressed_size = 512;
+    c.header.checksum = 0xDEADBEEF;
+    c.header.flags = chunk_flags::compressed | chunk_flags::last_chunk;
     c.data = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}};
 
-    EXPECT_EQ(c.id.value, 123);
-    EXPECT_EQ(c.index, 5);
-    EXPECT_EQ(c.total_chunks, 10);
-    EXPECT_EQ(c.offset, 1024 * 5);
-    EXPECT_EQ(c.checksum, 0xDEADBEEF);
-    EXPECT_TRUE(has_flag(c.flags, chunk_flags::compressed));
-    EXPECT_TRUE(has_flag(c.flags, chunk_flags::last_chunk));
+    EXPECT_FALSE(c.header.id.is_null());
+    EXPECT_EQ(c.header.chunk_index, 5);
+    EXPECT_EQ(c.header.chunk_offset, 1024 * 5);
+    EXPECT_EQ(c.header.original_size, 1024);
+    EXPECT_EQ(c.header.compressed_size, 512);
+    EXPECT_EQ(c.header.checksum, 0xDEADBEEF);
+    EXPECT_TRUE(has_flag(c.header.flags, chunk_flags::compressed));
+    EXPECT_TRUE(has_flag(c.header.flags, chunk_flags::last_chunk));
     EXPECT_EQ(c.data.size(), 3);
+}
+
+TEST_F(ChunkStructTest, HelperMethods) {
+    chunk c;
+    c.header.flags = chunk_flags::first_chunk | chunk_flags::compressed;
+    c.data = {std::byte{0x01}, std::byte{0x02}};
+
+    EXPECT_TRUE(c.is_first());
+    EXPECT_FALSE(c.is_last());
+    EXPECT_TRUE(c.is_compressed());
+    EXPECT_EQ(c.data_size(), 2);
+    EXPECT_EQ(c.total_size(), chunk_header::size + 2);
 }
 
 // =============================================================================
