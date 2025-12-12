@@ -26,12 +26,13 @@
 namespace kcenon::file_transfer {
 
 /**
- * @brief Internal download state enum
+ * @brief Internal transfer state enum
  */
-enum class download_state {
+enum class internal_transfer_state {
     idle,
     initializing,
     transferring,
+    paused,
     verifying,
     completing,
     completed,
@@ -40,32 +41,163 @@ enum class download_state {
 };
 
 /**
+ * @brief Convert internal state to transfer_status
+ */
+[[nodiscard]] auto to_transfer_status(internal_transfer_state state) noexcept
+    -> transfer_status {
+    switch (state) {
+        case internal_transfer_state::idle:
+        case internal_transfer_state::initializing:
+            return transfer_status::pending;
+        case internal_transfer_state::transferring:
+            return transfer_status::in_progress;
+        case internal_transfer_state::paused:
+            return transfer_status::paused;
+        case internal_transfer_state::verifying:
+        case internal_transfer_state::completing:
+            return transfer_status::completing;
+        case internal_transfer_state::completed:
+            return transfer_status::completed;
+        case internal_transfer_state::failed:
+            return transfer_status::failed;
+        case internal_transfer_state::cancelled:
+            return transfer_status::cancelled;
+        default:
+            return transfer_status::failed;
+    }
+}
+
+/**
+ * @brief Check if state transition is valid
+ */
+[[nodiscard]] auto is_valid_transition(
+    internal_transfer_state from,
+    internal_transfer_state to) noexcept -> bool {
+    // Terminal states cannot transition
+    if (from == internal_transfer_state::completed ||
+        from == internal_transfer_state::failed ||
+        from == internal_transfer_state::cancelled) {
+        return false;
+    }
+
+    // Any non-terminal state can transition to cancelled
+    if (to == internal_transfer_state::cancelled) {
+        return true;
+    }
+
+    // Specific transitions
+    switch (from) {
+        case internal_transfer_state::idle:
+            return to == internal_transfer_state::initializing;
+        case internal_transfer_state::initializing:
+            return to == internal_transfer_state::transferring ||
+                   to == internal_transfer_state::failed;
+        case internal_transfer_state::transferring:
+            return to == internal_transfer_state::paused ||
+                   to == internal_transfer_state::verifying ||
+                   to == internal_transfer_state::completing ||
+                   to == internal_transfer_state::failed;
+        case internal_transfer_state::paused:
+            return to == internal_transfer_state::transferring ||
+                   to == internal_transfer_state::failed;
+        case internal_transfer_state::verifying:
+            return to == internal_transfer_state::completing ||
+                   to == internal_transfer_state::failed;
+        case internal_transfer_state::completing:
+            return to == internal_transfer_state::completed ||
+                   to == internal_transfer_state::failed;
+        default:
+            return false;
+    }
+}
+
+// Legacy alias for download_state (for backward compatibility)
+using download_state = internal_transfer_state;
+
+/**
+ * @brief Base transfer context for common state
+ */
+struct transfer_context_base {
+    transfer_id tid;
+    internal_transfer_state state{internal_transfer_state::idle};
+
+    // Progress tracking
+    uint64_t file_size{0};
+    uint64_t total_chunks{0};
+    uint64_t transferred_chunks{0};
+    uint64_t transferred_bytes{0};
+    std::chrono::steady_clock::time_point start_time;
+
+    // Synchronization
+    mutable std::mutex mutex;
+    std::condition_variable cv;
+    std::string error_message;
+
+    [[nodiscard]] auto get_progress_info() const -> transfer_progress_info {
+        transfer_progress_info info;
+        info.bytes_transferred = transferred_bytes;
+        info.total_bytes = file_size;
+        info.chunks_transferred = transferred_chunks;
+        info.total_chunks = total_chunks;
+
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - start_time);
+        info.elapsed = elapsed_ms;
+
+        if (elapsed_ms.count() > 0) {
+            info.transfer_rate = static_cast<double>(transferred_bytes) /
+                                 (static_cast<double>(elapsed_ms.count()) / 1000.0);
+        }
+
+        return info;
+    }
+
+    [[nodiscard]] auto get_result_info() const -> transfer_result_info {
+        transfer_result_info info;
+        info.success = (state == internal_transfer_state::completed);
+        info.bytes_transferred = transferred_bytes;
+
+        auto now = std::chrono::steady_clock::now();
+        info.elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - start_time);
+
+        if (!error_message.empty()) {
+            info.error_message = error_message;
+        }
+
+        return info;
+    }
+};
+
+/**
+ * @brief Upload context for tracking upload state
+ */
+struct upload_context : transfer_context_base {
+    std::filesystem::path local_path;
+    std::string remote_name;
+    upload_options options;
+    uint32_t chunk_size{0};
+    std::string file_hash;
+};
+
+/**
  * @brief Download context for tracking download state
  */
-struct download_context {
-    transfer_id tid;
+struct download_context : transfer_context_base {
     std::string remote_name;
     std::filesystem::path local_path;
     std::filesystem::path temp_path;
     download_options options;
-    download_state state{download_state::idle};
 
     // Metadata from server
-    uint64_t file_size{0};
-    uint64_t total_chunks{0};
     uint32_t chunk_size{0};
     std::string expected_sha256;
 
-    // Progress tracking
-    uint64_t received_chunks{0};
-    uint64_t bytes_received{0};
-    std::chrono::steady_clock::time_point start_time;
-
-    // Synchronization
-    std::mutex mutex;
-    std::condition_variable cv;
+    // Legacy compatibility (keeping for existing code)
+    uint64_t& received_chunks{transferred_chunks};
+    uint64_t& bytes_received{transferred_bytes};
     bool cancelled{false};
-    std::string error_message;
 };
 
 /**
@@ -126,12 +258,15 @@ struct file_transfer_client::impl {
     compression_statistics compression_stats;
 
     // Active transfers
-    std::mutex transfers_mutex;
-    std::unordered_map<uint64_t, transfer_handle> active_transfers;
+    mutable std::mutex transfers_mutex;
     std::atomic<uint64_t> next_transfer_id{1};
 
+    // Upload contexts
+    mutable std::mutex upload_mutex;
+    std::unordered_map<uint64_t, std::unique_ptr<upload_context>> upload_contexts;
+
     // Download contexts
-    std::mutex download_mutex;
+    mutable std::mutex download_mutex;
     std::unordered_map<uint64_t, std::unique_ptr<download_context>> download_contexts;
 
     explicit impl(client_config cfg) : config(std::move(cfg)) {}
@@ -265,8 +400,8 @@ auto file_transfer_client::state() const -> connection_state {
 
 auto file_transfer_client::upload_file(
     const std::filesystem::path& local_path,
-    [[maybe_unused]] const std::string& remote_name,
-    [[maybe_unused]] const upload_options& options) -> result<transfer_handle> {
+    const std::string& remote_name,
+    const upload_options& options) -> result<transfer_handle> {
 
     if (!is_connected()) {
         return unexpected{error{error_code::not_initialized,
@@ -278,16 +413,52 @@ auto file_transfer_client::upload_file(
                                "Local file not found: " + local_path.string()}};
     }
 
-    auto transfer_id = impl_->next_transfer_id++;
-    transfer_handle handle{transfer_id};
-
-    {
-        std::lock_guard lock(impl_->transfers_mutex);
-        impl_->active_transfers[transfer_id] = handle;
+    // Get file info
+    std::error_code ec;
+    auto file_size = std::filesystem::file_size(local_path, ec);
+    if (ec) {
+        return unexpected{error{error_code::file_read_error,
+                               "Cannot get file size: " + ec.message()}};
     }
 
-    // TODO: Implement actual file upload logic
-    // For now, just return the handle
+    // Generate handle ID
+    auto handle_id = impl_->next_transfer_id++;
+    transfer_handle handle{handle_id, this};
+
+    // Create upload context
+    auto ctx = std::make_unique<upload_context>();
+    ctx->tid = transfer_id::generate();
+    ctx->local_path = local_path;
+    ctx->remote_name = remote_name;
+    ctx->options = options;
+    ctx->state = internal_transfer_state::initializing;
+    ctx->file_size = file_size;
+    ctx->chunk_size = static_cast<uint32_t>(impl_->config.chunk_size);
+    ctx->total_chunks = (file_size + ctx->chunk_size - 1) / ctx->chunk_size;
+    ctx->start_time = std::chrono::steady_clock::now();
+
+    // Store upload context
+    {
+        std::lock_guard lock(impl_->upload_mutex);
+        impl_->upload_contexts[handle_id] = std::move(ctx);
+    }
+
+    // Update statistics
+    {
+        std::lock_guard lock(impl_->stats_mutex);
+        impl_->statistics.total_files_uploaded++;
+    }
+
+    // TODO: Implement actual file upload logic with network layer
+    // For now, mark as transferring
+    {
+        std::lock_guard lock(impl_->upload_mutex);
+        auto it = impl_->upload_contexts.find(handle_id);
+        if (it != impl_->upload_contexts.end()) {
+            std::lock_guard ctx_lock(it->second->mutex);
+            it->second->state = internal_transfer_state::transferring;
+        }
+    }
 
     return handle;
 }
@@ -334,7 +505,7 @@ auto file_transfer_client::download_file(
 
     // Generate transfer ID and handle
     auto handle_id = impl_->next_transfer_id++;
-    transfer_handle handle{handle_id};
+    transfer_handle handle{handle_id, this};
 
     // Create download context
     auto ctx = std::make_unique<download_context>();
@@ -342,18 +513,12 @@ auto file_transfer_client::download_file(
     ctx->remote_name = remote_name;
     ctx->local_path = local_path;
     ctx->options = options;
-    ctx->state = download_state::initializing;
+    ctx->state = internal_transfer_state::initializing;
     ctx->start_time = std::chrono::steady_clock::now();
 
     // Create temp file path
     ctx->temp_path = local_path;
     ctx->temp_path += ".tmp";
-
-    // Register active transfer
-    {
-        std::lock_guard lock(impl_->transfers_mutex);
-        impl_->active_transfers[handle_id] = handle;
-    }
 
     // Store download context
     {
@@ -582,11 +747,8 @@ auto file_transfer_client::finalize_download(uint64_t handle_id) -> result<void>
         impl_->complete_callback(result);
     }
 
-    // Remove from active transfers
-    {
-        std::lock_guard lock(impl_->transfers_mutex);
-        impl_->active_transfers.erase(handle_id);
-    }
+    // Notify waiting threads
+    ctx->cv.notify_all();
 
     return {};
 }
@@ -606,25 +768,13 @@ auto file_transfer_client::cancel_download(uint64_t handle_id) -> result<void> {
     {
         std::lock_guard ctx_lock(ctx->mutex);
         ctx->cancelled = true;
-        ctx->state = download_state::cancelled;
+        ctx->state = internal_transfer_state::cancelled;
         ctx->cv.notify_all();
     }
 
     // Clean up temp file
     std::error_code ec;
     std::filesystem::remove(ctx->temp_path, ec);
-
-    // Remove from active transfers
-    {
-        std::lock_guard lock(impl_->transfers_mutex);
-        impl_->active_transfers.erase(handle_id);
-    }
-
-    // Remove download context
-    {
-        std::lock_guard lock(impl_->download_mutex);
-        impl_->download_contexts.erase(handle_id);
-    }
 
     return {};
 }
@@ -696,8 +846,27 @@ void file_transfer_client::on_connection_state_changed(
 auto file_transfer_client::get_statistics() const -> client_statistics {
     std::lock_guard lock(impl_->stats_mutex);
     auto stats = impl_->statistics;
-    std::lock_guard transfers_lock(impl_->transfers_mutex);
-    stats.active_transfers = impl_->active_transfers.size();
+
+    // Count active transfers from upload and download contexts
+    std::size_t active_count = 0;
+    {
+        std::lock_guard upload_lock(impl_->upload_mutex);
+        for (const auto& [id, ctx] : impl_->upload_contexts) {
+            if (ctx && !is_terminal_status(to_transfer_status(ctx->state))) {
+                ++active_count;
+            }
+        }
+    }
+    {
+        std::lock_guard download_lock(impl_->download_mutex);
+        for (const auto& [id, ctx] : impl_->download_contexts) {
+            if (ctx && !is_terminal_status(to_transfer_status(ctx->state))) {
+                ++active_count;
+            }
+        }
+    }
+    stats.active_transfers = active_count;
+
     return stats;
 }
 
@@ -708,6 +877,343 @@ auto file_transfer_client::get_compression_stats() const -> compression_statisti
 
 auto file_transfer_client::config() const -> const client_config& {
     return impl_->config;
+}
+
+// ============================================================================
+// Transfer control methods
+// ============================================================================
+
+auto file_transfer_client::get_transfer_status(uint64_t handle_id) const
+    -> transfer_status {
+    // Check upload contexts
+    {
+        std::lock_guard lock(impl_->upload_mutex);
+        auto it = impl_->upload_contexts.find(handle_id);
+        if (it != impl_->upload_contexts.end() && it->second) {
+            std::lock_guard ctx_lock(it->second->mutex);
+            return to_transfer_status(it->second->state);
+        }
+    }
+
+    // Check download contexts
+    {
+        std::lock_guard lock(impl_->download_mutex);
+        auto it = impl_->download_contexts.find(handle_id);
+        if (it != impl_->download_contexts.end() && it->second) {
+            std::lock_guard ctx_lock(it->second->mutex);
+            return to_transfer_status(it->second->state);
+        }
+    }
+
+    return transfer_status::failed;
+}
+
+auto file_transfer_client::get_transfer_progress(uint64_t handle_id) const
+    -> transfer_progress_info {
+    // Check upload contexts
+    {
+        std::lock_guard lock(impl_->upload_mutex);
+        auto it = impl_->upload_contexts.find(handle_id);
+        if (it != impl_->upload_contexts.end() && it->second) {
+            std::lock_guard ctx_lock(it->second->mutex);
+            return it->second->get_progress_info();
+        }
+    }
+
+    // Check download contexts
+    {
+        std::lock_guard lock(impl_->download_mutex);
+        auto it = impl_->download_contexts.find(handle_id);
+        if (it != impl_->download_contexts.end() && it->second) {
+            std::lock_guard ctx_lock(it->second->mutex);
+            return it->second->get_progress_info();
+        }
+    }
+
+    return transfer_progress_info{};
+}
+
+auto file_transfer_client::pause_transfer(uint64_t handle_id) -> result<void> {
+    // Try upload context first
+    {
+        std::lock_guard lock(impl_->upload_mutex);
+        auto it = impl_->upload_contexts.find(handle_id);
+        if (it != impl_->upload_contexts.end() && it->second) {
+            std::lock_guard ctx_lock(it->second->mutex);
+            auto& ctx = it->second;
+
+            // Validate state transition
+            if (!is_valid_transition(ctx->state,
+                                     internal_transfer_state::paused)) {
+                return unexpected{error{error_code::invalid_state_transition,
+                    "Cannot pause transfer in current state: " +
+                    std::string(to_string(to_transfer_status(ctx->state)))}};
+            }
+
+            ctx->state = internal_transfer_state::paused;
+            return {};
+        }
+    }
+
+    // Try download context
+    {
+        std::lock_guard lock(impl_->download_mutex);
+        auto it = impl_->download_contexts.find(handle_id);
+        if (it != impl_->download_contexts.end() && it->second) {
+            std::lock_guard ctx_lock(it->second->mutex);
+            auto& ctx = it->second;
+
+            // Validate state transition
+            if (!is_valid_transition(ctx->state,
+                                     internal_transfer_state::paused)) {
+                return unexpected{error{error_code::invalid_state_transition,
+                    "Cannot pause transfer in current state: " +
+                    std::string(to_string(to_transfer_status(ctx->state)))}};
+            }
+
+            ctx->state = internal_transfer_state::paused;
+            return {};
+        }
+    }
+
+    return unexpected{error{error_code::transfer_not_found,
+                           "Transfer not found: " + std::to_string(handle_id)}};
+}
+
+auto file_transfer_client::resume_transfer(uint64_t handle_id) -> result<void> {
+    // Try upload context first
+    {
+        std::lock_guard lock(impl_->upload_mutex);
+        auto it = impl_->upload_contexts.find(handle_id);
+        if (it != impl_->upload_contexts.end() && it->second) {
+            std::lock_guard ctx_lock(it->second->mutex);
+            auto& ctx = it->second;
+
+            // Validate state transition
+            if (!is_valid_transition(ctx->state,
+                                     internal_transfer_state::transferring)) {
+                return unexpected{error{error_code::invalid_state_transition,
+                    "Cannot resume transfer in current state: " +
+                    std::string(to_string(to_transfer_status(ctx->state)))}};
+            }
+
+            ctx->state = internal_transfer_state::transferring;
+            ctx->cv.notify_all();  // Wake up any paused workers
+            return {};
+        }
+    }
+
+    // Try download context
+    {
+        std::lock_guard lock(impl_->download_mutex);
+        auto it = impl_->download_contexts.find(handle_id);
+        if (it != impl_->download_contexts.end() && it->second) {
+            std::lock_guard ctx_lock(it->second->mutex);
+            auto& ctx = it->second;
+
+            // Validate state transition
+            if (!is_valid_transition(ctx->state,
+                                     internal_transfer_state::transferring)) {
+                return unexpected{error{error_code::invalid_state_transition,
+                    "Cannot resume transfer in current state: " +
+                    std::string(to_string(to_transfer_status(ctx->state)))}};
+            }
+
+            ctx->state = internal_transfer_state::transferring;
+            ctx->cv.notify_all();  // Wake up any paused workers
+            return {};
+        }
+    }
+
+    return unexpected{error{error_code::transfer_not_found,
+                           "Transfer not found: " + std::to_string(handle_id)}};
+}
+
+auto file_transfer_client::cancel_transfer(uint64_t handle_id) -> result<void> {
+    // Try upload context first
+    {
+        std::lock_guard lock(impl_->upload_mutex);
+        auto it = impl_->upload_contexts.find(handle_id);
+        if (it != impl_->upload_contexts.end() && it->second) {
+            std::lock_guard ctx_lock(it->second->mutex);
+            auto& ctx = it->second;
+
+            // Validate state transition
+            if (!is_valid_transition(ctx->state,
+                                     internal_transfer_state::cancelled)) {
+                return unexpected{error{error_code::transfer_already_completed,
+                    "Cannot cancel transfer in current state: " +
+                    std::string(to_string(to_transfer_status(ctx->state)))}};
+            }
+
+            ctx->state = internal_transfer_state::cancelled;
+            ctx->cv.notify_all();
+            return {};
+        }
+    }
+
+    // Try download context - delegate to existing cancel_download
+    {
+        std::lock_guard lock(impl_->download_mutex);
+        auto it = impl_->download_contexts.find(handle_id);
+        if (it != impl_->download_contexts.end()) {
+            // Release lock before calling cancel_download
+            lock.~lock_guard();
+            return cancel_download(handle_id);
+        }
+    }
+
+    return unexpected{error{error_code::transfer_not_found,
+                           "Transfer not found: " + std::to_string(handle_id)}};
+}
+
+auto file_transfer_client::wait_for_transfer(uint64_t handle_id)
+    -> result<transfer_result_info> {
+    // Use maximum timeout
+    return wait_for_transfer(handle_id,
+                             std::chrono::milliseconds::max());
+}
+
+auto file_transfer_client::wait_for_transfer(
+    uint64_t handle_id,
+    std::chrono::milliseconds timeout) -> result<transfer_result_info> {
+
+    auto deadline = std::chrono::steady_clock::now() + timeout;
+
+    // Try upload context first
+    {
+        std::unique_lock lock(impl_->upload_mutex);
+        auto it = impl_->upload_contexts.find(handle_id);
+        if (it != impl_->upload_contexts.end() && it->second) {
+            auto& ctx = it->second;
+            lock.unlock();  // Don't hold upload_mutex while waiting
+
+            std::unique_lock ctx_lock(ctx->mutex);
+            auto status = to_transfer_status(ctx->state);
+
+            // Wait until terminal state or timeout
+            while (!is_terminal_status(status)) {
+                if (timeout == std::chrono::milliseconds::max()) {
+                    ctx->cv.wait(ctx_lock);
+                } else {
+                    auto remaining = deadline - std::chrono::steady_clock::now();
+                    if (remaining <= std::chrono::milliseconds::zero()) {
+                        return unexpected{error{error_code::transfer_timeout,
+                                               "Wait timed out"}};
+                    }
+                    ctx->cv.wait_for(ctx_lock, remaining);
+                }
+                status = to_transfer_status(ctx->state);
+            }
+
+            return ctx->get_result_info();
+        }
+    }
+
+    // Try download context
+    {
+        std::unique_lock lock(impl_->download_mutex);
+        auto it = impl_->download_contexts.find(handle_id);
+        if (it != impl_->download_contexts.end() && it->second) {
+            auto& ctx = it->second;
+            lock.unlock();  // Don't hold download_mutex while waiting
+
+            std::unique_lock ctx_lock(ctx->mutex);
+            auto status = to_transfer_status(ctx->state);
+
+            // Wait until terminal state or timeout
+            while (!is_terminal_status(status)) {
+                if (timeout == std::chrono::milliseconds::max()) {
+                    ctx->cv.wait(ctx_lock);
+                } else {
+                    auto remaining = deadline - std::chrono::steady_clock::now();
+                    if (remaining <= std::chrono::milliseconds::zero()) {
+                        return unexpected{error{error_code::transfer_timeout,
+                                               "Wait timed out"}};
+                    }
+                    ctx->cv.wait_for(ctx_lock, remaining);
+                }
+                status = to_transfer_status(ctx->state);
+            }
+
+            return ctx->get_result_info();
+        }
+    }
+
+    return unexpected{error{error_code::transfer_not_found,
+                           "Transfer not found: " + std::to_string(handle_id)}};
+}
+
+// ============================================================================
+// transfer_handle implementation
+// ============================================================================
+
+transfer_handle::transfer_handle() : id_(0), client_(nullptr) {}
+
+transfer_handle::transfer_handle(uint64_t handle_id, file_transfer_client* client)
+    : id_(handle_id), client_(client) {}
+
+auto transfer_handle::get_id() const noexcept -> uint64_t {
+    return id_;
+}
+
+auto transfer_handle::is_valid() const noexcept -> bool {
+    return id_ != 0 && client_ != nullptr;
+}
+
+auto transfer_handle::get_status() const -> transfer_status {
+    if (!is_valid()) {
+        return transfer_status::failed;
+    }
+    return client_->get_transfer_status(id_);
+}
+
+auto transfer_handle::get_progress() const -> transfer_progress_info {
+    if (!is_valid()) {
+        return transfer_progress_info{};
+    }
+    return client_->get_transfer_progress(id_);
+}
+
+auto transfer_handle::pause() -> result<void> {
+    if (!is_valid()) {
+        return unexpected{error{error_code::not_initialized,
+                               "Invalid transfer handle"}};
+    }
+    return client_->pause_transfer(id_);
+}
+
+auto transfer_handle::resume() -> result<void> {
+    if (!is_valid()) {
+        return unexpected{error{error_code::not_initialized,
+                               "Invalid transfer handle"}};
+    }
+    return client_->resume_transfer(id_);
+}
+
+auto transfer_handle::cancel() -> result<void> {
+    if (!is_valid()) {
+        return unexpected{error{error_code::not_initialized,
+                               "Invalid transfer handle"}};
+    }
+    return client_->cancel_transfer(id_);
+}
+
+auto transfer_handle::wait() -> result<transfer_result_info> {
+    if (!is_valid()) {
+        return unexpected{error{error_code::not_initialized,
+                               "Invalid transfer handle"}};
+    }
+    return client_->wait_for_transfer(id_);
+}
+
+auto transfer_handle::wait_for(std::chrono::milliseconds timeout)
+    -> result<transfer_result_info> {
+    if (!is_valid()) {
+        return unexpected{error{error_code::not_initialized,
+                               "Invalid transfer handle"}};
+    }
+    return client_->wait_for_transfer(id_, timeout);
 }
 
 }  // namespace kcenon::file_transfer
