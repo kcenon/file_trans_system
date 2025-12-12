@@ -28,6 +28,17 @@
 #include <cstdint>
 #include <string>
 
+// Core types
+#include "kcenon/file_transfer/core/types.h"
+
+// Server
+#include "kcenon/file_transfer/server/server_types.h"
+#include "kcenon/file_transfer/server/file_transfer_server.h"
+
+// Client
+#include "kcenon/file_transfer/client/client_types.h"
+#include "kcenon/file_transfer/client/file_transfer_client.h"
+
 namespace kcenon::file_transfer {
 
 /**
