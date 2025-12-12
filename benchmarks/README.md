@@ -25,6 +25,12 @@ cmake --build build --parallel
 # Run latency benchmarks
 ./build/bin/latency_benchmarks
 
+# Run memory benchmarks
+./build/bin/memory_benchmarks
+
+# Run scalability benchmarks
+./build/bin/scalability_benchmarks
+
 # Run with detailed output
 ./build/bin/throughput_benchmarks --benchmark_counters_tabular=true
 ```
@@ -116,6 +122,26 @@ cmake --build build --parallel
 | `BM_Download_TTFB` | Download time to first byte | File size: 64KB - 1MB |
 | `BM_Concurrent_Connections` | Multi-client connection | Clients: 5 - 50 |
 
+### Memory Benchmarks (`memory/`)
+
+| Benchmark | Description | Target |
+|-----------|-------------|--------|
+| `BM_Memory_Baseline` | Process baseline memory | - |
+| `BM_Memory_ServerBaseline` | Server memory usage | < 100 MB |
+| `BM_Memory_ClientBaseline` | Client memory usage | < 50 MB |
+| `BM_Memory_PerConnection` | Per-connection overhead | < 1 MB |
+| `BM_Memory_FileSize_Constant` | Memory vs file size | Constant |
+
+### Scalability Benchmarks (`scalability/`)
+
+| Benchmark | Description | Parameters |
+|-----------|-------------|------------|
+| `BM_Scalability_ConcurrentConnections` | Connection scaling | 10, 50, 100 connections |
+| `BM_Scalability_FileSize` | Performance vs file size | 1MB - 10GB |
+| `BM_Scalability_100Connections_Stability` | 100 connection stability | 100 clients |
+| `BM_Scalability_MemoryStability` | Long-running memory | 5, 10, 20 cycles |
+| `BM_Scalability_ConcurrentUploads` | Concurrent upload throughput | 2, 5, 10 clients |
+
 ## Performance Targets
 
 Based on SRS requirements:
@@ -127,8 +153,10 @@ Based on SRS requirements:
 | LZ4 Decompression | >= 1.5 GB/s | `BM_LZ4_Decompression` | Verified |
 | File List (10K files) | < 100ms | `BM_FileList_Response` | Pending |
 | Connection Setup | < 100ms | `BM_Connection_Setup` | Pending |
-| Server Memory | < 100 MB | (Future: memory benchmarks) | - |
-| Client Memory | < 50 MB | (Future: memory benchmarks) | - |
+| Server Memory | < 100 MB | `BM_Memory_ServerBaseline` | Verified |
+| Client Memory | < 50 MB | `BM_Memory_ClientBaseline` | Verified |
+| Per-connection Memory | < 1 MB | `BM_Memory_PerConnection` | Verified |
+| Concurrent Connections | >= 100 | `BM_Scalability_ConcurrentConnections` | Verified |
 
 ## Directory Structure
 
@@ -144,8 +172,12 @@ benchmarks/
 │   └── bench_chunk_operations.cpp        # Component benchmarks
 ├── compression/
 │   └── bench_lz4_compression.cpp  # Compression/decompression benchmarks
-└── latency/
-    └── bench_latency.cpp          # Connection and response latency
+├── latency/
+│   └── bench_latency.cpp          # Connection and response latency
+├── memory/
+│   └── bench_memory_usage.cpp     # Memory usage benchmarks
+└── scalability/
+    └── bench_scalability.cpp      # Scalability benchmarks
 ```
 
 ## Adding New Benchmarks
