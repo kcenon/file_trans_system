@@ -415,6 +415,9 @@ auto file_transfer_client::builder::build() -> result<file_transfer_client> {
 // file_transfer_client implementation
 file_transfer_client::file_transfer_client(client_config config)
     : impl_(std::make_unique<impl>(std::move(config))) {
+    // Initialize logger (safe to call multiple times)
+    get_logger().initialize();
+
 #ifdef BUILD_WITH_NETWORK_SYSTEM
     impl_->network_client = std::make_shared<network_system::core::messaging_client>(
         "file_transfer_client");
@@ -446,7 +449,7 @@ auto file_transfer_client::connect(const endpoint& server_addr) -> result<void> 
 
 #ifdef BUILD_WITH_NETWORK_SYSTEM
     auto result = impl_->network_client->start_client(server_addr.host, server_addr.port);
-    if (!result) {
+    if (result.is_err()) {
         impl_->set_state(connection_state::disconnected);
         FT_LOG_ERROR(log_category::client,
             "Failed to connect: " + result.error().message);
@@ -471,7 +474,7 @@ auto file_transfer_client::disconnect() -> result<void> {
 
 #ifdef BUILD_WITH_NETWORK_SYSTEM
     auto result = impl_->network_client->stop_client();
-    if (!result) {
+    if (result.is_err()) {
         FT_LOG_ERROR(log_category::client,
             "Failed to disconnect: " + result.error().message);
         return unexpected{error{error_code::internal_error,

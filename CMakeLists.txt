@@ -246,11 +246,33 @@ endif()
 if(BUILD_WITH_THREAD_SYSTEM AND THREAD_SYSTEM_INCLUDE_DIR)
     target_include_directories(FileTransSystem PUBLIC ${THREAD_SYSTEM_INCLUDE_DIR})
     target_compile_definitions(FileTransSystem PUBLIC BUILD_WITH_THREAD_SYSTEM)
+
+    # Link thread_system library
+    if(THREAD_SYSTEM_LIBRARY)
+        target_link_libraries(FileTransSystem PUBLIC ${THREAD_SYSTEM_LIBRARY})
+    endif()
 endif()
 
 if(BUILD_WITH_NETWORK_SYSTEM AND NETWORK_SYSTEM_INCLUDE_DIR)
     target_include_directories(FileTransSystem PUBLIC ${NETWORK_SYSTEM_INCLUDE_DIR})
     target_compile_definitions(FileTransSystem PUBLIC BUILD_WITH_NETWORK_SYSTEM)
+
+    # Link network_system library
+    if(NETWORK_SYSTEM_LIBRARY)
+        target_link_libraries(FileTransSystem PUBLIC ${NETWORK_SYSTEM_LIBRARY})
+    endif()
+
+    # ASIO is required for network_system headers (they include <asio.hpp>)
+    if(ASIO_TARGET AND TARGET ${ASIO_TARGET})
+        target_link_libraries(FileTransSystem PUBLIC ${ASIO_TARGET})
+        target_compile_definitions(FileTransSystem PUBLIC ASIO_STANDALONE ASIO_NO_DEPRECATED)
+    elseif(ASIO_INCLUDE_DIR)
+        # Use BUILD_INTERFACE to avoid exporting build-tree paths during installation
+        target_include_directories(FileTransSystem PUBLIC
+            $<BUILD_INTERFACE:${ASIO_INCLUDE_DIR}>
+        )
+        target_compile_definitions(FileTransSystem PUBLIC ASIO_STANDALONE ASIO_NO_DEPRECATED)
+    endif()
 endif()
 
 if(BUILD_WITH_CONTAINER_SYSTEM AND CONTAINER_SYSTEM_INCLUDE_DIR)
@@ -261,6 +283,11 @@ endif()
 if(BUILD_WITH_LOGGER_SYSTEM AND LOGGER_SYSTEM_INCLUDE_DIR)
     target_include_directories(FileTransSystem PUBLIC ${LOGGER_SYSTEM_INCLUDE_DIR})
     target_compile_definitions(FileTransSystem PUBLIC BUILD_WITH_LOGGER_SYSTEM)
+
+    # Link logger_system library
+    if(LOGGER_SYSTEM_LIBRARY)
+        target_link_libraries(FileTransSystem PUBLIC ${LOGGER_SYSTEM_LIBRARY})
+    endif()
 endif()
 
 # Compiler warnings
