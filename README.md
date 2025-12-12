@@ -366,6 +366,29 @@ ctest --output-on-failure
 | **Integration Tests - Advanced** | Error handling, large files, compression, stress tests | `test_error_advanced_scenarios.cpp` |
 | **Integration Tests - Concurrency** | Multi-client connections, 100-connection load test, concurrent transfers | `test_concurrency.cpp` |
 
+### Sanitizer Testing
+
+Build with sanitizers to detect memory issues and undefined behavior:
+
+```bash
+# AddressSanitizer (memory errors)
+cmake -B build -DFILE_TRANS_ENABLE_ASAN=ON
+cmake --build build
+ASAN_OPTIONS="abort_on_error=1" ctest --test-dir build
+
+# ThreadSanitizer (data races)
+cmake -B build -DFILE_TRANS_ENABLE_TSAN=ON
+cmake --build build
+TSAN_OPTIONS="abort_on_error=1" ctest --test-dir build
+
+# UndefinedBehaviorSanitizer
+cmake -B build -DFILE_TRANS_ENABLE_UBSAN=ON
+cmake --build build
+UBSAN_OPTIONS="print_stacktrace=1:abort_on_error=1" ctest --test-dir build
+```
+
+> **Note**: ASAN and TSAN cannot be enabled simultaneously.
+
 ### CMake Integration
 
 ```cmake

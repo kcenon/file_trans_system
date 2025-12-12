@@ -1,0 +1,122 @@
+name: Sanitizers
+
+on:
+  push:
+    branches: [ main, feature/* ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  asan:
+    name: AddressSanitizer
+    runs-on: ubuntu-24.04
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake ninja-build clang liblz4-dev
+
+    - name: Configure CMake with ASAN
+      run: |
+        cmake -B build -G Ninja \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_CXX_COMPILER=clang++ \
+          -DCMAKE_C_COMPILER=clang \
+          -DBUILD_WITH_COMMON_SYSTEM=OFF \
+          -DBUILD_WITH_THREAD_SYSTEM=OFF \
+          -DBUILD_WITH_NETWORK_SYSTEM=OFF \
+          -DBUILD_WITH_CONTAINER_SYSTEM=OFF \
+          -DFILE_TRANS_BUILD_TESTS=ON \
+          -DFILE_TRANS_BUILD_EXAMPLES=OFF \
+          -DFILE_TRANS_BUILD_BENCHMARKS=OFF \
+          -DFILE_TRANS_ENABLE_ASAN=ON
+
+    - name: Build
+      run: cmake --build build --config Debug
+
+    - name: Run tests with ASAN
+      env:
+        ASAN_OPTIONS: "detect_leaks=1:abort_on_error=1:halt_on_error=1"
+      run: ctest --test-dir build --output-on-failure --timeout 600
+
+  tsan:
+    name: ThreadSanitizer
+    runs-on: ubuntu-24.04
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake ninja-build clang liblz4-dev
+
+    - name: Configure CMake with TSAN
+      run: |
+        cmake -B build -G Ninja \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_CXX_COMPILER=clang++ \
+          -DCMAKE_C_COMPILER=clang \
+          -DBUILD_WITH_COMMON_SYSTEM=OFF \
+          -DBUILD_WITH_THREAD_SYSTEM=OFF \
+          -DBUILD_WITH_NETWORK_SYSTEM=OFF \
+          -DBUILD_WITH_CONTAINER_SYSTEM=OFF \
+          -DFILE_TRANS_BUILD_TESTS=ON \
+          -DFILE_TRANS_BUILD_EXAMPLES=OFF \
+          -DFILE_TRANS_BUILD_BENCHMARKS=OFF \
+          -DFILE_TRANS_ENABLE_TSAN=ON
+
+    - name: Build
+      run: cmake --build build --config Debug
+
+    - name: Run tests with TSAN
+      env:
+        TSAN_OPTIONS: "abort_on_error=1:halt_on_error=1"
+      run: ctest --test-dir build --output-on-failure --timeout 600
+
+  ubsan:
+    name: UndefinedBehaviorSanitizer
+    runs-on: ubuntu-24.04
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake ninja-build clang liblz4-dev
+
+    - name: Configure CMake with UBSAN
+      run: |
+        cmake -B build -G Ninja \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_CXX_COMPILER=clang++ \
+          -DCMAKE_C_COMPILER=clang \
+          -DBUILD_WITH_COMMON_SYSTEM=OFF \
+          -DBUILD_WITH_THREAD_SYSTEM=OFF \
+          -DBUILD_WITH_NETWORK_SYSTEM=OFF \
+          -DBUILD_WITH_CONTAINER_SYSTEM=OFF \
+          -DFILE_TRANS_BUILD_TESTS=ON \
+          -DFILE_TRANS_BUILD_EXAMPLES=OFF \
+          -DFILE_TRANS_BUILD_BENCHMARKS=OFF \
+          -DFILE_TRANS_ENABLE_UBSAN=ON
+
+    - name: Build
+      run: cmake --build build --config Debug
+
+    - name: Run tests with UBSAN
+      env:
+        UBSAN_OPTIONS: "print_stacktrace=1:abort_on_error=1:halt_on_error=1"
+      run: ctest --test-dir build --output-on-failure --timeout 600

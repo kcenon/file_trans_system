@@ -59,7 +59,9 @@ protected:
 
     auto string_to_bytes(const std::string& str) -> std::vector<std::byte> {
         std::vector<std::byte> data(str.size());
-        std::memcpy(data.data(), str.data(), str.size());
+        if (!str.empty()) {
+            std::memcpy(data.data(), str.data(), str.size());
+        }
         return data;
     }
 

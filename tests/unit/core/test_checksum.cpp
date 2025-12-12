@@ -41,7 +41,9 @@ protected:
     auto create_test_file(const std::string& name, const std::string& content)
         -> std::filesystem::path {
         std::vector<std::byte> bytes(content.size());
-        std::memcpy(bytes.data(), content.data(), content.size());
+        if (!content.empty()) {
+            std::memcpy(bytes.data(), content.data(), content.size());
+        }
         return create_test_file(name, bytes);
     }
 
