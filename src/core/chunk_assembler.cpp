@@ -107,7 +107,7 @@ auto chunk_assembler::start_session(
 }
 
 auto chunk_assembler::process_chunk(const chunk& c) -> result<void> {
-    auto* ctx = get_context(c.id);
+    auto* ctx = get_context(c.header.id);
     if (!ctx) {
         return unexpected(error{error_code::not_initialized, "session not found"});
     }
@@ -115,14 +115,14 @@ auto chunk_assembler::process_chunk(const chunk& c) -> result<void> {
     std::lock_guard lock(ctx->mutex);
 
     // Validate chunk index
-    if (c.index >= ctx->total_chunks) {
+    if (c.header.chunk_index >= ctx->total_chunks) {
         return unexpected(
             error{error_code::invalid_chunk_index,
-                  "chunk index " + std::to_string(c.index) + " out of range"});
+                  "chunk index " + std::to_string(c.header.chunk_index) + " out of range"});
     }
 
     // Check if already received
-    if (ctx->received_chunks[c.index]) {
+    if (ctx->received_chunks[c.header.chunk_index]) {
         // Duplicate chunk - ignore silently
         return {};
     }
@@ -133,7 +133,7 @@ auto chunk_assembler::process_chunk(const chunk& c) -> result<void> {
     }
 
     // Write chunk to file at correct offset
-    ctx->file->seekp(static_cast<std::streamoff>(c.offset));
+    ctx->file->seekp(static_cast<std::streamoff>(c.header.chunk_offset));
     if (!ctx->file->good()) {
         return unexpected(error{error_code::file_write_error, "seek failed"});
     }
@@ -145,7 +145,7 @@ auto chunk_assembler::process_chunk(const chunk& c) -> result<void> {
     }
 
     // Update tracking
-    ctx->received_chunks[c.index] = true;
+    ctx->received_chunks[c.header.chunk_index] = true;
     ctx->received_count++;
     ctx->bytes_written += c.data.size();
 
@@ -284,7 +284,7 @@ auto chunk_assembler::has_session(const transfer_id& id) const -> bool {
 }
 
 auto chunk_assembler::verify_chunk_crc32(const chunk& c) const -> bool {
-    return checksum::verify_crc32(std::span<const std::byte>(c.data), c.checksum);
+    return checksum::verify_crc32(std::span<const std::byte>(c.data), c.header.checksum);
 }
 
 auto chunk_assembler::get_context(const transfer_id& id) -> assembly_context* {

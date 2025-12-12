@@ -1,6 +1,10 @@
 /**
  * @file types.h
  * @brief Core type definitions for file_trans_system
+ * @version 0.2.0
+ *
+ * This file defines core types used throughout the file transfer system.
+ * It includes and re-exports types from specialized headers for convenience.
  */
 
 #ifndef KCENON_FILE_TRANSFER_CORE_TYPES_H
@@ -16,10 +20,16 @@
 #include <variant>
 #include <vector>
 
+// Include new type definitions
+#include "chunk_types.h"
+
 namespace kcenon::file_transfer {
 
 /**
- * @brief Error codes for file transfer operations
+ * @brief Error codes for file transfer operations (legacy range)
+ *
+ * This enum is maintained for backward compatibility.
+ * For new code, prefer using transfer_error_code from error_codes.h
  */
 enum class error_code {
     success = 0,
@@ -208,57 +218,7 @@ private:
     struct error error_;
 };
 
-/**
- * @brief Unique identifier for a transfer session
- */
-struct transfer_id {
-    uint64_t value;
-
-    transfer_id() : value(0) {}
-    explicit transfer_id(uint64_t v) : value(v) {}
-
-    [[nodiscard]] auto operator==(const transfer_id& other) const -> bool = default;
-    [[nodiscard]] auto operator<(const transfer_id& other) const -> bool {
-        return value < other.value;
-    }
-};
-
-/**
- * @brief Chunk flags
- */
-enum class chunk_flags : uint8_t {
-    none = 0,
-    compressed = 1 << 0,
-    last_chunk = 1 << 1,
-    encrypted = 1 << 2,
-};
-
-[[nodiscard]] constexpr auto operator|(chunk_flags a, chunk_flags b) -> chunk_flags {
-    return static_cast<chunk_flags>(static_cast<uint8_t>(a) | static_cast<uint8_t>(b));
-}
-
-[[nodiscard]] constexpr auto operator&(chunk_flags a, chunk_flags b) -> chunk_flags {
-    return static_cast<chunk_flags>(static_cast<uint8_t>(a) & static_cast<uint8_t>(b));
-}
-
-[[nodiscard]] constexpr auto has_flag(chunk_flags flags, chunk_flags flag) -> bool {
-    return (static_cast<uint8_t>(flags) & static_cast<uint8_t>(flag)) != 0;
-}
-
-/**
- * @brief Chunk data structure
- */
-struct chunk {
-    transfer_id id;
-    uint64_t index;
-    uint64_t total_chunks;
-    uint64_t offset;
-    uint32_t checksum;
-    chunk_flags flags;
-    std::vector<std::byte> data;
-
-    chunk() : index(0), total_chunks(0), offset(0), checksum(0), flags(chunk_flags::none) {}
-};
+// Note: transfer_id, chunk_flags, and chunk are now defined in chunk_types.h
 
 /**
  * @brief File metadata
@@ -291,12 +251,6 @@ struct assembly_progress {
 
 }  // namespace kcenon::file_transfer
 
-// Hash support for transfer_id
-template <>
-struct std::hash<kcenon::file_transfer::transfer_id> {
-    auto operator()(const kcenon::file_transfer::transfer_id& id) const noexcept -> std::size_t {
-        return std::hash<uint64_t>{}(id.value);
-    }
-};
+// Note: Hash support for transfer_id is now defined in chunk_types.h
 
 #endif  // KCENON_FILE_TRANSFER_CORE_TYPES_H
