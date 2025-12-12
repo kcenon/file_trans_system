@@ -230,7 +230,7 @@ auto checksum::sha256_file(const std::filesystem::path& path) -> result<std::str
                 }
                 sha256_transform(state, block.data());
                 block_pos = 0;
-                std::fill(block.begin(), block.end(), 0);
+                block.fill(0);
             }
 
             while (block_pos < 56) {
