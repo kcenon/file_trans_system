@@ -16,6 +16,20 @@
 
 namespace kcenon::file_transfer::test {
 
+#ifndef FILE_TRANS_ENABLE_LZ4
+
+// Skip all compression tests when LZ4 is not enabled
+class CompressionEngineTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        GTEST_SKIP() << "LZ4 compression is not enabled";
+    }
+
+    std::unique_ptr<compression_engine> engine_;
+};
+
+#else
+
 class CompressionEngineTest : public ::testing::Test {
 protected:
     void SetUp() override { engine_ = std::make_unique<compression_engine>(); }
@@ -411,5 +425,7 @@ TEST_F(CompressionEngineTest, BoundaryAtSampleSize) {
 
     EXPECT_EQ(data, decompress_result.value());
 }
+
+#endif  // FILE_TRANS_ENABLE_LZ4
 
 }  // namespace kcenon::file_transfer::test
