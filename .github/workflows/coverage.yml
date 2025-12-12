@@ -44,13 +44,13 @@ jobs:
 
     - name: Collect coverage data
       run: |
-        lcov --capture --directory build --output-file coverage.info
-        lcov --remove coverage.info '/usr/*' '*/tests/*' '*/_deps/*' --output-file coverage_filtered.info
-        lcov --list coverage_filtered.info
+        lcov --capture --directory build --output-file coverage.info --ignore-errors mismatch
+        lcov --remove coverage.info '/usr/*' '*/tests/*' '*/_deps/*' --output-file coverage_filtered.info --ignore-errors mismatch
+        lcov --list coverage_filtered.info --ignore-errors mismatch
 
     - name: Generate HTML report
       run: |
-        genhtml coverage_filtered.info --output-directory coverage_report
+        genhtml coverage_filtered.info --output-directory coverage_report --ignore-errors mismatch
 
     - name: Upload coverage report
       uses: actions/upload-artifact@v4
