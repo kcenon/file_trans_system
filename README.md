@@ -389,6 +389,33 @@ UBSAN_OPTIONS="print_stacktrace=1:abort_on_error=1" ctest --test-dir build
 
 > **Note**: ASAN and TSAN cannot be enabled simultaneously.
 
+### Benchmarks
+
+Build and run performance benchmarks:
+
+```bash
+# Build with benchmarks enabled
+cmake -B build -DFILE_TRANS_BUILD_BENCHMARKS=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel
+
+# Run throughput benchmarks
+./build/bin/throughput_benchmarks
+
+# Run with JSON output
+./build/bin/throughput_benchmarks --benchmark_format=json --benchmark_out=results.json
+
+# Run specific benchmarks
+./build/bin/throughput_benchmarks --benchmark_filter="BM_SingleFile*"
+```
+
+#### Benchmark Categories
+
+| Category | Description | Target |
+|----------|-------------|--------|
+| **Throughput** | File split/assembly throughput | ≥ 500 MB/s |
+| **Chunk Operations** | Chunk splitter and assembler performance | - |
+| **Checksum** | CRC32 and SHA-256 performance | - |
+
 ### CMake Integration
 
 ```cmake
