@@ -1,0 +1,197 @@
+/**
+ * @file file_transfer_server.h
+ * @brief File transfer server implementation
+ */
+
+#ifndef KCENON_FILE_TRANSFER_SERVER_FILE_TRANSFER_SERVER_H
+#define KCENON_FILE_TRANSFER_SERVER_FILE_TRANSFER_SERVER_H
+
+#include <atomic>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <shared_mutex>
+#include <unordered_map>
+
+#include "kcenon/file_transfer/core/types.h"
+#include "kcenon/file_transfer/server/server_types.h"
+
+namespace kcenon::file_transfer {
+
+/**
+ * @brief File transfer server
+ *
+ * Manages file storage, accepts client connections, and handles
+ * upload/download/list requests.
+ *
+ * @code
+ * auto server_result = file_transfer_server::builder()
+ *     .with_storage_directory("/data/files")
+ *     .with_max_connections(100)
+ *     .build();
+ *
+ * if (server_result.has_value()) {
+ *     auto& server = server_result.value();
+ *     server.start(endpoint{8080});
+ * }
+ * @endcode
+ */
+class file_transfer_server {
+public:
+    /**
+     * @brief Builder for file_transfer_server
+     */
+    class builder {
+    public:
+        builder();
+
+        /**
+         * @brief Set storage directory for uploaded files
+         * @param dir Path to storage directory
+         * @return Reference to builder for chaining
+         */
+        auto with_storage_directory(const std::filesystem::path& dir) -> builder&;
+
+        /**
+         * @brief Set maximum number of concurrent connections
+         * @param max_count Maximum connections (default: 100)
+         * @return Reference to builder for chaining
+         */
+        auto with_max_connections(std::size_t max_count) -> builder&;
+
+        /**
+         * @brief Set maximum file size limit
+         * @param max_bytes Maximum file size in bytes (default: 10GB)
+         * @return Reference to builder for chaining
+         */
+        auto with_max_file_size(uint64_t max_bytes) -> builder&;
+
+        /**
+         * @brief Set storage quota
+         * @param max_bytes Maximum total storage in bytes (default: 100GB)
+         * @return Reference to builder for chaining
+         */
+        auto with_storage_quota(uint64_t max_bytes) -> builder&;
+
+        /**
+         * @brief Set chunk size for file transfers
+         * @param size Chunk size in bytes (default: 256KB)
+         * @return Reference to builder for chaining
+         */
+        auto with_chunk_size(std::size_t size) -> builder&;
+
+        /**
+         * @brief Build the server instance
+         * @return Result containing the server or an error
+         */
+        [[nodiscard]] auto build() -> result<file_transfer_server>;
+
+    private:
+        server_config config_;
+    };
+
+    // Non-copyable, movable
+    file_transfer_server(const file_transfer_server&) = delete;
+    auto operator=(const file_transfer_server&) -> file_transfer_server& = delete;
+    file_transfer_server(file_transfer_server&&) noexcept;
+    auto operator=(file_transfer_server&&) noexcept -> file_transfer_server&;
+    ~file_transfer_server();
+
+    /**
+     * @brief Start the server on the specified endpoint
+     * @param listen_addr Endpoint to listen on
+     * @return Result indicating success or failure
+     */
+    [[nodiscard]] auto start(const endpoint& listen_addr) -> result<void>;
+
+    /**
+     * @brief Stop the server
+     * @return Result indicating success or failure
+     */
+    [[nodiscard]] auto stop() -> result<void>;
+
+    /**
+     * @brief Check if server is running
+     * @return true if running, false otherwise
+     */
+    [[nodiscard]] auto is_running() const -> bool;
+
+    /**
+     * @brief Get current server state
+     * @return Current state
+     */
+    [[nodiscard]] auto state() const -> server_state;
+
+    /**
+     * @brief Get the port the server is listening on
+     * @return Port number, or 0 if not running
+     */
+    [[nodiscard]] auto port() const -> uint16_t;
+
+    // Request callbacks
+    /**
+     * @brief Set callback for upload request validation
+     * @param callback Function that returns true to accept, false to reject
+     */
+    void on_upload_request(std::function<bool(const upload_request&)> callback);
+
+    /**
+     * @brief Set callback for download request validation
+     * @param callback Function that returns true to accept, false to reject
+     */
+    void on_download_request(std::function<bool(const download_request&)> callback);
+
+    // Event callbacks
+    /**
+     * @brief Set callback for client connection events
+     * @param callback Function called when client connects
+     */
+    void on_client_connected(std::function<void(const client_info&)> callback);
+
+    /**
+     * @brief Set callback for client disconnection events
+     * @param callback Function called when client disconnects
+     */
+    void on_client_disconnected(std::function<void(const client_info&)> callback);
+
+    /**
+     * @brief Set callback for transfer completion events
+     * @param callback Function called when transfer completes
+     */
+    void on_transfer_complete(std::function<void(const transfer_result&)> callback);
+
+    /**
+     * @brief Set callback for transfer progress updates
+     * @param callback Function called with progress updates
+     */
+    void on_progress(std::function<void(const transfer_progress&)> callback);
+
+    // Statistics
+    /**
+     * @brief Get server statistics
+     * @return Current statistics
+     */
+    [[nodiscard]] auto get_statistics() const -> server_statistics;
+
+    /**
+     * @brief Get storage statistics
+     * @return Current storage stats
+     */
+    [[nodiscard]] auto get_storage_stats() const -> storage_stats;
+
+    /**
+     * @brief Get server configuration
+     * @return Server configuration
+     */
+    [[nodiscard]] auto config() const -> const server_config&;
+
+private:
+    explicit file_transfer_server(server_config config);
+
+    struct impl;
+    std::unique_ptr<impl> impl_;
+};
+
+}  // namespace kcenon::file_transfer
+
+#endif  // KCENON_FILE_TRANSFER_SERVER_FILE_TRANSFER_SERVER_H
