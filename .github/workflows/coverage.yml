@@ -1,0 +1,69 @@
+name: Code Coverage
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  coverage:
+    name: Generate Coverage Report
+    runs-on: ubuntu-24.04
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake ninja-build g++ liblz4-dev lcov
+
+    - name: Configure CMake with coverage
+      run: |
+        cmake -B build -G Ninja \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_CXX_COMPILER=g++ \
+          -DBUILD_WITH_COMMON_SYSTEM=OFF \
+          -DBUILD_WITH_THREAD_SYSTEM=OFF \
+          -DBUILD_WITH_NETWORK_SYSTEM=OFF \
+          -DBUILD_WITH_CONTAINER_SYSTEM=OFF \
+          -DFILE_TRANS_BUILD_TESTS=ON \
+          -DFILE_TRANS_BUILD_EXAMPLES=OFF \
+          -DFILE_TRANS_BUILD_BENCHMARKS=OFF \
+          -DFILE_TRANS_ENABLE_COVERAGE=ON
+
+    - name: Build
+      run: cmake --build build --config Debug
+
+    - name: Run tests
+      run: ctest --test-dir build --output-on-failure --timeout 300
+
+    - name: Collect coverage data
+      run: |
+        lcov --capture --directory build --output-file coverage.info --ignore-errors mismatch
+        lcov --remove coverage.info '/usr/*' '*/tests/*' '*/_deps/*' --output-file coverage_filtered.info --ignore-errors mismatch
+        lcov --list coverage_filtered.info --ignore-errors mismatch
+
+    - name: Generate HTML report
+      run: |
+        genhtml coverage_filtered.info --output-directory coverage_report --ignore-errors mismatch
+
+    - name: Upload coverage report
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-report
+        path: coverage_report/
+        retention-days: 30
+
+    - name: Upload to Codecov
+      uses: codecov/codecov-action@v4
+      with:
+        files: coverage_filtered.info
+        fail_ci_if_error: false
+        verbose: true
+      env:
+        CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
