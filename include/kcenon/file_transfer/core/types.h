@@ -45,6 +45,17 @@ enum class error_code {
     invalid_chunk_size = -140,
     invalid_configuration = -141,
 
+    // Network errors (-160 to -179)
+    connection_failed = -160,
+    connection_timeout = -161,
+    connection_refused = -162,
+    connection_lost = -163,
+    server_not_running = -164,
+
+    // Quota errors (-180 to -199)
+    quota_exceeded = -180,
+    storage_full = -181,
+
     // Internal errors (-200 to -219)
     internal_error = -200,
     not_initialized = -201,
@@ -88,6 +99,20 @@ enum class error_code {
             return "invalid chunk size";
         case error_code::invalid_configuration:
             return "invalid configuration";
+        case error_code::connection_failed:
+            return "connection failed";
+        case error_code::connection_timeout:
+            return "connection timeout";
+        case error_code::connection_refused:
+            return "connection refused";
+        case error_code::connection_lost:
+            return "connection lost";
+        case error_code::server_not_running:
+            return "server not running";
+        case error_code::quota_exceeded:
+            return "quota exceeded";
+        case error_code::storage_full:
+            return "storage full";
         case error_code::internal_error:
             return "internal error";
         case error_code::not_initialized:
