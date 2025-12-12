@@ -8,6 +8,7 @@
 #include <kcenon/file_transfer/core/checksum.h>
 #include <kcenon/file_transfer/core/chunk_assembler.h>
 #include <kcenon/file_transfer/core/protocol_types.h>
+#include <kcenon/file_transfer/core/logging.h>
 
 #include <chrono>
 #include <condition_variable>
@@ -432,9 +433,13 @@ file_transfer_client::~file_transfer_client() {
 auto file_transfer_client::connect(const endpoint& server_addr) -> result<void> {
     if (impl_->current_state == connection_state::connected ||
         impl_->current_state == connection_state::connecting) {
+        FT_LOG_WARN(log_category::client, "Client is already connected or connecting");
         return unexpected{error{error_code::already_initialized,
                                "Client is already connected or connecting"}};
     }
+
+    FT_LOG_INFO(log_category::client,
+        "Connecting to server " + server_addr.host + ":" + std::to_string(server_addr.port));
 
     impl_->set_state(connection_state::connecting);
     impl_->server_endpoint = server_addr;
@@ -443,30 +448,39 @@ auto file_transfer_client::connect(const endpoint& server_addr) -> result<void> 
     auto result = impl_->network_client->start_client(server_addr.host, server_addr.port);
     if (!result) {
         impl_->set_state(connection_state::disconnected);
+        FT_LOG_ERROR(log_category::client,
+            "Failed to connect: " + result.error().message);
         return unexpected{error{error_code::internal_error,
                                "Failed to connect: " + result.error().message}};
     }
 #endif
 
     impl_->set_state(connection_state::connected);
+    FT_LOG_INFO(log_category::client, "Connected to server successfully");
     return {};
 }
 
 auto file_transfer_client::disconnect() -> result<void> {
     if (impl_->current_state != connection_state::connected) {
+        FT_LOG_WARN(log_category::client, "Disconnect called but client is not connected");
         return unexpected{error{error_code::not_initialized,
                                "Client is not connected"}};
     }
 
+    FT_LOG_INFO(log_category::client, "Disconnecting from server");
+
 #ifdef BUILD_WITH_NETWORK_SYSTEM
     auto result = impl_->network_client->stop_client();
     if (!result) {
+        FT_LOG_ERROR(log_category::client,
+            "Failed to disconnect: " + result.error().message);
         return unexpected{error{error_code::internal_error,
                                "Failed to disconnect: " + result.error().message}};
     }
 #endif
 
     impl_->set_state(connection_state::disconnected);
+    FT_LOG_INFO(log_category::client, "Disconnected from server");
     return {};
 }
 
@@ -484,11 +498,14 @@ auto file_transfer_client::upload_file(
     const upload_options& options) -> result<transfer_handle> {
 
     if (!is_connected()) {
+        FT_LOG_ERROR(log_category::client, "Upload failed: client is not connected");
         return unexpected{error{error_code::not_initialized,
                                "Client is not connected"}};
     }
 
     if (!std::filesystem::exists(local_path)) {
+        FT_LOG_ERROR(log_category::client,
+            "Upload failed: local file not found: " + local_path.string());
         return unexpected{error{error_code::file_not_found,
                                "Local file not found: " + local_path.string()}};
     }
@@ -497,6 +514,8 @@ auto file_transfer_client::upload_file(
     std::error_code ec;
     auto file_size = std::filesystem::file_size(local_path, ec);
     if (ec) {
+        FT_LOG_ERROR(log_category::client,
+            "Upload failed: cannot get file size: " + ec.message());
         return unexpected{error{error_code::file_read_error,
                                "Cannot get file size: " + ec.message()}};
     }
@@ -516,6 +535,14 @@ auto file_transfer_client::upload_file(
     ctx->chunk_size = static_cast<uint32_t>(impl_->config.chunk_size);
     ctx->total_chunks = (file_size + ctx->chunk_size - 1) / ctx->chunk_size;
     ctx->start_time = std::chrono::steady_clock::now();
+
+    // Log upload start with context
+    transfer_log_context log_ctx;
+    log_ctx.transfer_id = ctx->tid.to_string();
+    log_ctx.filename = remote_name;
+    log_ctx.file_size = file_size;
+    log_ctx.total_chunks = static_cast<uint32_t>(ctx->total_chunks);
+    FT_LOG_INFO_CTX(log_category::client, "Starting file upload", log_ctx);
 
     // Store upload context
     {
@@ -550,24 +577,29 @@ auto file_transfer_client::download_file(
 
     // Validate connection state
     if (!is_connected()) {
+        FT_LOG_ERROR(log_category::client, "Download failed: client is not connected");
         return unexpected{error{error_code::not_initialized,
                                "Client is not connected"}};
     }
 
     // Validate remote filename
     if (remote_name.empty()) {
+        FT_LOG_ERROR(log_category::client, "Download failed: remote filename is empty");
         return unexpected{error{error_code::invalid_file_path,
                                "Remote filename is empty"}};
     }
 
     // Validate local path
     if (local_path.empty()) {
+        FT_LOG_ERROR(log_category::client, "Download failed: local path is empty");
         return unexpected{error{error_code::invalid_file_path,
                                "Local path is empty"}};
     }
 
     // Check if file already exists (unless overwrite is enabled)
     if (!options.overwrite && std::filesystem::exists(local_path)) {
+        FT_LOG_ERROR(log_category::client,
+            "Download failed: file already exists: " + local_path.string());
         return unexpected{error{error_code::file_already_exists,
                                "File already exists: " + local_path.string()}};
     }
@@ -578,6 +610,8 @@ auto file_transfer_client::download_file(
         std::error_code ec;
         std::filesystem::create_directories(parent_path, ec);
         if (ec) {
+            FT_LOG_ERROR(log_category::client,
+                "Download failed: cannot create directory: " + parent_path.string());
             return unexpected{error{error_code::file_access_denied,
                                    "Cannot create directory: " + parent_path.string()}};
         }
@@ -599,6 +633,12 @@ auto file_transfer_client::download_file(
     // Create temp file path
     ctx->temp_path = local_path;
     ctx->temp_path += ".tmp";
+
+    // Log download start with context
+    transfer_log_context log_ctx;
+    log_ctx.transfer_id = ctx->tid.to_string();
+    log_ctx.filename = remote_name;
+    FT_LOG_INFO_CTX(log_category::client, "Starting file download", log_ctx);
 
     // Store download context
     {

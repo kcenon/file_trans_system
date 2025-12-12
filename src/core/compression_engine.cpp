@@ -4,6 +4,7 @@
  */
 
 #include <kcenon/file_transfer/core/compression_engine.h>
+#include <kcenon/file_transfer/core/logging.h>
 
 #include <algorithm>
 #include <array>

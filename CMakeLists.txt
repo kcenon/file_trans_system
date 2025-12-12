@@ -55,6 +55,7 @@ option(BUILD_WITH_COMMON_SYSTEM "Build with common_system integration (REQUIRED)
 option(BUILD_WITH_THREAD_SYSTEM "Build with thread_system integration (REQUIRED)" ON)
 option(BUILD_WITH_NETWORK_SYSTEM "Build with network_system integration (REQUIRED)" ON)
 option(BUILD_WITH_CONTAINER_SYSTEM "Build with container_system integration (REQUIRED)" ON)
+option(BUILD_WITH_LOGGER_SYSTEM "Build with logger_system integration (structured logging)" ON)
 
 ##################################################
 # Dependency Validation
@@ -257,6 +258,11 @@ if(BUILD_WITH_CONTAINER_SYSTEM AND CONTAINER_SYSTEM_INCLUDE_DIR)
     target_compile_definitions(FileTransSystem PUBLIC BUILD_WITH_CONTAINER_SYSTEM)
 endif()
 
+if(BUILD_WITH_LOGGER_SYSTEM AND LOGGER_SYSTEM_INCLUDE_DIR)
+    target_include_directories(FileTransSystem PUBLIC ${LOGGER_SYSTEM_INCLUDE_DIR})
+    target_compile_definitions(FileTransSystem PUBLIC BUILD_WITH_LOGGER_SYSTEM)
+endif()
+
 # Compiler warnings
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(FileTransSystem PRIVATE
@@ -329,5 +335,6 @@ message(STATUS "  common_system: ${BUILD_WITH_COMMON_SYSTEM}")
 message(STATUS "  thread_system: ${BUILD_WITH_THREAD_SYSTEM}")
 message(STATUS "  network_system: ${BUILD_WITH_NETWORK_SYSTEM}")
 message(STATUS "  container_system: ${BUILD_WITH_CONTAINER_SYSTEM}")
+message(STATUS "  logger_system: ${BUILD_WITH_LOGGER_SYSTEM}")
 message(STATUS "========================================")
 message(STATUS "")

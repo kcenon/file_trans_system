@@ -4,6 +4,7 @@
  */
 
 #include <kcenon/file_transfer/core/resume_handler.h>
+#include <kcenon/file_transfer/core/logging.h>
 
 #include <algorithm>
 #include <cstring>
