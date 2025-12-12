@@ -152,7 +152,7 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
-        std::cout << "Upload initiated with handle: " << upload_result.value().id << std::endl;
+        std::cout << "Upload initiated with handle: " << upload_result.value().get_id() << std::endl;
 
         // Disconnect
         auto disconnect_result = client.disconnect();
@@ -201,7 +201,7 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
-        std::cout << "Download initiated with handle: " << download_result.value().id << std::endl;
+        std::cout << "Download initiated with handle: " << download_result.value().get_id() << std::endl;
 
         // Disconnect
         auto disconnect_result = client.disconnect();
