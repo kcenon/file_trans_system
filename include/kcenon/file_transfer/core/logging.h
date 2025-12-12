@@ -151,8 +151,17 @@ public:
 
     /**
      * @brief Initialize the logger
+     *
+     * Safe to call multiple times - subsequent calls are no-ops.
+     * Automatically called when creating server or client instances.
      */
     void initialize() {
+        // Prevent multiple initializations
+        bool expected = false;
+        if (!initialized_.compare_exchange_strong(expected, true)) {
+            return;  // Already initialized
+        }
+
 #ifdef FILE_TRANSFER_USE_LOGGER_SYSTEM
         auto result = kcenon::logger::logger_builder()
             .with_async(true)
@@ -164,7 +173,6 @@ public:
             logger_ = std::move(result.value());
         }
 #endif
-        initialized_ = true;
     }
 
     /**

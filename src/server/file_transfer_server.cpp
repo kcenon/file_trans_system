@@ -116,6 +116,9 @@ auto file_transfer_server::builder::build() -> result<file_transfer_server> {
 // file_transfer_server implementation
 file_transfer_server::file_transfer_server(server_config config)
     : impl_(std::make_unique<impl>(std::move(config))) {
+    // Initialize logger (safe to call multiple times)
+    get_logger().initialize();
+
 #ifdef BUILD_WITH_NETWORK_SYSTEM
     impl_->network_server = std::make_shared<network_system::core::messaging_server>(
         "file_transfer_server");
@@ -146,7 +149,7 @@ auto file_transfer_server::start(const endpoint& listen_addr) -> result<void> {
 
 #ifdef BUILD_WITH_NETWORK_SYSTEM
     auto result = impl_->network_server->start_server(listen_addr.port);
-    if (!result) {
+    if (result.is_err()) {
         impl_->current_state = server_state::stopped;
         FT_LOG_ERROR(log_category::server,
             "Failed to start network server: " + result.error().message);
@@ -173,7 +176,7 @@ auto file_transfer_server::stop() -> result<void> {
 
 #ifdef BUILD_WITH_NETWORK_SYSTEM
     auto result = impl_->network_server->stop_server();
-    if (!result) {
+    if (result.is_err()) {
         impl_->current_state = server_state::running;
         FT_LOG_ERROR(log_category::server,
             "Failed to stop network server: " + result.error().message);
