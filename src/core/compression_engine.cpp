@@ -107,6 +107,7 @@ public:
 
     auto compress(std::span<const std::byte> input) -> result<std::vector<std::byte>> {
 #ifndef FILE_TRANS_ENABLE_LZ4
+        (void)input;
         return unexpected(error(error_code::internal_error, "LZ4 compression not enabled"));
 #else
         if (input.empty()) {
@@ -156,6 +157,8 @@ public:
     auto decompress(std::span<const std::byte> input, std::size_t original_size)
         -> result<std::vector<std::byte>> {
 #ifndef FILE_TRANS_ENABLE_LZ4
+        (void)input;
+        (void)original_size;
         return unexpected(error(error_code::internal_error, "LZ4 compression not enabled"));
 #else
         if (input.empty()) {
@@ -193,6 +196,7 @@ public:
 
     auto is_compressible(std::span<const std::byte> data) const -> bool {
 #ifndef FILE_TRANS_ENABLE_LZ4
+        (void)data;
         return false;
 #else
         if (data.empty()) {
