@@ -109,11 +109,13 @@ if (get_logger().is_enabled(log_level::trace)) {
 
 ### Initializing the Logger
 
-```cpp
-// Initialize (enables logger_system integration if available)
-get_logger().initialize();
+The logger is **automatically initialized** when creating `file_transfer_server` or `file_transfer_client` instances. Manual initialization is only needed if you want to configure the logger before creating these objects.
 
-// Shutdown
+```cpp
+// Manual initialization (optional - called automatically by server/client)
+get_logger().initialize();  // Safe to call multiple times
+
+// Shutdown (recommended at application exit)
 get_logger().shutdown();
 
 // Check status
@@ -121,6 +123,8 @@ if (get_logger().is_initialized()) {
     // Logger is ready
 }
 ```
+
+**Note**: `initialize()` is thread-safe and idempotent. Multiple calls have no effect after the first successful initialization.
 
 ### Custom Log Callback
 
@@ -199,6 +203,6 @@ FT_LOG_FATAL_CTX(category, message, context)
    }
    ```
 
-4. **Initialize early**: Call `get_logger().initialize()` at application startup for optimal performance.
+4. **Automatic initialization**: The logger is automatically initialized when creating server or client instances. Manual `initialize()` calls are optional and safe to use for early configuration.
 
 5. **Shutdown properly**: Call `get_logger().shutdown()` before exit to flush pending logs.
