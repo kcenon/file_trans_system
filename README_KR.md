@@ -371,11 +371,17 @@ target_link_libraries(your_target PRIVATE kcenon::file_transfer)
 
 다음은 [examples/](examples/) 디렉토리에서 확인할 수 있습니다:
 
-- `simple_server.cpp` - 기본 파일 전송 서버
+### 기본 예제
+- `simple_server.cpp` - 기본 파일 전송 서버 설정
 - `simple_client.cpp` - 기본 파일 전송 클라이언트
-- `upload_example.cpp` - 진행 상황 포함 파일 업로드
-- `download_example.cpp` - 검증 포함 파일 다운로드
-- `batch_transfer.cpp` - 다중 파일 배치 전송
+
+### 업로드/다운로드 예제
+- `upload_example.cpp` - 진행 콜백, 압축 설정, 오류 처리를 포함한 단일 파일 업로드
+- `download_example.cpp` - 해시 검증과 덮어쓰기 정책을 포함한 단일 파일 다운로드
+- `batch_upload_example.cpp` - 배치 진행 추적을 포함한 다중 파일 병렬 업로드
+- `batch_download_example.cpp` - 패턴 매칭을 포함한 다중 파일 병렬 다운로드
+
+### 고급 예제 (계획됨)
 - `resume_transfer.cpp` - 전송 재개 처리
 - `custom_pipeline.cpp` - 파이프라인 설정 튜닝
 - `auto_reconnect.cpp` - 자동 재연결 데모

@@ -400,11 +400,17 @@ target_link_libraries(your_target PRIVATE kcenon::file_transfer)
 
 See the [examples/](examples/) directory for:
 
-- `simple_server.cpp` - Basic file transfer server
+### Basic Examples
+- `simple_server.cpp` - Basic file transfer server setup
 - `simple_client.cpp` - Basic file transfer client
-- `upload_example.cpp` - File upload with progress
-- `download_example.cpp` - File download with verification
-- `batch_transfer.cpp` - Multi-file batch transfer
+
+### Upload/Download Examples
+- `upload_example.cpp` - Single file upload with progress callbacks, compression settings, and error handling
+- `download_example.cpp` - Single file download with hash verification and overwrite policy
+- `batch_upload_example.cpp` - Multi-file parallel upload with batch progress tracking
+- `batch_download_example.cpp` - Multi-file parallel download with pattern matching
+
+### Advanced Examples (planned)
 - `resume_transfer.cpp` - Transfer resume handling
 - `custom_pipeline.cpp` - Pipeline configuration tuning
 - `auto_reconnect.cpp` - Auto-reconnect demonstration
