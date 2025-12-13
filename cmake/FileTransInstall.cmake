@@ -10,6 +10,15 @@ include(CMakePackageConfigHelpers)
 
 function(setup_file_trans_installation)
     ##################################################
+    # Skip installation if dependencies were fetched via FetchContent
+    # (FetchContent dependencies are not in any export set)
+    ##################################################
+    if(COMMON_SYSTEM_FETCHED OR THREAD_SYSTEM_FETCHED OR NETWORK_SYSTEM_FETCHED OR LOGGER_SYSTEM_FETCHED)
+        message(STATUS "Skipping installation: dependencies were fetched via FetchContent")
+        return()
+    endif()
+
+    ##################################################
     # Install targets
     ##################################################
 
