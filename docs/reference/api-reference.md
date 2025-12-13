@@ -11,6 +11,7 @@ Complete API documentation for the **file_trans_system** library.
    - [file_transfer_server](#file_transfer_server)
    - [file_transfer_client](#file_transfer_client)
    - [transfer_manager](#transfer_manager)
+   - [quota_manager](#quota_manager)
 2. [Data Types](#data-types)
    - [Enumerations](#enumerations)
    - [Structures](#structures)
@@ -919,6 +920,219 @@ Get aggregate transfer statistics.
 void set_bandwidth_limit(std::size_t bytes_per_second);
 void set_max_concurrent_transfers(std::size_t max_count);
 void set_default_compression(compression_mode mode);
+```
+
+---
+
+### quota_manager
+
+Server storage quota management with warning thresholds and automatic cleanup.
+
+#### Creation
+
+```cpp
+namespace kcenon::file_transfer {
+
+class quota_manager {
+public:
+    // Create a quota manager for a storage directory
+    [[nodiscard]] static auto create(
+        const std::filesystem::path& storage_path,
+        uint64_t total_quota = 0  // 0 = unlimited
+    ) -> result<quota_manager>;
+};
+
+}
+```
+
+**Example:**
+```cpp
+auto manager_result = quota_manager::create("/data/storage", 100ULL * 1024 * 1024 * 1024);  // 100GB
+if (manager_result.has_value()) {
+    auto& manager = manager_result.value();
+    manager.set_max_file_size(10ULL * 1024 * 1024 * 1024);  // 10GB max per file
+}
+```
+
+#### Configuration Methods
+
+##### set_total_quota() / get_total_quota()
+
+Configure the total storage quota.
+
+```cpp
+auto set_total_quota(uint64_t bytes) -> void;
+[[nodiscard]] auto get_total_quota() const -> uint64_t;
+```
+
+##### set_max_file_size() / get_max_file_size()
+
+Configure the maximum allowed file size.
+
+```cpp
+auto set_max_file_size(uint64_t bytes) -> void;
+[[nodiscard]] auto get_max_file_size() const -> uint64_t;
+```
+
+#### Usage Tracking
+
+##### get_usage()
+
+Get current quota usage information.
+
+```cpp
+[[nodiscard]] auto get_usage() const -> quota_usage;
+```
+
+**Returns:** `quota_usage` structure with:
+- `total_quota` - Total quota in bytes
+- `used_bytes` - Bytes currently used
+- `available_bytes` - Bytes remaining
+- `usage_percent` - Usage percentage (0.0 to 100.0)
+- `file_count` - Number of files stored
+
+##### check_quota()
+
+Check if storage can accommodate the required bytes.
+
+```cpp
+[[nodiscard]] auto check_quota(uint64_t required_bytes) -> result<void>;
+```
+
+**Example:**
+```cpp
+auto check = manager.check_quota(file_size);
+if (!check.has_value()) {
+    std::cerr << "Quota exceeded: " << check.error().message << "\n";
+}
+```
+
+##### check_file_size()
+
+Check if a file size is within the configured limit.
+
+```cpp
+[[nodiscard]] auto check_file_size(uint64_t file_size) -> result<void>;
+```
+
+#### Warning Thresholds
+
+##### set_warning_thresholds()
+
+Configure percentage thresholds for warnings.
+
+```cpp
+auto set_warning_thresholds(const std::vector<double>& percentages) -> void;
+```
+
+**Example:**
+```cpp
+manager.set_warning_thresholds({80.0, 90.0, 95.0});  // Warn at 80%, 90%, 95%
+```
+
+##### on_quota_warning()
+
+Register callback for threshold warnings.
+
+```cpp
+auto on_quota_warning(std::function<void(const quota_usage&)> callback) -> void;
+```
+
+**Example:**
+```cpp
+manager.on_quota_warning([](const quota_usage& usage) {
+    std::cout << "Warning: Storage at " << usage.usage_percent << "% capacity\n";
+});
+```
+
+##### on_quota_exceeded()
+
+Register callback for quota exceeded events.
+
+```cpp
+auto on_quota_exceeded(std::function<void(const quota_usage&)> callback) -> void;
+```
+
+#### Cleanup Policy
+
+##### cleanup_policy Structure
+
+```cpp
+struct cleanup_policy {
+    bool enabled = false;                 // Enable automatic cleanup
+    double trigger_threshold = 90.0;      // Start cleanup at this %
+    double target_threshold = 80.0;       // Cleanup until this %
+    bool delete_oldest_first = true;      // Delete oldest files first
+    std::chrono::hours min_file_age{0};   // Only delete files older than this
+    std::vector<std::string> exclusions;  // Filename patterns to exclude
+};
+```
+
+##### set_cleanup_policy()
+
+Configure automatic cleanup behavior.
+
+```cpp
+auto set_cleanup_policy(const cleanup_policy& policy) -> void;
+```
+
+**Example:**
+```cpp
+cleanup_policy policy;
+policy.enabled = true;
+policy.trigger_threshold = 90.0;
+policy.target_threshold = 80.0;
+policy.delete_oldest_first = true;
+policy.min_file_age = std::chrono::hours(24);
+policy.exclusions = {"important", "keep"};
+manager.set_cleanup_policy(policy);
+```
+
+##### execute_cleanup()
+
+Manually trigger cleanup according to policy.
+
+```cpp
+auto execute_cleanup() -> uint64_t;  // Returns bytes freed
+```
+
+#### quota_usage Structure
+
+```cpp
+struct quota_usage {
+    uint64_t total_quota = 0;
+    uint64_t used_bytes = 0;
+    uint64_t available_bytes = 0;
+    double usage_percent = 0.0;
+    std::size_t file_count = 0;
+
+    [[nodiscard]] auto is_exceeded() const -> bool;
+    [[nodiscard]] auto is_threshold_reached(double threshold) const -> bool;
+};
+```
+
+#### Server Integration
+
+The `file_transfer_server` class integrates with `quota_manager` automatically.
+
+```cpp
+// Access quota manager from server
+auto& quota_mgr = server->get_quota_manager();
+
+// Get quota usage
+auto usage = server->get_quota_usage();
+
+// Check if upload is allowed
+auto allowed = server->check_upload_allowed(file_size);
+
+// Register quota callbacks
+server->on_quota_warning([](const quota_usage& usage) {
+    std::cout << "Server storage warning: " << usage.usage_percent << "%\n";
+});
+
+server->on_quota_exceeded([](const quota_usage& usage) {
+    std::cerr << "Server storage exceeded!\n";
+});
 ```
 
 ---
