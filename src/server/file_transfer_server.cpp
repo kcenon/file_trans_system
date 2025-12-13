@@ -10,10 +10,8 @@
 #include <filesystem>
 #include <thread>
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
 #include <kcenon/network/core/messaging_server.h>
 #include <kcenon/network/session/messaging_session.h>
-#endif
 
 namespace kcenon::file_transfer {
 
@@ -22,9 +20,7 @@ struct file_transfer_server::impl {
     std::atomic<server_state> current_state{server_state::stopped};
     uint16_t listen_port{0};
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
     std::shared_ptr<network_system::core::messaging_server> network_server;
-#endif
 
     // Callbacks
     std::function<bool(const upload_request&)> upload_callback;
@@ -151,10 +147,8 @@ file_transfer_server::file_transfer_server(server_config config)
     // Initialize logger (safe to call multiple times)
     get_logger().initialize();
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
     impl_->network_server = std::make_shared<network_system::core::messaging_server>(
         "file_transfer_server");
-#endif
 }
 
 file_transfer_server::file_transfer_server(file_transfer_server&&) noexcept = default;
@@ -179,16 +173,14 @@ auto file_transfer_server::start(const endpoint& listen_addr) -> result<void> {
     impl_->current_state = server_state::starting;
     impl_->listen_port = listen_addr.port;
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
-    auto result = impl_->network_server->start_server(listen_addr.port);
-    if (result.is_err()) {
+    auto start_result = impl_->network_server->start_server(listen_addr.port);
+    if (start_result.is_err()) {
         impl_->current_state = server_state::stopped;
         FT_LOG_ERROR(log_category::server,
-            "Failed to start network server: " + result.error().message);
+            "Failed to start network server: " + start_result.error().message);
         return unexpected{error{error_code::internal_error,
-                               "Failed to start network server: " + result.error().message}};
+                               "Failed to start network server: " + start_result.error().message}};
     }
-#endif
 
     impl_->current_state = server_state::running;
     FT_LOG_INFO(log_category::server,
@@ -206,16 +198,14 @@ auto file_transfer_server::stop() -> result<void> {
     FT_LOG_INFO(log_category::server, "Stopping server");
     impl_->current_state = server_state::stopping;
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
-    auto result = impl_->network_server->stop_server();
-    if (result.is_err()) {
+    auto stop_result = impl_->network_server->stop_server();
+    if (stop_result.is_err()) {
         impl_->current_state = server_state::running;
         FT_LOG_ERROR(log_category::server,
-            "Failed to stop network server: " + result.error().message);
+            "Failed to stop network server: " + stop_result.error().message);
         return unexpected{error{error_code::internal_error,
-                               "Failed to stop network server: " + result.error().message}};
+                               "Failed to stop network server: " + stop_result.error().message}};
     }
-#endif
 
     impl_->current_state = server_state::stopped;
     impl_->listen_port = 0;

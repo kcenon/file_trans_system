@@ -21,9 +21,7 @@
 #include <lz4.h>
 #endif
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
 #include <kcenon/network/core/messaging_client.h>
-#endif
 
 namespace kcenon::file_transfer {
 
@@ -320,9 +318,7 @@ struct file_transfer_client::impl {
     std::atomic<connection_state> current_state{connection_state::disconnected};
     endpoint server_endpoint;
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
     std::shared_ptr<network_system::core::messaging_client> network_client;
-#endif
 
     // Callbacks
     std::function<void(const transfer_progress&)> progress_callback;
@@ -458,10 +454,8 @@ file_transfer_client::file_transfer_client(client_config config)
     // Initialize logger (safe to call multiple times)
     get_logger().initialize();
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
     impl_->network_client = std::make_shared<network_system::core::messaging_client>(
         "file_transfer_client");
-#endif
 }
 
 file_transfer_client::file_transfer_client(file_transfer_client&&) noexcept = default;
@@ -487,7 +481,6 @@ auto file_transfer_client::connect(const endpoint& server_addr) -> result<void> 
     impl_->set_state(connection_state::connecting);
     impl_->server_endpoint = server_addr;
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
     auto result = impl_->network_client->start_client(server_addr.host, server_addr.port);
     if (result.is_err()) {
         impl_->set_state(connection_state::disconnected);
@@ -496,7 +489,6 @@ auto file_transfer_client::connect(const endpoint& server_addr) -> result<void> 
         return unexpected{error{error_code::internal_error,
                                "Failed to connect: " + result.error().message}};
     }
-#endif
 
     impl_->set_state(connection_state::connected);
     FT_LOG_INFO(log_category::client, "Connected to server successfully");
@@ -512,15 +504,13 @@ auto file_transfer_client::disconnect() -> result<void> {
 
     FT_LOG_INFO(log_category::client, "Disconnecting from server");
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
-    auto result = impl_->network_client->stop_client();
-    if (result.is_err()) {
+    auto disconnect_result = impl_->network_client->stop_client();
+    if (disconnect_result.is_err()) {
         FT_LOG_ERROR(log_category::client,
-            "Failed to disconnect: " + result.error().message);
+            "Failed to disconnect: " + disconnect_result.error().message);
         return unexpected{error{error_code::internal_error,
-                               "Failed to disconnect: " + result.error().message}};
+                               "Failed to disconnect: " + disconnect_result.error().message}};
     }
-#endif
 
     impl_->set_state(connection_state::disconnected);
     FT_LOG_INFO(log_category::client, "Disconnected from server");
@@ -689,7 +679,6 @@ auto file_transfer_client::download_file(
         impl_->download_contexts[handle_id] = std::move(ctx);
     }
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
     // Get context pointer for operations
     download_context* dl_ctx = nullptr;
     {
@@ -698,22 +687,22 @@ auto file_transfer_client::download_file(
     }
 
     // Build and send DOWNLOAD_REQUEST message
-    msg_download_request request;
+    msg_download_request download_request;
     std::copy(dl_ctx->tid.bytes.begin(), dl_ctx->tid.bytes.end(),
-              request.transfer_id.begin());
-    request.filename = remote_name;
-    request.compression = (impl_->config.compression == compression_mode::none)
+              download_request.transfer_id.begin());
+    download_request.filename = remote_name;
+    download_request.compression = (impl_->config.compression == compression_mode::none)
                               ? wire_compression_mode::none
                               : wire_compression_mode::lz4;
-    request.resume_from = 0;  // New download, no resume
+    download_request.resume_from = 0;  // New download, no resume
 
     // Send request via network client
     // Note: Actual network send implementation depends on messaging_client API
     // This is a placeholder for the protocol flow
+    (void)download_request;  // Suppress unused variable warning until protocol is implemented
 
     // Wait for DOWNLOAD_ACCEPT or DOWNLOAD_REJECT
     // The actual implementation would use async message handling
-#endif
 
     // Update statistics
     {

@@ -10,9 +10,7 @@
 #include <queue>
 #include <thread>
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
 #include <kcenon/network/core/messaging_client.h>
-#endif
 
 namespace kcenon::file_transfer {
 
@@ -37,15 +35,11 @@ struct tcp_transport::impl {
     std::condition_variable receive_cv;
     std::queue<std::vector<std::byte>> receive_queue;
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
     std::shared_ptr<network_system::core::messaging_client> network_client;
-#endif
 
     explicit impl(tcp_transport_config cfg) : config(std::move(cfg)) {
-#ifdef BUILD_WITH_NETWORK_SYSTEM
         network_client = std::make_shared<network_system::core::messaging_client>(
             "tcp_transport");
-#endif
     }
 
     void set_state(transport_state new_state) {
@@ -140,20 +134,20 @@ auto tcp_transport::connect(
     conn_result.remote_address = remote.host;
     conn_result.remote_port = remote.port;
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
     // Apply configuration
     // Note: Additional socket options would be configured here
+    (void)timeout;  // Timeout is used by the underlying network_client
 
-    auto result = impl_->network_client->start_client(remote.host, remote.port);
-    if (result.is_err()) {
+    auto connect_result = impl_->network_client->start_client(remote.host, remote.port);
+    if (connect_result.is_err()) {
         impl_->set_state(transport_state::error);
         impl_->increment_errors();
         conn_result.success = false;
-        conn_result.error_message = result.error().message;
+        conn_result.error_message = connect_result.error().message;
         FT_LOG_ERROR(log_category::transfer,
-            "TCP transport connection failed: " + result.error().message);
+            "TCP transport connection failed: " + connect_result.error().message);
         return unexpected{error{error_code::connection_failed,
-            "Connection failed: " + result.error().message}};
+            "Connection failed: " + connect_result.error().message}};
     }
 
     // Setup receive callback for received data
@@ -177,10 +171,6 @@ auto tcp_transport::connect(
                 impl_->event_callback(event_data);
             }
         });
-#else
-    // Stub implementation without network_system
-    (void)timeout;
-#endif
 
     impl_->remote_ep = remote;
     impl_->set_state(transport_state::connected);
@@ -212,17 +202,15 @@ auto tcp_transport::disconnect() -> result<void> {
     FT_LOG_INFO(log_category::transfer, "TCP transport disconnecting");
     impl_->set_state(transport_state::disconnecting);
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
-    auto result = impl_->network_client->stop_client();
-    if (result.is_err()) {
+    auto disconnect_result = impl_->network_client->stop_client();
+    if (disconnect_result.is_err()) {
         impl_->increment_errors();
         FT_LOG_ERROR(log_category::transfer,
-            "TCP transport disconnect failed: " + result.error().message);
+            "TCP transport disconnect failed: " + disconnect_result.error().message);
         impl_->set_state(transport_state::error);
         return unexpected{error{error_code::internal_error,
-            "Disconnect failed: " + result.error().message}};
+            "Disconnect failed: " + disconnect_result.error().message}};
     }
-#endif
 
     impl_->local_ep = std::nullopt;
     impl_->remote_ep = std::nullopt;
@@ -253,17 +241,16 @@ auto tcp_transport::send(
         return 0;
     }
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
     // Convert to uint8_t vector
     std::vector<std::uint8_t> send_data(data.size());
     std::transform(data.begin(), data.end(), send_data.begin(),
         [](std::byte b) { return static_cast<std::uint8_t>(b); });
 
-    auto result = impl_->network_client->send_packet(std::move(send_data));
-    if (result.is_err()) {
+    auto send_result = impl_->network_client->send_packet(std::move(send_data));
+    if (send_result.is_err()) {
         impl_->increment_errors();
         return unexpected{error{error_code::internal_error,
-            "Send failed: " + result.error().message}};
+            "Send failed: " + send_result.error().message}};
     }
 
     impl_->update_send_stats(data.size());
@@ -273,11 +260,6 @@ auto tcp_transport::send(
     }
 
     return data.size();
-#else
-    (void)options;
-    return unexpected{error{error_code::internal_error,
-        "Network system not available"}};
-#endif
 }
 
 auto tcp_transport::receive(const receive_options& options)
