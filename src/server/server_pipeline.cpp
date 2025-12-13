@@ -5,6 +5,7 @@
 
 #include "kcenon/file_transfer/server/server_pipeline.h"
 
+#include "kcenon/file_transfer/core/bandwidth_limiter.h"
 #include "kcenon/file_transfer/core/checksum.h"
 #include "kcenon/file_transfer/core/compression_engine.h"
 #include "kcenon/file_transfer/core/logging.h"
@@ -134,6 +135,10 @@ struct server_pipeline::impl {
     std::mutex file_handles_mutex;
     std::unordered_map<std::string, std::shared_ptr<std::ofstream>> file_handles;
 
+    // Bandwidth limiters
+    std::unique_ptr<bandwidth_limiter> send_limiter;
+    std::unique_ptr<bandwidth_limiter> recv_limiter;
+
     explicit impl(pipeline_config cfg)
         : config(std::move(cfg))
         , recv_queue(cfg.queue_size)
@@ -149,6 +154,16 @@ struct server_pipeline::impl {
         for (std::size_t i = 0; i < total_compression_workers; ++i) {
             compression_engines.push_back(
                 std::make_unique<compression_engine>(compression_level::fast));
+        }
+
+        // Initialize bandwidth limiters if configured
+        if (config.send_bandwidth_limit > 0) {
+            send_limiter = std::make_unique<bandwidth_limiter>(
+                config.send_bandwidth_limit);
+        }
+        if (config.recv_bandwidth_limit > 0) {
+            recv_limiter = std::make_unique<bandwidth_limiter>(
+                config.recv_bandwidth_limit);
         }
     }
 
@@ -321,6 +336,11 @@ struct server_pipeline::impl {
             if (!chunk_opt) continue;
 
             auto& chunk = *chunk_opt;
+
+            // Apply send bandwidth limit if configured
+            if (send_limiter) {
+                send_limiter->acquire(chunk.data.size());
+            }
 
             statistics.chunks_processed++;
             statistics.bytes_processed += chunk.data.size();
@@ -505,6 +525,11 @@ auto server_pipeline::submit_upload_chunk(pipeline_chunk data) -> result<void> {
                                "Pipeline is not running"}};
     }
 
+    // Apply recv bandwidth limit if configured
+    if (impl_->recv_limiter) {
+        impl_->recv_limiter->acquire(data.data.size());
+    }
+
     if (!impl_->decompress_queue.push(std::move(data))) {
         impl_->statistics.backpressure_events++;
         return unexpected{error{error_code::internal_error,
@@ -516,6 +541,11 @@ auto server_pipeline::submit_upload_chunk(pipeline_chunk data) -> result<void> {
 
 auto server_pipeline::try_submit_upload_chunk(pipeline_chunk data) -> bool {
     if (!impl_->running) return false;
+
+    // Try to apply recv bandwidth limit without blocking
+    if (impl_->recv_limiter && !impl_->recv_limiter->try_acquire(data.data.size())) {
+        return false;
+    }
 
     if (!impl_->decompress_queue.try_push(std::move(data))) {
         impl_->statistics.backpressure_events++;
@@ -586,6 +616,44 @@ auto server_pipeline::queue_sizes() const
 
 auto server_pipeline::config() const -> const pipeline_config& {
     return impl_->config;
+}
+
+auto server_pipeline::set_send_bandwidth_limit(std::size_t bytes_per_second) -> void {
+    if (bytes_per_second > 0) {
+        if (impl_->send_limiter) {
+            impl_->send_limiter->set_limit(bytes_per_second);
+        } else {
+            impl_->send_limiter = std::make_unique<bandwidth_limiter>(bytes_per_second);
+        }
+    } else {
+        if (impl_->send_limiter) {
+            impl_->send_limiter->disable();
+        }
+    }
+    impl_->config.send_bandwidth_limit = bytes_per_second;
+}
+
+auto server_pipeline::set_recv_bandwidth_limit(std::size_t bytes_per_second) -> void {
+    if (bytes_per_second > 0) {
+        if (impl_->recv_limiter) {
+            impl_->recv_limiter->set_limit(bytes_per_second);
+        } else {
+            impl_->recv_limiter = std::make_unique<bandwidth_limiter>(bytes_per_second);
+        }
+    } else {
+        if (impl_->recv_limiter) {
+            impl_->recv_limiter->disable();
+        }
+    }
+    impl_->config.recv_bandwidth_limit = bytes_per_second;
+}
+
+auto server_pipeline::get_send_bandwidth_limit() const -> std::size_t {
+    return impl_->config.send_bandwidth_limit;
+}
+
+auto server_pipeline::get_recv_bandwidth_limit() const -> std::size_t {
+    return impl_->config.recv_bandwidth_limit;
 }
 
 }  // namespace kcenon::file_transfer

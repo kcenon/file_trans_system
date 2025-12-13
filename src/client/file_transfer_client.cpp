@@ -5,6 +5,7 @@
 
 #include "kcenon/file_transfer/client/file_transfer_client.h"
 
+#include <kcenon/file_transfer/core/bandwidth_limiter.h>
 #include <kcenon/file_transfer/core/checksum.h>
 #include <kcenon/file_transfer/core/chunk_assembler.h>
 #include <kcenon/file_transfer/core/protocol_types.h>
@@ -350,7 +351,21 @@ struct file_transfer_client::impl {
     std::atomic<uint64_t> next_batch_id{1};
     std::unordered_map<uint64_t, std::unique_ptr<batch_context>> batch_contexts;
 
-    explicit impl(client_config cfg) : config(std::move(cfg)) {}
+    // Bandwidth limiters
+    std::unique_ptr<bandwidth_limiter> upload_limiter;
+    std::unique_ptr<bandwidth_limiter> download_limiter;
+
+    explicit impl(client_config cfg) : config(std::move(cfg)) {
+        // Initialize bandwidth limiters if limits are configured
+        if (config.upload_bandwidth_limit.has_value()) {
+            upload_limiter = std::make_unique<bandwidth_limiter>(
+                config.upload_bandwidth_limit.value());
+        }
+        if (config.download_bandwidth_limit.has_value()) {
+            download_limiter = std::make_unique<bandwidth_limiter>(
+                config.download_bandwidth_limit.value());
+        }
+    }
 
     void set_state(connection_state new_state) {
         auto old_state = current_state.exchange(new_state);
@@ -687,6 +702,11 @@ auto file_transfer_client::download_file(
 auto file_transfer_client::process_download_chunk(
     uint64_t handle_id,
     const chunk& received_chunk) -> result<void> {
+
+    // Apply download bandwidth limit if configured
+    if (impl_->download_limiter) {
+        impl_->download_limiter->acquire(received_chunk.data.size());
+    }
 
     download_context* ctx = nullptr;
     {

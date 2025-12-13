@@ -62,6 +62,10 @@ struct pipeline_config {
     std::size_t queue_size = 64;           ///< Maximum queue size per stage
     std::size_t max_memory_per_transfer = 32 * 1024 * 1024;  ///< ~32MB per transfer
 
+    // Bandwidth limiting (0 = unlimited)
+    std::size_t send_bandwidth_limit = 0;  ///< Max bytes/sec for network send (0 = unlimited)
+    std::size_t recv_bandwidth_limit = 0;  ///< Max bytes/sec for network recv (0 = unlimited)
+
     /**
      * @brief Auto-detect optimal configuration based on hardware
      * @return Optimized pipeline configuration
@@ -272,6 +276,32 @@ public:
      * @return Pipeline configuration
      */
     [[nodiscard]] auto config() const -> const pipeline_config&;
+
+    // Bandwidth control
+
+    /**
+     * @brief Set send bandwidth limit
+     * @param bytes_per_second Limit in bytes/sec (0 = unlimited)
+     */
+    auto set_send_bandwidth_limit(std::size_t bytes_per_second) -> void;
+
+    /**
+     * @brief Set recv bandwidth limit
+     * @param bytes_per_second Limit in bytes/sec (0 = unlimited)
+     */
+    auto set_recv_bandwidth_limit(std::size_t bytes_per_second) -> void;
+
+    /**
+     * @brief Get current send bandwidth limit
+     * @return Current limit (0 = unlimited)
+     */
+    [[nodiscard]] auto get_send_bandwidth_limit() const -> std::size_t;
+
+    /**
+     * @brief Get current recv bandwidth limit
+     * @return Current limit (0 = unlimited)
+     */
+    [[nodiscard]] auto get_recv_bandwidth_limit() const -> std::size_t;
 
 private:
     explicit server_pipeline(pipeline_config config);
