@@ -229,6 +229,13 @@ Benchmarks are automatically run via the `benchmark.yml` workflow:
 - **Triggers**: Push to main, pull requests, weekly schedule (Sunday 00:00 UTC)
 - **Manual trigger**: Use workflow_dispatch with optional filter pattern
 
+**Note**: The following benchmarks are skipped in CI because they require server/client connections:
+- `latency_benchmarks` - Connection setup, file list response, TTFB
+- `memory_benchmarks` - Server/client memory usage
+- `scalability_benchmarks` - Concurrent connections, long-running stability
+
+Run these benchmarks locally for accurate measurements.
+
 ```bash
 # Trigger manually from GitHub CLI
 gh workflow run benchmark.yml --ref main
