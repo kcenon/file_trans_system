@@ -39,28 +39,46 @@ struct file_transfer_server::impl {
     server_statistics statistics;
     storage_stats storage_statistics;
 
+    // Quota management
+    std::unique_ptr<quota_manager> quota_mgr;
+
     // Client tracking
     std::shared_mutex clients_mutex;
     std::unordered_map<uint64_t, client_info> clients;
     std::atomic<uint64_t> next_client_id{1};
 
     explicit impl(server_config cfg) : config(std::move(cfg)) {
-        // Calculate storage stats
-        if (std::filesystem::exists(config.storage_directory)) {
-            storage_statistics.total_capacity = config.storage_quota;
-            storage_statistics.used_size = 0;
-            storage_statistics.file_count = 0;
+        // Initialize quota manager
+        auto qm_result = quota_manager::create(
+            config.storage_directory, config.storage_quota);
+        if (qm_result.has_value()) {
+            quota_mgr = std::make_unique<quota_manager>(std::move(qm_result.value()));
+            quota_mgr->set_max_file_size(config.max_file_size);
 
-            std::error_code ec;
-            for (const auto& entry :
-                 std::filesystem::directory_iterator(config.storage_directory, ec)) {
-                if (entry.is_regular_file()) {
-                    storage_statistics.used_size += entry.file_size();
-                    storage_statistics.file_count++;
+            // Update storage statistics from quota manager
+            auto usage = quota_mgr->get_usage();
+            storage_statistics.total_capacity = usage.total_quota;
+            storage_statistics.used_size = usage.used_bytes;
+            storage_statistics.available_size = usage.available_bytes;
+            storage_statistics.file_count = usage.file_count;
+        } else {
+            // Fallback: Calculate storage stats manually
+            if (std::filesystem::exists(config.storage_directory)) {
+                storage_statistics.total_capacity = config.storage_quota;
+                storage_statistics.used_size = 0;
+                storage_statistics.file_count = 0;
+
+                std::error_code ec;
+                for (const auto& entry :
+                     std::filesystem::directory_iterator(config.storage_directory, ec)) {
+                    if (entry.is_regular_file()) {
+                        storage_statistics.used_size += entry.file_size();
+                        storage_statistics.file_count++;
+                    }
                 }
+                storage_statistics.available_size =
+                    storage_statistics.total_capacity - storage_statistics.used_size;
             }
-            storage_statistics.available_size =
-                storage_statistics.total_capacity - storage_statistics.used_size;
         }
     }
 };
@@ -248,6 +266,88 @@ auto file_transfer_server::get_storage_stats() const -> storage_stats {
 
 auto file_transfer_server::config() const -> const server_config& {
     return impl_->config;
+}
+
+auto file_transfer_server::get_quota_manager() -> quota_manager& {
+    if (!impl_->quota_mgr) {
+        // Create quota manager if not exists (shouldn't happen in normal usage)
+        auto qm_result = quota_manager::create(
+            impl_->config.storage_directory, impl_->config.storage_quota);
+        if (qm_result.has_value()) {
+            impl_->quota_mgr = std::make_unique<quota_manager>(std::move(qm_result.value()));
+            impl_->quota_mgr->set_max_file_size(impl_->config.max_file_size);
+        }
+    }
+    return *impl_->quota_mgr;
+}
+
+auto file_transfer_server::get_quota_manager() const -> const quota_manager& {
+    return *impl_->quota_mgr;
+}
+
+auto file_transfer_server::get_quota_usage() const -> quota_usage {
+    if (impl_->quota_mgr) {
+        return impl_->quota_mgr->get_usage();
+    }
+    // Fallback if quota manager not available
+    quota_usage usage;
+    std::lock_guard lock(impl_->stats_mutex);
+    usage.total_quota = impl_->storage_statistics.total_capacity;
+    usage.used_bytes = impl_->storage_statistics.used_size;
+    usage.available_bytes = impl_->storage_statistics.available_size;
+    usage.file_count = impl_->storage_statistics.file_count;
+    if (usage.total_quota > 0) {
+        usage.usage_percent = static_cast<double>(usage.used_bytes) /
+                              static_cast<double>(usage.total_quota) * 100.0;
+    }
+    return usage;
+}
+
+auto file_transfer_server::check_upload_allowed(uint64_t file_size) -> result<void> {
+    if (impl_->quota_mgr) {
+        // Check file size limit
+        auto file_result = impl_->quota_mgr->check_file_size(file_size);
+        if (!file_result.has_value()) {
+            FT_LOG_WARN(log_category::server,
+                "Upload rejected: file too large (" + std::to_string(file_size) + " bytes)");
+            return file_result;
+        }
+
+        // Check quota
+        auto quota_result = impl_->quota_mgr->check_quota(file_size);
+        if (!quota_result.has_value()) {
+            FT_LOG_WARN(log_category::server,
+                "Upload rejected: quota exceeded");
+            return quota_result;
+        }
+    } else {
+        // Fallback check
+        if (impl_->config.max_file_size > 0 && file_size > impl_->config.max_file_size) {
+            return unexpected{error{error_code::file_too_large,
+                                   "File size exceeds maximum allowed"}};
+        }
+        std::lock_guard lock(impl_->stats_mutex);
+        if (impl_->storage_statistics.used_size + file_size >
+            impl_->storage_statistics.total_capacity) {
+            return unexpected{error{error_code::quota_exceeded,
+                                   "Storage quota would be exceeded"}};
+        }
+    }
+    return {};
+}
+
+void file_transfer_server::on_quota_warning(
+    std::function<void(const quota_usage&)> callback) {
+    if (impl_->quota_mgr) {
+        impl_->quota_mgr->on_quota_warning(std::move(callback));
+    }
+}
+
+void file_transfer_server::on_quota_exceeded(
+    std::function<void(const quota_usage&)> callback) {
+    if (impl_->quota_mgr) {
+        impl_->quota_mgr->on_quota_exceeded(std::move(callback));
+    }
 }
 
 }  // namespace kcenon::file_transfer
