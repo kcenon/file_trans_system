@@ -3,9 +3,18 @@
 #
 # This module handles finding and configuring
 # all dependencies for file_trans_system.
+#
+# Dependencies are automatically fetched from GitHub
+# if not found locally (e.g., in unified_system structure).
 ##################################################
 
 include(FetchContent)
+
+# Git tags for ecosystem dependencies
+set(COMMON_SYSTEM_GIT_TAG "main" CACHE STRING "Git tag/branch for common_system")
+set(THREAD_SYSTEM_GIT_TAG "main" CACHE STRING "Git tag/branch for thread_system")
+set(NETWORK_SYSTEM_GIT_TAG "main" CACHE STRING "Git tag/branch for network_system")
+set(CONTAINER_SYSTEM_GIT_TAG "main" CACHE STRING "Git tag/branch for container_system")
 
 ##################################################
 # Find ASIO (required for network_system headers)
@@ -100,12 +109,31 @@ function(find_file_trans_dependencies)
             message(STATUS "Found common_system: ${COMMON_SYSTEM_INCLUDE_DIR}")
             set(COMMON_SYSTEM_INCLUDE_DIR ${COMMON_SYSTEM_INCLUDE_DIR} PARENT_SCOPE)
         else()
-            message(WARNING "common_system not found - some features will be unavailable")
+            # Fetch from GitHub
+            message(STATUS "common_system not found locally - fetching from GitHub...")
+            FetchContent_Declare(common_system
+                GIT_REPOSITORY https://github.com/kcenon/common_system.git
+                GIT_TAG ${COMMON_SYSTEM_GIT_TAG}
+            )
+            FetchContent_GetProperties(common_system)
+            if(NOT common_system_POPULATED)
+                FetchContent_Populate(common_system)
+            endif()
+
+            set(_fetched_include "${common_system_SOURCE_DIR}/include")
+            if(EXISTS "${_fetched_include}/kcenon/common")
+                message(STATUS "Fetched common_system: ${_fetched_include}")
+                set(COMMON_SYSTEM_INCLUDE_DIR ${_fetched_include} PARENT_SCOPE)
+            else()
+                message(FATAL_ERROR "Failed to fetch common_system from GitHub")
+            endif()
         endif()
     endif()
 
     # thread_system (typed_thread_pool for pipeline parallelism)
     if(BUILD_WITH_THREAD_SYSTEM)
+        set(_thread_found FALSE)
+
         if(NOT THREAD_SYSTEM_INCLUDE_DIR)
             set(_thread_paths
                 "${CMAKE_CURRENT_SOURCE_DIR}/../thread_system/include"
@@ -115,12 +143,15 @@ function(find_file_trans_dependencies)
             foreach(_path ${_thread_paths})
                 if(EXISTS "${_path}/kcenon/thread")
                     get_filename_component(THREAD_SYSTEM_INCLUDE_DIR "${_path}" ABSOLUTE)
+                    set(_thread_found TRUE)
                     break()
                 endif()
             endforeach()
+        else()
+            set(_thread_found TRUE)
         endif()
 
-        if(THREAD_SYSTEM_INCLUDE_DIR)
+        if(_thread_found)
             message(STATUS "Found thread_system: ${THREAD_SYSTEM_INCLUDE_DIR}")
             set(THREAD_SYSTEM_INCLUDE_DIR ${THREAD_SYSTEM_INCLUDE_DIR} PARENT_SCOPE)
 
@@ -145,12 +176,31 @@ function(find_file_trans_dependencies)
                 message(WARNING "thread_system library not found - linking may fail")
             endif()
         else()
-            message(WARNING "thread_system not found - some features will be unavailable")
+            # Fetch from GitHub
+            message(STATUS "thread_system not found locally - fetching from GitHub...")
+            FetchContent_Declare(thread_system
+                GIT_REPOSITORY https://github.com/kcenon/thread_system.git
+                GIT_TAG ${THREAD_SYSTEM_GIT_TAG}
+            )
+            FetchContent_GetProperties(thread_system)
+            if(NOT thread_system_POPULATED)
+                FetchContent_Populate(thread_system)
+            endif()
+
+            set(_fetched_include "${thread_system_SOURCE_DIR}/include")
+            if(EXISTS "${_fetched_include}/kcenon/thread")
+                message(STATUS "Fetched thread_system: ${_fetched_include}")
+                set(THREAD_SYSTEM_INCLUDE_DIR ${_fetched_include} PARENT_SCOPE)
+            else()
+                message(FATAL_ERROR "Failed to fetch thread_system from GitHub")
+            endif()
         endif()
     endif()
 
     # network_system (TCP/TLS transport layer)
     if(BUILD_WITH_NETWORK_SYSTEM)
+        set(_network_found FALSE)
+
         if(NOT NETWORK_SYSTEM_INCLUDE_DIR)
             set(_network_paths
                 "${CMAKE_CURRENT_SOURCE_DIR}/../network_system/include"
@@ -158,14 +208,18 @@ function(find_file_trans_dependencies)
             )
 
             foreach(_path ${_network_paths})
-                if(EXISTS "${_path}/network_system")
+                # Check for both kcenon/network (new) and network_system (legacy) structures
+                if(EXISTS "${_path}/kcenon/network" OR EXISTS "${_path}/network_system")
                     get_filename_component(NETWORK_SYSTEM_INCLUDE_DIR "${_path}" ABSOLUTE)
+                    set(_network_found TRUE)
                     break()
                 endif()
             endforeach()
+        else()
+            set(_network_found TRUE)
         endif()
 
-        if(NETWORK_SYSTEM_INCLUDE_DIR)
+        if(_network_found)
             message(STATUS "Found network_system: ${NETWORK_SYSTEM_INCLUDE_DIR}")
             set(NETWORK_SYSTEM_INCLUDE_DIR ${NETWORK_SYSTEM_INCLUDE_DIR} PARENT_SCOPE)
 
@@ -189,19 +243,38 @@ function(find_file_trans_dependencies)
             else()
                 message(WARNING "network_system library not found - linking may fail")
             endif()
-
-            # ASIO is required when using network_system (network_system headers include asio.hpp)
-            find_asio_library()
-            set(ASIO_FOUND ${ASIO_FOUND} PARENT_SCOPE)
-            set(ASIO_INCLUDE_DIR ${ASIO_INCLUDE_DIR} PARENT_SCOPE)
-            set(ASIO_TARGET ${ASIO_TARGET} PARENT_SCOPE)
         else()
-            message(WARNING "network_system not found - some features will be unavailable")
+            # Fetch from GitHub
+            message(STATUS "network_system not found locally - fetching from GitHub...")
+            FetchContent_Declare(network_system
+                GIT_REPOSITORY https://github.com/kcenon/network_system.git
+                GIT_TAG ${NETWORK_SYSTEM_GIT_TAG}
+            )
+            FetchContent_GetProperties(network_system)
+            if(NOT network_system_POPULATED)
+                FetchContent_Populate(network_system)
+            endif()
+
+            set(_fetched_include "${network_system_SOURCE_DIR}/include")
+            if(EXISTS "${_fetched_include}/kcenon/network" OR EXISTS "${_fetched_include}/network_system")
+                message(STATUS "Fetched network_system: ${_fetched_include}")
+                set(NETWORK_SYSTEM_INCLUDE_DIR ${_fetched_include} PARENT_SCOPE)
+            else()
+                message(FATAL_ERROR "Failed to fetch network_system from GitHub")
+            endif()
         endif()
+
+        # ASIO is required when using network_system (network_system headers include asio.hpp)
+        find_asio_library()
+        set(ASIO_FOUND ${ASIO_FOUND} PARENT_SCOPE)
+        set(ASIO_INCLUDE_DIR ${ASIO_INCLUDE_DIR} PARENT_SCOPE)
+        set(ASIO_TARGET ${ASIO_TARGET} PARENT_SCOPE)
     endif()
 
     # container_system (bounded_queue for backpressure)
     if(BUILD_WITH_CONTAINER_SYSTEM)
+        set(_container_found FALSE)
+
         if(NOT CONTAINER_SYSTEM_INCLUDE_DIR)
             set(_container_paths
                 "${CMAKE_CURRENT_SOURCE_DIR}/../container_system/include"
@@ -211,16 +284,36 @@ function(find_file_trans_dependencies)
             foreach(_path ${_container_paths})
                 if(EXISTS "${_path}/container")
                     get_filename_component(CONTAINER_SYSTEM_INCLUDE_DIR "${_path}" ABSOLUTE)
+                    set(_container_found TRUE)
                     break()
                 endif()
             endforeach()
+        else()
+            set(_container_found TRUE)
         endif()
 
-        if(CONTAINER_SYSTEM_INCLUDE_DIR)
+        if(_container_found)
             message(STATUS "Found container_system: ${CONTAINER_SYSTEM_INCLUDE_DIR}")
             set(CONTAINER_SYSTEM_INCLUDE_DIR ${CONTAINER_SYSTEM_INCLUDE_DIR} PARENT_SCOPE)
         else()
-            message(WARNING "container_system not found - some features will be unavailable")
+            # Fetch from GitHub
+            message(STATUS "container_system not found locally - fetching from GitHub...")
+            FetchContent_Declare(container_system
+                GIT_REPOSITORY https://github.com/kcenon/container_system.git
+                GIT_TAG ${CONTAINER_SYSTEM_GIT_TAG}
+            )
+            FetchContent_GetProperties(container_system)
+            if(NOT container_system_POPULATED)
+                FetchContent_Populate(container_system)
+            endif()
+
+            set(_fetched_include "${container_system_SOURCE_DIR}/include")
+            if(EXISTS "${_fetched_include}/container")
+                message(STATUS "Fetched container_system: ${_fetched_include}")
+                set(CONTAINER_SYSTEM_INCLUDE_DIR ${_fetched_include} PARENT_SCOPE)
+            else()
+                message(FATAL_ERROR "Failed to fetch container_system from GitHub")
+            endif()
         endif()
     endif()
 
