@@ -175,18 +175,204 @@ FT_LOG_ERROR_CTX(category, message, context)
 FT_LOG_FATAL_CTX(category, message, context)
 ```
 
+## JSON Output Format
+
+The logging system supports complete JSON output for structured logging analysis.
+
+### Enabling JSON Output
+
+```cpp
+// Enable JSON output format
+get_logger().enable_json_output(true);
+
+// Or set output format directly
+get_logger().set_output_format(log_output_format::json);
+
+// Check if JSON output is enabled
+if (get_logger().is_json_output_enabled()) {
+    // JSON format is active
+}
+```
+
+### JSON Output Example
+
+```json
+{
+  "timestamp": "2025-12-13T10:30:00.123Z",
+  "level": "INFO",
+  "category": "file_transfer.client",
+  "message": "Upload completed",
+  "transfer_id": "abc-123",
+  "filename": "data.zip",
+  "size": 1048576,
+  "duration_ms": 500,
+  "rate_mbps": 2.0
+}
+```
+
+### JSON Callback
+
+```cpp
+// Set a callback for JSON log entries
+get_logger().set_json_callback([](const structured_log_entry& entry,
+                                   const std::string& json) {
+    // Send JSON to external system
+    send_to_elk_stack(json);
+});
+```
+
+## Log Entry Builder
+
+The `log_entry_builder` class provides a fluent API for creating structured log entries.
+
+### Basic Usage
+
+```cpp
+auto entry = log_entry_builder()
+    .with_level(log_level::info)
+    .with_category(log_category::client)
+    .with_message("Upload completed")
+    .with_transfer_id("abc-123")
+    .with_filename("data.zip")
+    .with_file_size(1048576)
+    .with_duration_ms(500)
+    .with_rate_mbps(2.0)
+    .build();
+
+// Log the entry
+get_logger().log(entry);
+
+// Or get JSON directly
+std::string json = entry.to_json();
+```
+
+### Available Builder Methods
+
+```cpp
+log_entry_builder()
+    // Required fields
+    .with_level(log_level level)
+    .with_category(std::string_view category)
+    .with_message(std::string_view message)
+
+    // Transfer context
+    .with_transfer_id(std::string_view id)
+    .with_filename(std::string_view filename)
+    .with_file_size(uint64_t size)
+    .with_bytes_transferred(uint64_t bytes)
+    .with_chunk_index(uint32_t index)
+    .with_total_chunks(uint32_t total)
+    .with_progress_percent(double percent)
+    .with_rate_mbps(double rate)
+    .with_duration_ms(uint64_t duration)
+    .with_error_message(std::string_view error)
+    .with_client_id(std::string_view id)
+    .with_server_address(std::string_view address)
+
+    // Source location
+    .with_source_location(const char* file, int line, const char* function)
+
+    // Existing context
+    .with_context(const transfer_log_context& ctx)
+
+    // Build methods
+    .build()           // Returns structured_log_entry
+    .build_json()      // Returns JSON string
+    .build_json_masked(const sensitive_info_masker& masker)  // With masking
+```
+
+## Sensitive Information Masking
+
+The logging system supports masking sensitive information such as IP addresses and file paths.
+
+### Enabling Masking
+
+```cpp
+// Enable all masking
+get_logger().enable_masking(true);
+
+// Or configure specific masking options
+masking_config config;
+config.mask_paths = true;      // Mask file paths
+config.mask_ips = true;        // Mask IP addresses
+config.mask_filenames = true;  // Mask filenames
+config.visible_chars = 4;      // Keep first 4 characters visible
+config.mask_char = "*";        // Character for masking
+
+get_logger().set_masking_config(config);
+```
+
+### Masking Examples
+
+**IP Address Masking:**
+```
+Before: Connection from 192.168.1.100
+After:  Connection from *********.100
+```
+
+**Path Masking:**
+```
+Before: /home/user/documents/secret.txt
+After:  ********************/secret.txt
+```
+
+**Filename Masking (with mask_filenames=true):**
+```
+Before: confidential_report.pdf
+After:  conf****************.pdf
+```
+
+### Using the Masker Directly
+
+```cpp
+// Create a masker with configuration
+masking_config config = masking_config::all_masked();
+sensitive_info_masker masker(config);
+
+// Mask a string
+std::string masked = masker.mask("Connection from 192.168.1.100");
+
+// Mask specific types
+std::string masked_ip = masker.mask_ip("192.168.1.100");
+std::string masked_path = masker.mask_path("/home/user/file.txt");
+
+// Use with log entry builder
+std::string json = log_entry_builder()
+    .with_level(log_level::info)
+    .with_category(log_category::client)
+    .with_message("Connected to 192.168.1.100")
+    .with_server_address("192.168.1.100")
+    .build_json_masked(masker);
+```
+
+### Predefined Configurations
+
+```cpp
+// All masking enabled
+masking_config config = masking_config::all_masked();
+
+// No masking (default)
+masking_config config = masking_config::none();
+```
+
 ## Output Format
 
-### Standard Output
+### Standard Text Output
 
 ```
 2025-12-13 10:30:00.123 [INFO] [file_transfer.client] Connected to server
 ```
 
-### With Context (JSON)
+### With Context (Text)
 
 ```
-2025-12-13 10:30:00.123 [INFO] [file_transfer.client] Upload completed {"transfer_id":"abc123","filename":"data.zip","file_size":1048576,"duration_ms":500,"rate_mbps":2.0}
+2025-12-13 10:30:00.123 [INFO] [file_transfer.client] Upload completed {"transfer_id":"abc123","filename":"data.zip","size":1048576,"duration_ms":500,"rate_mbps":2.0}
+```
+
+### JSON Output
+
+```json
+{"timestamp":"2025-12-13T10:30:00.123Z","level":"INFO","category":"file_transfer.client","message":"Upload completed","transfer_id":"abc123","filename":"data.zip","size":1048576,"duration_ms":500,"rate_mbps":2.0}
 ```
 
 ## Log Points by Module

@@ -45,6 +45,7 @@ add_executable(file_trans_unit_tests
     unit/core/test_core_types.cpp
     unit/core/test_resume_handler.cpp
     unit/core/test_bandwidth_limiter.cpp
+    unit/core/test_logging.cpp
     unit/compression/test_compression_engine.cpp
     unit/protocol/test_types.cpp
     unit/state/test_state_management.cpp
