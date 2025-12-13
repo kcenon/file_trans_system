@@ -28,6 +28,7 @@ Detailed technical reference documentation index for **file_trans_system**.
 |----------|-------------|
 | [Configuration Guide](configuration.md) | Complete reference for all configuration options |
 | [LZ4 Compression Guide](lz4-compression.md) | Compression modes, levels, and tuning |
+| [Bandwidth Throttling Guide](bandwidth-throttling.md) | Upload/download rate limiting with token bucket algorithm |
 
 ### Error Handling
 
@@ -154,6 +155,7 @@ auto files = client->list_files();
 | Protocol Specification | 0.2.0 | 2025-12-11 |
 | Configuration Guide | 0.2.0 | 2025-12-11 |
 | LZ4 Compression Guide | 0.2.0 | 2025-12-11 |
+| Bandwidth Throttling Guide | 0.2.0 | 2025-12-13 |
 | Error Codes | 0.2.0 | 2025-12-11 |
 | Quick Reference | 0.2.0 | 2025-12-11 |
 | Dependency Requirements | 0.2.0 | 2025-12-11 |
