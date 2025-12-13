@@ -166,11 +166,16 @@ enum class transfer_status {
  */
 struct transfer_progress_info {
     uint64_t bytes_transferred = 0;    ///< Bytes transferred so far
+    uint64_t bytes_on_wire = 0;        ///< Compressed bytes on wire
     uint64_t total_bytes = 0;          ///< Total file size
     uint64_t chunks_transferred = 0;   ///< Chunks transferred
     uint64_t total_chunks = 0;         ///< Total number of chunks
-    double transfer_rate = 0.0;        ///< Bytes per second
+    double transfer_rate = 0.0;        ///< Current bytes per second
+    double average_rate = 0.0;         ///< Average bytes per second
+    double compression_ratio = 1.0;    ///< Compression ratio
     std::chrono::milliseconds elapsed{0};  ///< Time elapsed
+    std::chrono::milliseconds estimated_remaining{0};  ///< Estimated time remaining
+    std::size_t retry_count = 0;       ///< Number of retries
 
     [[nodiscard]] auto completion_percentage() const noexcept -> double {
         if (total_bytes == 0) return 0.0;
