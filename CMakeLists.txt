@@ -202,6 +202,7 @@ add_library(FileTransSystem
     src/server/server_pipeline.cpp
     src/server/quota_manager.cpp
     src/client/file_transfer_client.cpp
+    src/transport/tcp_transport.cpp
 )
 
 add_library(kcenon::file_transfer ALIAS FileTransSystem)
