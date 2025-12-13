@@ -142,9 +142,30 @@ In addition to sampling, file extensions provide hints:
 |----------|------------|--------|
 | **Compressible** | `.txt`, `.log`, `.json`, `.xml`, `.csv` | Likely compress |
 | **Compressible** | `.cpp`, `.h`, `.py`, `.java`, `.js` | Likely compress |
-| **Compressed** | `.zip`, `.gz`, `.tar.gz`, `.bz2`, `.xz` | Skip |
-| **Media** | `.jpg`, `.png`, `.gif`, `.mp4`, `.mp3` | Skip |
+| **Compressed** | `.zip`, `.gz`, `.tar.gz`, `.bz2`, `.xz`, `.7z` | Skip |
+| **Documents** | `.pdf` | Skip (internally compressed) |
+| **Media** | `.jpg`, `.png`, `.gif`, `.mp4`, `.mp3`, `.mov`, `.webp` | Skip |
 | **Binary** | `.exe`, `.dll`, `.so`, `.bin` | Test (adaptive) |
+
+### Magic Bytes Detection
+
+The compression engine detects pre-compressed formats using magic bytes:
+
+| Format | Magic Bytes | Offset |
+|--------|-------------|--------|
+| ZIP | `50 4B 03 04` | 0 |
+| GZIP | `1F 8B` | 0 |
+| PDF | `25 50 44 46` (`%PDF`) | 0 |
+| PNG | `89 50 4E 47 0D 0A 1A 0A` | 0 |
+| JPEG | `FF D8 FF` | 0 |
+| MP4/MOV | `66 74 79 70` (`ftyp`) | 4 |
+| 7-Zip | `37 7A BC AF 27 1C` | 0 |
+| LZ4 | `04 22 4D 18` | 0 |
+| ZSTD | `28 B5 2F FD` | 0 |
+| BZIP2 | `42 5A 68` | 0 |
+| XZ | `FD 37 7A 58 5A 00` | 0 |
+| GIF | `47 49 46 38` | 0 |
+| WEBP | `52 49 46 46` (RIFF) | 0 |
 
 ### Adaptive Behavior
 
@@ -239,6 +260,78 @@ public:
 };
 ```
 
+### compression_engine
+
+The core compression engine with adaptive compression support:
+
+```cpp
+class compression_engine {
+public:
+    explicit compression_engine(compression_level level = compression_level::fast);
+
+    // Standard compression
+    [[nodiscard]] auto compress(std::span<const std::byte> input)
+        -> result<std::vector<std::byte>>;
+
+    // Standard decompression
+    [[nodiscard]] auto decompress(std::span<const std::byte> input,
+                                  std::size_t original_size)
+        -> result<std::vector<std::byte>>;
+
+    // Check if data is worth compressing (magic bytes + sample test)
+    [[nodiscard]] auto is_compressible(std::span<const std::byte> data) const
+        -> bool;
+
+    // Adaptive compression with automatic decision
+    // Returns (compressed_data, was_compressed) pair
+    [[nodiscard]] auto compress_adaptive(std::span<const std::byte> input,
+                                         compression_mode mode = compression_mode::adaptive)
+        -> result<std::pair<std::vector<std::byte>, bool>>;
+
+    // Record a skipped compression for statistics
+    auto record_skipped(std::size_t data_size) -> void;
+
+    // Statistics and configuration
+    [[nodiscard]] auto stats() const -> compression_stats;
+    auto reset_stats() -> void;
+    [[nodiscard]] auto level() const -> compression_level;
+    auto set_level(compression_level level) -> void;
+    [[nodiscard]] static auto max_compressed_size(std::size_t input_size)
+        -> std::size_t;
+};
+```
+
+### Usage Examples
+
+```cpp
+compression_engine engine(compression_level::fast);
+
+// Method 1: Manual adaptive compression
+if (engine.is_compressible(data)) {
+    auto result = engine.compress(data);
+    // Use compressed data
+} else {
+    engine.record_skipped(data.size());  // Track statistics
+    // Use original data
+}
+
+// Method 2: Automatic adaptive compression (recommended)
+auto result = engine.compress_adaptive(data, compression_mode::adaptive);
+if (result.has_value()) {
+    auto [output_data, was_compressed] = result.value();
+    if (was_compressed) {
+        // Data was compressed
+    } else {
+        // Data was skipped (pre-compressed or low ratio)
+    }
+}
+
+// Check statistics
+auto stats = engine.stats();
+std::cout << "Bytes saved: " << stats.bytes_saved() << "\n";
+std::cout << "Skip rate: " << stats.skip_rate() << "%\n";
+```
+
 ### adaptive_compression
 
 Compressibility detection utilities:
@@ -266,47 +359,56 @@ public:
 ### Statistics Structure
 
 ```cpp
-struct compression_statistics {
-    std::atomic<uint64_t> total_raw_bytes{0};
-    std::atomic<uint64_t> total_compressed_bytes{0};
-    std::atomic<uint64_t> chunks_compressed{0};
-    std::atomic<uint64_t> chunks_skipped{0};
-    std::atomic<uint64_t> compression_time_us{0};
-    std::atomic<uint64_t> decompression_time_us{0};
+struct compression_stats {
+    uint64_t total_input_bytes = 0;      // Total bytes before compression
+    uint64_t total_output_bytes = 0;     // Total bytes after compression
+    uint64_t compression_calls = 0;      // Number of compression operations
+    uint64_t decompression_calls = 0;    // Number of decompression operations
+    uint64_t skipped_compressions = 0;   // Chunks skipped (pre-compressed format)
+    uint64_t total_chunks = 0;           // Total chunks processed
+    uint64_t compressed_chunks = 0;      // Chunks actually compressed
 
-    [[nodiscard]] auto compression_ratio() const -> double {
-        return total_compressed_bytes > 0
-            ? static_cast<double>(total_raw_bytes) / total_compressed_bytes
-            : 1.0;
-    }
+    // Compression ratio (output/input, lower is better)
+    [[nodiscard]] auto compression_ratio() const -> double;
 
-    [[nodiscard]] auto compression_speed_mbps() const -> double {
-        return compression_time_us > 0
-            ? (total_raw_bytes / 1e6) / (compression_time_us / 1e6)
-            : 0.0;
-    }
+    // Average compression ratio across all chunks
+    [[nodiscard]] auto average_ratio() const -> double;
 
-    [[nodiscard]] auto decompression_speed_mbps() const -> double {
-        return decompression_time_us > 0
-            ? (total_raw_bytes / 1e6) / (decompression_time_us / 1e6)
-            : 0.0;
-    }
+    // Bytes saved by compression (input - output)
+    [[nodiscard]] auto bytes_saved() const -> uint64_t;
+
+    // Skip rate percentage (skipped/total * 100)
+    [[nodiscard]] auto skip_rate() const -> double;
 };
 ```
+
+### Statistics Fields
+
+| Field | Description | Use Case |
+|-------|-------------|----------|
+| `total_input_bytes` | Raw bytes before compression | Throughput calculation |
+| `total_output_bytes` | Bytes after compression | Bandwidth savings |
+| `compression_calls` | Number of compress() calls | Performance monitoring |
+| `skipped_compressions` | Chunks skipped as pre-compressed | Adaptive effectiveness |
+| `total_chunks` | All chunks processed | Progress tracking |
+| `compressed_chunks` | Chunks that were compressed | Compression rate |
+| `bytes_saved()` | Input - Output bytes | Bandwidth savings |
+| `skip_rate()` | Percentage of skipped chunks | Adaptive effectiveness |
 
 ### Monitoring Example
 
 ```cpp
-auto stats = sender->get_compression_stats();
+auto stats = engine.stats();
 
 std::cout << "Compression Statistics:\n";
-std::cout << "  Raw bytes:        " << stats.total_raw_bytes << "\n";
-std::cout << "  Compressed bytes: " << stats.total_compressed_bytes << "\n";
-std::cout << "  Compression ratio: " << stats.compression_ratio() << ":1\n";
-std::cout << "  Compress speed:    " << stats.compression_speed_mbps() << " MB/s\n";
-std::cout << "  Decompress speed:  " << stats.decompression_speed_mbps() << " MB/s\n";
-std::cout << "  Chunks compressed: " << stats.chunks_compressed << "\n";
-std::cout << "  Chunks skipped:    " << stats.chunks_skipped << "\n";
+std::cout << "  Input bytes:       " << stats.total_input_bytes << "\n";
+std::cout << "  Output bytes:      " << stats.total_output_bytes << "\n";
+std::cout << "  Bytes saved:       " << stats.bytes_saved() << "\n";
+std::cout << "  Compression ratio: " << stats.compression_ratio() << "\n";
+std::cout << "  Total chunks:      " << stats.total_chunks << "\n";
+std::cout << "  Compressed chunks: " << stats.compressed_chunks << "\n";
+std::cout << "  Skipped chunks:    " << stats.skipped_compressions << "\n";
+std::cout << "  Skip rate:         " << stats.skip_rate() << "%\n";
 ```
 
 ---
@@ -526,4 +628,4 @@ if (!result) {
 
 ---
 
-*Last updated: 2025-12-11*
+*Last updated: 2025-12-13*

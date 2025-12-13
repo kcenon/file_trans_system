@@ -428,6 +428,158 @@ TEST_F(CompressionEngineTest, BoundaryAtSampleSize) {
     EXPECT_EQ(data, decompress_result.value());
 }
 
+// Adaptive Compression Tests
+
+TEST_F(CompressionEngineTest, CompressAdaptive_TextData) {
+    auto text_data = create_text_data(10000);
+
+    auto result = engine_->compress_adaptive(text_data, compression_mode::adaptive);
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+
+    auto [compressed_data, was_compressed] = result.value();
+    EXPECT_TRUE(was_compressed);
+    EXPECT_LT(compressed_data.size(), text_data.size());
+}
+
+TEST_F(CompressionEngineTest, CompressAdaptive_PreCompressedData) {
+    // Create data that looks like a ZIP file
+    std::vector<std::byte> zip_data = {std::byte{0x50}, std::byte{0x4B},
+                                        std::byte{0x03}, std::byte{0x04}};
+    zip_data.resize(1000, std::byte{0x00});
+
+    auto result = engine_->compress_adaptive(zip_data, compression_mode::adaptive);
+    ASSERT_TRUE(result.has_value());
+
+    auto [output_data, was_compressed] = result.value();
+    EXPECT_FALSE(was_compressed);
+    EXPECT_EQ(output_data.size(), zip_data.size());
+}
+
+TEST_F(CompressionEngineTest, CompressAdaptive_ForcedCompression) {
+    // Even pre-compressed data should be compressed when mode is 'enabled'
+    std::vector<std::byte> zip_data = {std::byte{0x50}, std::byte{0x4B},
+                                        std::byte{0x03}, std::byte{0x04}};
+    zip_data.resize(1000, std::byte{0x00});
+
+    auto result = engine_->compress_adaptive(zip_data, compression_mode::enabled);
+    ASSERT_TRUE(result.has_value());
+
+    auto [output_data, was_compressed] = result.value();
+    EXPECT_TRUE(was_compressed);
+}
+
+TEST_F(CompressionEngineTest, CompressAdaptive_Disabled) {
+    auto text_data = create_text_data(10000);
+
+    auto result = engine_->compress_adaptive(text_data, compression_mode::disabled);
+    ASSERT_TRUE(result.has_value());
+
+    auto [output_data, was_compressed] = result.value();
+    EXPECT_FALSE(was_compressed);
+    EXPECT_EQ(output_data.size(), text_data.size());
+}
+
+TEST_F(CompressionEngineTest, CompressAdaptive_EmptyData) {
+    std::vector<std::byte> empty;
+
+    auto result = engine_->compress_adaptive(empty, compression_mode::adaptive);
+    ASSERT_TRUE(result.has_value());
+
+    auto [output_data, was_compressed] = result.value();
+    EXPECT_FALSE(was_compressed);
+    EXPECT_TRUE(output_data.empty());
+}
+
+// PDF Detection Test
+
+TEST_F(CompressionEngineTest, IsCompressible_PdfFile) {
+    // PDF magic bytes: 0x25, 0x50, 0x44, 0x46 (%PDF)
+    std::vector<std::byte> pdf_data = {std::byte{0x25}, std::byte{0x50},
+                                        std::byte{0x44}, std::byte{0x46}};
+    pdf_data.resize(1000, std::byte{0x00});
+
+    EXPECT_FALSE(engine_->is_compressible(pdf_data));
+}
+
+// MP4/MOV Detection Test
+
+TEST_F(CompressionEngineTest, IsCompressible_Mp4File) {
+    // MP4 has 'ftyp' at offset 4
+    std::vector<std::byte> mp4_data = {
+        std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x20},  // Size
+        std::byte{0x66}, std::byte{0x74}, std::byte{0x79}, std::byte{0x70},  // ftyp
+        std::byte{0x69}, std::byte{0x73}, std::byte{0x6F}, std::byte{0x6D}   // isom
+    };
+    mp4_data.resize(1000, std::byte{0x00});
+
+    EXPECT_FALSE(engine_->is_compressible(mp4_data));
+}
+
+// 7-Zip Detection Test
+
+TEST_F(CompressionEngineTest, IsCompressible_7ZipFile) {
+    // 7-Zip magic bytes
+    std::vector<std::byte> sevenz_data = {
+        std::byte{0x37}, std::byte{0x7A}, std::byte{0xBC},
+        std::byte{0xAF}, std::byte{0x27}, std::byte{0x1C}};
+    sevenz_data.resize(1000, std::byte{0x00});
+
+    EXPECT_FALSE(engine_->is_compressible(sevenz_data));
+}
+
+// Extended Statistics Tests
+
+TEST_F(CompressionEngineTest, Stats_BytesSaved) {
+    auto data = create_text_data(10000);
+    auto result = engine_->compress(data);
+    ASSERT_TRUE(result.has_value());
+
+    auto stats = engine_->stats();
+    EXPECT_GT(stats.bytes_saved(), 0);
+    EXPECT_EQ(stats.bytes_saved(), stats.total_input_bytes - stats.total_output_bytes);
+}
+
+TEST_F(CompressionEngineTest, Stats_SkipRate) {
+    engine_->reset_stats();
+
+    // Compress some text (should compress)
+    auto text_data = create_text_data(5000);
+    engine_->compress_adaptive(text_data, compression_mode::adaptive);
+
+    // "Compress" some pre-compressed data (should skip)
+    std::vector<std::byte> zip_data = {std::byte{0x50}, std::byte{0x4B},
+                                        std::byte{0x03}, std::byte{0x04}};
+    zip_data.resize(1000, std::byte{0x00});
+    engine_->compress_adaptive(zip_data, compression_mode::adaptive);
+
+    auto stats = engine_->stats();
+    EXPECT_EQ(stats.total_chunks, 2);
+    EXPECT_EQ(stats.compressed_chunks, 1);
+    EXPECT_EQ(stats.skipped_compressions, 1);
+    EXPECT_DOUBLE_EQ(stats.skip_rate(), 50.0);
+}
+
+TEST_F(CompressionEngineTest, Stats_RecordSkipped) {
+    engine_->reset_stats();
+
+    engine_->record_skipped(1000);
+    engine_->record_skipped(2000);
+
+    auto stats = engine_->stats();
+    EXPECT_EQ(stats.skipped_compressions, 2);
+    EXPECT_EQ(stats.total_chunks, 2);
+    EXPECT_EQ(stats.total_input_bytes, 3000);
+    EXPECT_EQ(stats.total_output_bytes, 3000);  // Same as input for skipped
+}
+
+TEST_F(CompressionEngineTest, Stats_AverageRatio) {
+    auto data = create_text_data(10000);
+    engine_->compress(data);
+
+    auto stats = engine_->stats();
+    EXPECT_LT(stats.average_ratio(), 1.0);  // Should be less than 1 for compressed text
+}
+
 #endif  // FILE_TRANS_ENABLE_LZ4
 
 }  // namespace kcenon::file_transfer::test
