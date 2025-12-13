@@ -170,12 +170,17 @@ struct server_pipeline::impl {
     // Upload pipeline workers
     auto run_decompress_worker(std::size_t worker_id) -> void {
         auto& engine = compression_engines[worker_id % compression_engines.size()];
+        FT_LOG_DEBUG(log_category::pipeline,
+            "Decompress worker " + std::to_string(worker_id) + " started");
 
         while (running) {
             auto chunk_opt = decompress_queue.pop();
             if (!chunk_opt) continue;
 
             auto& chunk = *chunk_opt;
+            FT_LOG_TRACE(log_category::pipeline,
+                "Processing chunk " + std::to_string(chunk.chunk_index) +
+                " in decompress stage");
 
             if (chunk.is_compressed) {
                 auto result = engine->decompress(
@@ -187,7 +192,12 @@ struct server_pipeline::impl {
                     chunk.is_compressed = false;
                     statistics.compression_saved_bytes +=
                         chunk.original_size - chunk.data.size();
+                    FT_LOG_TRACE(log_category::pipeline,
+                        "Chunk " + std::to_string(chunk.chunk_index) + " decompressed");
                 } else {
+                    FT_LOG_ERROR(log_category::pipeline,
+                        "Decompression failed for chunk " +
+                        std::to_string(chunk.chunk_index) + ": " + result.error().message);
                     if (on_error_cb) {
                         on_error_cb(pipeline_stage::decompress, result.error().message);
                     }
@@ -201,18 +211,29 @@ struct server_pipeline::impl {
 
             verify_queue.push(std::move(chunk));
         }
+
+        FT_LOG_DEBUG(log_category::pipeline,
+            "Decompress worker " + std::to_string(worker_id) + " stopped");
     }
 
     auto run_verify_worker() -> void {
+        FT_LOG_DEBUG(log_category::pipeline, "Verify worker started");
+
         while (running) {
             auto chunk_opt = verify_queue.pop();
             if (!chunk_opt) continue;
 
             auto& chunk = *chunk_opt;
+            FT_LOG_TRACE(log_category::pipeline,
+                "Verifying chunk " + std::to_string(chunk.chunk_index));
 
             // Verify CRC32 checksum
             auto calculated = checksum::crc32(std::span<const std::byte>(chunk.data));
             if (calculated != chunk.checksum) {
+                FT_LOG_ERROR(log_category::pipeline,
+                    "Checksum mismatch for chunk " + std::to_string(chunk.chunk_index) +
+                    " (expected: " + std::to_string(chunk.checksum) +
+                    ", got: " + std::to_string(calculated) + ")");
                 if (on_error_cb) {
                     on_error_cb(pipeline_stage::chunk_verify,
                                "Checksum mismatch for chunk " +
@@ -223,6 +244,8 @@ struct server_pipeline::impl {
 
             statistics.chunks_processed++;
             statistics.bytes_processed += chunk.data.size();
+            FT_LOG_TRACE(log_category::pipeline,
+                "Chunk " + std::to_string(chunk.chunk_index) + " verified successfully");
 
             if (on_stage_complete_cb) {
                 on_stage_complete_cb(pipeline_stage::chunk_verify, chunk);
@@ -230,14 +253,21 @@ struct server_pipeline::impl {
 
             write_queue.push(std::move(chunk));
         }
+
+        FT_LOG_DEBUG(log_category::pipeline, "Verify worker stopped");
     }
 
     auto run_write_worker() -> void {
+        FT_LOG_DEBUG(log_category::pipeline, "Write worker started");
+
         while (running) {
             auto chunk_opt = write_queue.pop();
             if (!chunk_opt) continue;
 
             auto& chunk = *chunk_opt;
+            FT_LOG_TRACE(log_category::pipeline,
+                "Writing chunk " + std::to_string(chunk.chunk_index) +
+                " (" + std::to_string(chunk.data.size()) + " bytes)");
 
             // Write to file (simplified - in production would use proper file management)
             if (on_stage_complete_cb) {
@@ -248,18 +278,27 @@ struct server_pipeline::impl {
                 on_upload_complete_cb(chunk.id, chunk.data.size());
             }
         }
+
+        FT_LOG_DEBUG(log_category::pipeline, "Write worker stopped");
     }
 
     // Download pipeline workers
     auto run_read_worker() -> void {
+        FT_LOG_DEBUG(log_category::pipeline, "Read worker started");
+
         while (running) {
             auto request_opt = read_queue.pop();
             if (!request_opt) continue;
 
             auto& request = *request_opt;
+            FT_LOG_TRACE(log_category::pipeline,
+                "Reading chunk " + std::to_string(request.chunk_index) +
+                " from " + request.file_path.filename().string());
 
             std::ifstream file(request.file_path, std::ios::binary);
             if (!file) {
+                FT_LOG_ERROR(log_category::pipeline,
+                    "Failed to open file: " + request.file_path.string());
                 if (on_error_cb) {
                     on_error_cb(pipeline_stage::file_read,
                                "Failed to open file: " + request.file_path.string());
@@ -269,6 +308,8 @@ struct server_pipeline::impl {
 
             file.seekg(static_cast<std::streamoff>(request.offset));
             if (!file) {
+                FT_LOG_ERROR(log_category::pipeline,
+                    "Failed to seek in file: " + request.file_path.string());
                 if (on_error_cb) {
                     on_error_cb(pipeline_stage::file_read,
                                "Failed to seek in file: " + request.file_path.string());
@@ -292,6 +333,9 @@ struct server_pipeline::impl {
             }
 
             chunk.checksum = checksum::crc32(std::span<const std::byte>(chunk.data));
+            FT_LOG_TRACE(log_category::pipeline,
+                "Chunk " + std::to_string(request.chunk_index) + " read (" +
+                std::to_string(bytes_read) + " bytes)");
 
             if (on_stage_complete_cb) {
                 on_stage_complete_cb(pipeline_stage::file_read, chunk);
@@ -299,27 +343,42 @@ struct server_pipeline::impl {
 
             compress_queue.push(std::move(chunk));
         }
+
+        FT_LOG_DEBUG(log_category::pipeline, "Read worker stopped");
     }
 
     auto run_compress_worker(std::size_t worker_id) -> void {
         auto& engine = compression_engines[worker_id % compression_engines.size()];
+        FT_LOG_DEBUG(log_category::pipeline,
+            "Compress worker " + std::to_string(worker_id) + " started");
 
         while (running) {
             auto chunk_opt = compress_queue.pop();
             if (!chunk_opt) continue;
 
             auto& chunk = *chunk_opt;
+            FT_LOG_TRACE(log_category::pipeline,
+                "Compressing chunk " + std::to_string(chunk.chunk_index));
 
             // Check if compression would be beneficial
             if (engine->is_compressible(std::span<const std::byte>(chunk.data))) {
                 auto result = engine->compress(std::span<const std::byte>(chunk.data));
                 if (result.has_value() && result.value().size() < chunk.data.size()) {
+                    auto original = chunk.data.size();
                     chunk.original_size = chunk.data.size();
                     chunk.data = std::move(result.value());
                     chunk.is_compressed = true;
                     statistics.compression_saved_bytes +=
                         chunk.original_size - chunk.data.size();
+                    FT_LOG_TRACE(log_category::pipeline,
+                        "Chunk " + std::to_string(chunk.chunk_index) +
+                        " compressed: " + std::to_string(original) + " -> " +
+                        std::to_string(chunk.data.size()) + " bytes");
                 }
+            } else {
+                FT_LOG_TRACE(log_category::pipeline,
+                    "Chunk " + std::to_string(chunk.chunk_index) +
+                    " skipped compression (not compressible)");
             }
 
             if (on_stage_complete_cb) {
@@ -328,14 +387,22 @@ struct server_pipeline::impl {
 
             send_queue.push(std::move(chunk));
         }
+
+        FT_LOG_DEBUG(log_category::pipeline,
+            "Compress worker " + std::to_string(worker_id) + " stopped");
     }
 
     auto run_send_worker() -> void {
+        FT_LOG_DEBUG(log_category::pipeline, "Send worker started");
+
         while (running) {
             auto chunk_opt = send_queue.pop();
             if (!chunk_opt) continue;
 
             auto& chunk = *chunk_opt;
+            FT_LOG_TRACE(log_category::pipeline,
+                "Sending chunk " + std::to_string(chunk.chunk_index) +
+                " (" + std::to_string(chunk.data.size()) + " bytes)");
 
             // Apply send bandwidth limit if configured
             if (send_limiter) {
@@ -353,6 +420,8 @@ struct server_pipeline::impl {
                 on_download_ready_cb(chunk);
             }
         }
+
+        FT_LOG_DEBUG(log_category::pipeline, "Send worker stopped");
     }
 
     auto start_workers() -> void {
@@ -493,25 +562,43 @@ server_pipeline::~server_pipeline() {
 
 auto server_pipeline::start() -> result<void> {
     if (impl_->running) {
+        FT_LOG_WARN(log_category::pipeline, "Pipeline start failed: already running");
         return unexpected{error{error_code::already_initialized,
                                "Pipeline is already running"}};
     }
 
+    FT_LOG_INFO(log_category::pipeline,
+        "Starting pipeline with " + std::to_string(impl_->config.io_workers) +
+        " I/O workers, " + std::to_string(impl_->config.compression_workers) +
+        " compression workers, " + std::to_string(impl_->config.network_workers) +
+        " network workers");
+
     impl_->running = true;
     impl_->start_workers();
 
+    FT_LOG_INFO(log_category::pipeline, "Pipeline started successfully");
     return {};
 }
 
 auto server_pipeline::stop(bool wait_for_completion) -> result<void> {
     if (!impl_->running) {
+        FT_LOG_WARN(log_category::pipeline, "Pipeline stop failed: not running");
         return unexpected{error{error_code::not_initialized,
                                "Pipeline is not running"}};
     }
 
+    FT_LOG_INFO(log_category::pipeline,
+        "Stopping pipeline (wait_for_completion=" +
+        std::string(wait_for_completion ? "true" : "false") + ")");
+
     impl_->running = false;
     impl_->stop_workers(wait_for_completion);
 
+    FT_LOG_INFO(log_category::pipeline,
+        "Pipeline stopped. Stats: " + std::to_string(impl_->statistics.chunks_processed) +
+        " chunks processed, " + std::to_string(impl_->statistics.bytes_processed) +
+        " bytes, " + std::to_string(impl_->statistics.compression_saved_bytes) +
+        " bytes saved by compression");
     return {};
 }
 
