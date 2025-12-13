@@ -369,8 +369,21 @@ struct file_transfer_client::impl {
 
     void set_state(connection_state new_state) {
         auto old_state = current_state.exchange(new_state);
-        if (old_state != new_state && state_callback) {
-            state_callback(new_state);
+        if (old_state != new_state) {
+            // Log state transitions
+            if (new_state == connection_state::reconnecting) {
+                FT_LOG_INFO(log_category::client, "Attempting to reconnect to server");
+            } else if (new_state == connection_state::connected &&
+                       old_state == connection_state::reconnecting) {
+                FT_LOG_INFO(log_category::client, "Reconnection successful");
+            } else if (new_state == connection_state::disconnected &&
+                       old_state == connection_state::reconnecting) {
+                FT_LOG_WARN(log_category::client, "Reconnection failed");
+            }
+
+            if (state_callback) {
+                state_callback(new_state);
+            }
         }
     }
 };
@@ -821,6 +834,7 @@ auto file_transfer_client::finalize_download(uint64_t handle_id) -> result<void>
         std::lock_guard lock(impl_->download_mutex);
         auto it = impl_->download_contexts.find(handle_id);
         if (it == impl_->download_contexts.end()) {
+            FT_LOG_ERROR(log_category::client, "Download finalization failed: context not found");
             return unexpected{error{error_code::not_initialized,
                                    "Download context not found"}};
         }
@@ -829,12 +843,19 @@ auto file_transfer_client::finalize_download(uint64_t handle_id) -> result<void>
 
     std::lock_guard ctx_lock(ctx->mutex);
     ctx->state = download_state::verifying;
+    FT_LOG_DEBUG(log_category::client, "Download verification started for: " + ctx->remote_name);
 
     // Verify SHA-256 hash if enabled
     if (ctx->options.verify_hash && !ctx->expected_sha256.empty()) {
         if (!checksum::verify_sha256(ctx->temp_path, ctx->expected_sha256)) {
             ctx->state = download_state::failed;
             ctx->error_message = "SHA-256 hash mismatch";
+
+            transfer_log_context log_ctx;
+            log_ctx.transfer_id = ctx->tid.to_string();
+            log_ctx.filename = ctx->remote_name;
+            log_ctx.error_message = ctx->error_message;
+            FT_LOG_ERROR_CTX(log_category::client, "Download failed: hash verification error", log_ctx);
 
             // Clean up temp file
             std::error_code ec;
@@ -871,6 +892,12 @@ auto file_transfer_client::finalize_download(uint64_t handle_id) -> result<void>
         ctx->state = download_state::failed;
         ctx->error_message = "Cannot move file: " + ec.message();
 
+        transfer_log_context log_ctx;
+        log_ctx.transfer_id = ctx->tid.to_string();
+        log_ctx.filename = ctx->remote_name;
+        log_ctx.error_message = ctx->error_message;
+        FT_LOG_ERROR_CTX(log_category::client, "Download failed: file move error", log_ctx);
+
         // Invoke completion callback with error
         if (impl_->complete_callback) {
             transfer_result result;
@@ -886,6 +913,26 @@ auto file_transfer_client::finalize_download(uint64_t handle_id) -> result<void>
     }
 
     ctx->state = download_state::completed;
+
+    // Log download completion
+    {
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - ctx->start_time).count();
+        double rate_mbps = (elapsed_ms > 0)
+            ? (static_cast<double>(ctx->bytes_received) * 8.0 / 1000000.0) /
+              (static_cast<double>(elapsed_ms) / 1000.0)
+            : 0.0;
+
+        transfer_log_context log_ctx;
+        log_ctx.transfer_id = ctx->tid.to_string();
+        log_ctx.filename = ctx->remote_name;
+        log_ctx.file_size = ctx->file_size;
+        log_ctx.bytes_transferred = ctx->bytes_received;
+        log_ctx.duration_ms = static_cast<uint64_t>(elapsed_ms);
+        log_ctx.rate_mbps = rate_mbps;
+        FT_LOG_INFO_CTX(log_category::client, "Download completed successfully", log_ctx);
+    }
 
     // Update statistics
     {
@@ -914,6 +961,7 @@ auto file_transfer_client::cancel_download(uint64_t handle_id) -> result<void> {
         std::lock_guard lock(impl_->download_mutex);
         auto it = impl_->download_contexts.find(handle_id);
         if (it == impl_->download_contexts.end()) {
+            FT_LOG_WARN(log_category::client, "Cancel download failed: context not found");
             return unexpected{error{error_code::not_initialized,
                                    "Download context not found"}};
         }
@@ -924,6 +972,13 @@ auto file_transfer_client::cancel_download(uint64_t handle_id) -> result<void> {
         std::lock_guard ctx_lock(ctx->mutex);
         ctx->cancelled = true;
         ctx->state = internal_transfer_state::cancelled;
+
+        transfer_log_context log_ctx;
+        log_ctx.transfer_id = ctx->tid.to_string();
+        log_ctx.filename = ctx->remote_name;
+        log_ctx.bytes_transferred = ctx->bytes_received;
+        FT_LOG_INFO_CTX(log_category::client, "Download cancelled by user", log_ctx);
+
         ctx->cv.notify_all();
     }
 
