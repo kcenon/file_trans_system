@@ -315,13 +315,64 @@ private:
 
 /**
  * @brief Client statistics
+ *
+ * Tracks cumulative statistics for the client session including
+ * transfer counts, compression efficiency, and active transfer state.
  */
 struct client_statistics {
-    uint64_t total_bytes_uploaded = 0;
-    uint64_t total_bytes_downloaded = 0;
-    uint64_t total_files_uploaded = 0;
-    uint64_t total_files_downloaded = 0;
-    std::size_t active_transfers = 0;
+    // Transfer volume statistics
+    uint64_t total_bytes_uploaded = 0;          ///< Total uncompressed bytes uploaded
+    uint64_t total_bytes_downloaded = 0;        ///< Total uncompressed bytes downloaded
+    uint64_t total_bytes_on_wire_upload = 0;    ///< Total compressed bytes sent
+    uint64_t total_bytes_on_wire_download = 0;  ///< Total compressed bytes received
+
+    // Transfer count statistics
+    uint64_t total_files_uploaded = 0;          ///< Total files uploaded
+    uint64_t total_files_downloaded = 0;        ///< Total files downloaded
+    uint64_t total_chunks_transferred = 0;      ///< Total chunks transferred
+
+    // Active transfer state
+    std::size_t active_transfers = 0;           ///< Current active transfers
+    std::size_t active_uploads = 0;             ///< Current active uploads
+    std::size_t active_downloads = 0;           ///< Current active downloads
+
+    // Error tracking
+    uint64_t total_errors = 0;                  ///< Total transfer errors
+    uint64_t total_retries = 0;                 ///< Total retry attempts
+
+    // Session timing
+    std::chrono::milliseconds session_duration{0};  ///< Current session duration
+
+    /**
+     * @brief Get upload compression ratio
+     * @return Ratio of compressed to original size (1.0 = no compression)
+     */
+    [[nodiscard]] auto upload_compression_ratio() const -> double {
+        if (total_bytes_uploaded == 0) return 1.0;
+        return static_cast<double>(total_bytes_on_wire_upload) /
+               static_cast<double>(total_bytes_uploaded);
+    }
+
+    /**
+     * @brief Get download compression ratio
+     * @return Ratio of compressed to original size (1.0 = no compression)
+     */
+    [[nodiscard]] auto download_compression_ratio() const -> double {
+        if (total_bytes_downloaded == 0) return 1.0;
+        return static_cast<double>(total_bytes_on_wire_download) /
+               static_cast<double>(total_bytes_downloaded);
+    }
+
+    /**
+     * @brief Get overall compression ratio
+     * @return Combined compression ratio for all transfers
+     */
+    [[nodiscard]] auto overall_compression_ratio() const -> double {
+        uint64_t total_original = total_bytes_uploaded + total_bytes_downloaded;
+        uint64_t total_wire = total_bytes_on_wire_upload + total_bytes_on_wire_download;
+        if (total_original == 0) return 1.0;
+        return static_cast<double>(total_wire) / static_cast<double>(total_original);
+    }
 };
 
 // ============================================================================
