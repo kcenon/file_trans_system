@@ -96,6 +96,20 @@ public:
         auto with_connect_timeout(std::chrono::milliseconds timeout) -> builder&;
 
         /**
+         * @brief Set progress callback interval
+         * @param interval Interval between progress callbacks (default: 100ms)
+         * @return Reference to builder for chaining
+         */
+        auto with_progress_interval(std::chrono::milliseconds interval) -> builder&;
+
+        /**
+         * @brief Set progress configuration
+         * @param config Progress callback configuration
+         * @return Reference to builder for chaining
+         */
+        auto with_progress_config(const progress_config& config) -> builder&;
+
+        /**
          * @brief Build the client instance
          * @return Result containing the client or an error
          */

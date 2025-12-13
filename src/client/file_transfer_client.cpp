@@ -418,6 +418,18 @@ auto file_transfer_client::builder::with_connect_timeout(
     return *this;
 }
 
+auto file_transfer_client::builder::with_progress_interval(
+    std::chrono::milliseconds interval) -> builder& {
+    config_.progress.callback_interval = interval;
+    return *this;
+}
+
+auto file_transfer_client::builder::with_progress_config(
+    const progress_config& config) -> builder& {
+    config_.progress = config;
+    return *this;
+}
+
 auto file_transfer_client::builder::build() -> result<file_transfer_client> {
     if (config_.chunk_size < 64 * 1024 || config_.chunk_size > 1024 * 1024) {
         return unexpected{error{error_code::invalid_chunk_size,

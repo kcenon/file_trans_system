@@ -71,6 +71,18 @@ enum class compression_level {
 };
 
 /**
+ * @brief Progress callback configuration
+ *
+ * Controls how frequently progress updates are sent and how
+ * transfer rates are calculated.
+ */
+struct progress_config {
+    std::chrono::milliseconds callback_interval{100};  ///< Interval between progress callbacks
+    std::size_t rate_window_size = 10;                 ///< Number of samples for moving average
+    std::chrono::milliseconds rate_sample_interval{100};  ///< Interval between rate samples
+};
+
+/**
  * @brief Client configuration
  */
 struct client_config {
@@ -82,6 +94,7 @@ struct client_config {
     std::optional<std::size_t> upload_bandwidth_limit;
     std::optional<std::size_t> download_bandwidth_limit;
     std::chrono::milliseconds connect_timeout{30000};
+    progress_config progress;              ///< Progress callback configuration
 };
 
 /**
