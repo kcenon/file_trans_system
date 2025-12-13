@@ -326,6 +326,11 @@ public:
     auto save_state(const transfer_state& state) -> result<void> {
         std::unique_lock lock(mutex_);
 
+        FT_LOG_DEBUG(log_category::resume,
+            "Saving transfer state: " + state.id.to_string() +
+            " (" + std::to_string(state.received_chunk_count()) + "/" +
+            std::to_string(state.total_chunks) + " chunks)");
+
         // Update cache
         cache_[state.id] = state;
 
@@ -333,25 +338,36 @@ public:
         auto path = get_state_file_path(config_.state_directory, state.id);
         std::ofstream file(path);
         if (!file) {
+            FT_LOG_ERROR(log_category::resume,
+                "Failed to open state file for writing: " + path.string());
             return unexpected(error(error_code::file_write_error,
                 "failed to open state file for writing"));
         }
 
         file << serialize_state_to_json(state);
         if (!file) {
+            FT_LOG_ERROR(log_category::resume,
+                "Failed to write state file: " + path.string());
             return unexpected(error(error_code::file_write_error,
                 "failed to write state file"));
         }
 
+        FT_LOG_TRACE(log_category::resume,
+            "State persisted to: " + path.string());
         return {};
     }
 
     auto load_state(const transfer_id& id) -> result<transfer_state> {
+        FT_LOG_TRACE(log_category::resume,
+            "Loading transfer state: " + id.to_string());
+
         // Check cache first
         {
             std::shared_lock lock(mutex_);
             auto it = cache_.find(id);
             if (it != cache_.end()) {
+                FT_LOG_TRACE(log_category::resume,
+                    "State found in cache: " + id.to_string());
                 return it->second;
             }
         }
@@ -359,12 +375,16 @@ public:
         // Load from file
         auto path = get_state_file_path(config_.state_directory, id);
         if (!std::filesystem::exists(path)) {
+            FT_LOG_DEBUG(log_category::resume,
+                "State file not found: " + path.string());
             return unexpected(error(error_code::file_not_found,
                 "state file not found"));
         }
 
         std::ifstream file(path);
         if (!file) {
+            FT_LOG_ERROR(log_category::resume,
+                "Failed to open state file: " + path.string());
             return unexpected(error(error_code::file_read_error,
                 "failed to open state file"));
         }
@@ -374,8 +394,16 @@ public:
 
         auto result = deserialize_state_from_json(oss.str());
         if (!result) {
+            FT_LOG_ERROR(log_category::resume,
+                "Failed to deserialize state: " + id.to_string());
             return result;
         }
+
+        FT_LOG_DEBUG(log_category::resume,
+            "State recovered: " + id.to_string() +
+            " (" + std::to_string(result.value().received_chunk_count()) + "/" +
+            std::to_string(result.value().total_chunks) + " chunks, " +
+            std::to_string(result.value().completion_percentage()) + "% complete)");
 
         // Update cache
         {
@@ -389,6 +417,9 @@ public:
     auto delete_state(const transfer_id& id) -> result<void> {
         std::unique_lock lock(mutex_);
 
+        FT_LOG_DEBUG(log_category::resume,
+            "Deleting transfer state: " + id.to_string());
+
         // Remove from cache
         cache_.erase(id);
 
@@ -398,9 +429,14 @@ public:
         if (std::filesystem::exists(path)) {
             std::filesystem::remove(path, ec);
             if (ec) {
+                FT_LOG_ERROR(log_category::resume,
+                    "Failed to delete state file: " + path.string() +
+                    " (" + ec.message() + ")");
                 return unexpected(error(error_code::file_write_error,
                     "failed to delete state file: " + ec.message()));
             }
+            FT_LOG_TRACE(log_category::resume,
+                "State file deleted: " + path.string());
         }
 
         return {};
@@ -533,10 +569,14 @@ public:
     }
 
     auto list_resumable_transfers() -> std::vector<transfer_state> {
+        FT_LOG_DEBUG(log_category::resume, "Listing resumable transfers");
+
         std::vector<transfer_state> states;
 
         std::error_code ec;
         if (!std::filesystem::exists(config_.state_directory)) {
+            FT_LOG_DEBUG(log_category::resume,
+                "State directory does not exist");
             return states;
         }
 
@@ -558,15 +598,21 @@ public:
             }
         }
 
+        FT_LOG_INFO(log_category::resume,
+            "Found " + std::to_string(states.size()) + " resumable transfers");
         return states;
     }
 
     auto cleanup_expired_states() -> std::size_t {
+        FT_LOG_INFO(log_category::resume, "Starting expired state cleanup");
+
         std::size_t removed = 0;
         auto now = std::chrono::system_clock::now();
 
         std::error_code ec;
         if (!std::filesystem::exists(config_.state_directory)) {
+            FT_LOG_DEBUG(log_category::resume,
+                "State directory does not exist, nothing to clean");
             return 0;
         }
 
@@ -591,6 +637,8 @@ public:
 
             auto age = now - load_result.value().last_activity;
             if (age > config_.state_ttl) {
+                FT_LOG_DEBUG(log_category::resume,
+                    "State expired: " + id->to_string());
                 to_remove.push_back(*id);
             }
         }
@@ -601,6 +649,8 @@ public:
             }
         }
 
+        FT_LOG_INFO(log_category::resume,
+            "Cleanup completed: " + std::to_string(removed) + " expired states removed");
         return removed;
     }
 
