@@ -1,0 +1,205 @@
+name: Performance Benchmarks
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Run weekly on Sunday at 00:00 UTC
+    - cron: '0 0 * * 0'
+  workflow_dispatch:
+    inputs:
+      benchmark_filter:
+        description: 'Benchmark filter pattern (e.g., "BM_LZ4*")'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  benchmark:
+    name: Run Performance Benchmarks
+    runs-on: ubuntu-24.04
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake ninja-build g++ liblz4-dev
+
+    - name: Configure CMake
+      run: |
+        cmake -B build -G Ninja \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_CXX_COMPILER=g++ \
+          -DBUILD_WITH_COMMON_SYSTEM=OFF \
+          -DBUILD_WITH_THREAD_SYSTEM=OFF \
+          -DBUILD_WITH_NETWORK_SYSTEM=OFF \
+          -DBUILD_WITH_CONTAINER_SYSTEM=OFF \
+          -DFILE_TRANS_BUILD_TESTS=OFF \
+          -DFILE_TRANS_BUILD_EXAMPLES=OFF \
+          -DFILE_TRANS_BUILD_BENCHMARKS=ON
+
+    - name: Build benchmarks
+      run: cmake --build build --config Release --parallel
+
+    - name: Create results directory
+      run: mkdir -p benchmark_results
+
+    - name: Run throughput benchmarks
+      timeout-minutes: 10
+      run: |
+        FILTER="${{ github.event.inputs.benchmark_filter }}"
+        FILTER_ARG=""
+        if [ -n "$FILTER" ]; then
+          FILTER_ARG="--benchmark_filter=$FILTER"
+        fi
+        ./build/bin/throughput_benchmarks \
+          --benchmark_format=json \
+          --benchmark_out=benchmark_results/throughput.json \
+          --benchmark_repetitions=3 \
+          --benchmark_report_aggregates_only=true \
+          $FILTER_ARG || true
+
+    - name: Run compression benchmarks
+      timeout-minutes: 10
+      run: |
+        FILTER="${{ github.event.inputs.benchmark_filter }}"
+        FILTER_ARG=""
+        if [ -n "$FILTER" ]; then
+          FILTER_ARG="--benchmark_filter=$FILTER"
+        fi
+        ./build/bin/compression_benchmarks \
+          --benchmark_format=json \
+          --benchmark_out=benchmark_results/compression.json \
+          --benchmark_repetitions=3 \
+          --benchmark_report_aggregates_only=true \
+          $FILTER_ARG || true
+
+    # Note: Latency, memory, and scalability benchmarks require server/client connections
+    # which may not work reliably in CI environments. They are skipped for now.
+    # Run these benchmarks locally for accurate measurements.
+
+    - name: Run latency benchmarks (skipped in CI)
+      timeout-minutes: 5
+      continue-on-error: true
+      run: |
+        echo "Latency benchmarks require server/client connections and are skipped in CI."
+        echo "Run locally: ./build/bin/latency_benchmarks"
+        echo '{"benchmarks": []}' > benchmark_results/latency.json
+
+    - name: Run memory benchmarks (skipped in CI)
+      timeout-minutes: 5
+      continue-on-error: true
+      run: |
+        echo "Memory benchmarks require server/client connections and are skipped in CI."
+        echo "Run locally: ./build/bin/memory_benchmarks"
+        echo '{"benchmarks": []}' > benchmark_results/memory.json
+
+    - name: Run scalability benchmarks (skipped in CI)
+      timeout-minutes: 5
+      continue-on-error: true
+      run: |
+        echo "Scalability benchmarks require server/client connections and are skipped in CI."
+        echo "Run locally: ./build/bin/scalability_benchmarks"
+        echo '{"benchmarks": []}' > benchmark_results/scalability.json
+
+    - name: Merge benchmark results
+      run: |
+        # Create a combined results file for regression detection
+        echo '{"benchmarks": []}' > benchmark_results/combined.json
+        for file in benchmark_results/*.json; do
+          if [ "$file" != "benchmark_results/combined.json" ] && [ -f "$file" ]; then
+            # Extract benchmarks array and append to combined
+            if jq -e '.benchmarks' "$file" > /dev/null 2>&1; then
+              jq -s '.[0].benchmarks += .[1].benchmarks | .[0]' \
+                benchmark_results/combined.json "$file" > benchmark_results/temp.json
+              mv benchmark_results/temp.json benchmark_results/combined.json
+            fi
+          fi
+        done
+
+    - name: Upload benchmark results
+      uses: actions/upload-artifact@v4
+      with:
+        name: benchmark-results-${{ github.sha }}
+        path: benchmark_results/
+        retention-days: 90
+
+    - name: Store benchmark results (main branch)
+      if: github.ref == 'refs/heads/main'
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        name: 'File Transfer System Benchmarks'
+        tool: 'googlecpp'
+        output-file-path: benchmark_results/combined.json
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        auto-push: true
+        alert-threshold: '150%'
+        comment-on-alert: true
+        fail-on-alert: false
+        alert-comment-cc-users: '@kcenon'
+
+    - name: Check if gh-pages branch exists
+      if: github.event_name == 'pull_request'
+      id: check-gh-pages
+      run: |
+        if git ls-remote --heads origin gh-pages | grep -q gh-pages; then
+          echo "exists=true" >> $GITHUB_OUTPUT
+        else
+          echo "exists=false" >> $GITHUB_OUTPUT
+          echo "⚠️ gh-pages branch does not exist yet. Baseline comparison will be skipped."
+          echo "The branch will be created when the first benchmark runs on main."
+        fi
+
+    - name: Compare with baseline (PR)
+      if: github.event_name == 'pull_request' && steps.check-gh-pages.outputs.exists == 'true'
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        name: 'File Transfer System Benchmarks'
+        tool: 'googlecpp'
+        output-file-path: benchmark_results/combined.json
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        auto-push: false
+        alert-threshold: '150%'
+        comment-on-alert: true
+        fail-on-alert: false
+
+    - name: Generate benchmark summary
+      if: always()
+      run: |
+        echo "## Benchmark Results Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Throughput Benchmarks" >> $GITHUB_STEP_SUMMARY
+        if [ -f benchmark_results/throughput.json ]; then
+          jq -r '.benchmarks[] | select(.aggregate_name == "mean") | "- \(.name): \(.real_time | floor)ns (\(.bytes_per_second / 1048576 | floor // "N/A")MB/s)"' \
+            benchmark_results/throughput.json 2>/dev/null >> $GITHUB_STEP_SUMMARY || echo "- Results parsing failed" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "- No results available" >> $GITHUB_STEP_SUMMARY
+        fi
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Compression Benchmarks" >> $GITHUB_STEP_SUMMARY
+        if [ -f benchmark_results/compression.json ]; then
+          jq -r '.benchmarks[] | select(.aggregate_name == "mean") | "- \(.name): \(.real_time | floor)ns (\(.bytes_per_second / 1048576 | floor // "N/A")MB/s)"' \
+            benchmark_results/compression.json 2>/dev/null >> $GITHUB_STEP_SUMMARY || echo "- Results parsing failed" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "- No results available" >> $GITHUB_STEP_SUMMARY
+        fi
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Memory Benchmarks" >> $GITHUB_STEP_SUMMARY
+        if [ -f benchmark_results/memory.json ]; then
+          jq -r '.benchmarks[] | select(.aggregate_name == "mean") | "- \(.name): \(.real_time | floor)ns"' \
+            benchmark_results/memory.json 2>/dev/null >> $GITHUB_STEP_SUMMARY || echo "- Results parsing failed" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "- No results available" >> $GITHUB_STEP_SUMMARY
+        fi
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "📊 [View detailed results](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY

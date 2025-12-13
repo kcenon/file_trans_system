@@ -222,13 +222,55 @@ BM_Checksum_CRC32/1024               2.5 us         2.5 us     280000
 
 ## CI Integration
 
-Benchmarks can be run in CI with:
+### GitHub Actions Workflow
+
+Benchmarks are automatically run via the `benchmark.yml` workflow:
+
+- **Triggers**: Push to main, pull requests, weekly schedule (Sunday 00:00 UTC)
+- **Manual trigger**: Use workflow_dispatch with optional filter pattern
+
+**Note**: The following benchmarks are skipped in CI because they require server/client connections:
+- `latency_benchmarks` - Connection setup, file list response, TTFB
+- `memory_benchmarks` - Server/client memory usage
+- `scalability_benchmarks` - Concurrent connections, long-running stability
+
+Run these benchmarks locally for accurate measurements.
 
 ```bash
+# Trigger manually from GitHub CLI
+gh workflow run benchmark.yml --ref main
+
+# With filter pattern
+gh workflow run benchmark.yml --ref main -f benchmark_filter="BM_LZ4*"
+```
+
+### Automatic Regression Detection
+
+The workflow uses [github-action-benchmark](https://github.com/benchmark-action/github-action-benchmark) for automatic regression detection:
+
+- Results are stored in the `gh-pages` branch
+- Historical comparison is available at `https://<owner>.github.io/<repo>/dev/bench/`
+- **Alert threshold**: 150% of baseline (configurable)
+- PR comments are posted when regressions are detected
+
+### Local CI Simulation
+
+```bash
+# Build and run all benchmarks with CI settings
+cmake -B build -DFILE_TRANS_BUILD_BENCHMARKS=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel
+
+# Run with JSON output
 ./build/bin/throughput_benchmarks \
     --benchmark_format=json \
     --benchmark_out=benchmark_results.json \
-    --benchmark_repetitions=3
+    --benchmark_repetitions=3 \
+    --benchmark_report_aggregates_only=true
 ```
 
-Use the JSON output for regression detection by comparing against baseline results.
+### Benchmark Artifacts
+
+CI runs upload benchmark results as artifacts:
+- **Retention**: 90 days
+- **Format**: JSON files per benchmark category
+- **Download**: Available from the Actions run page
