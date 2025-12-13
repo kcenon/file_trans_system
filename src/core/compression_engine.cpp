@@ -27,7 +27,7 @@ struct magic_signature {
 };
 
 // Common compressed/binary file signatures
-constexpr std::array<magic_signature, 14> compressed_signatures = {{
+constexpr std::array<magic_signature, 15> compressed_signatures = {{
     // ZIP
     {{0x50, 0x4B, 0x03, 0x04}, 4},
     {{0x50, 0x4B, 0x05, 0x06}, 4},
@@ -48,19 +48,34 @@ constexpr std::array<magic_signature, 14> compressed_signatures = {{
     {{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}, 8},
     // GIF
     {{0x47, 0x49, 0x46, 0x38}, 4},
-    // WEBP
+    // WEBP (RIFF container)
     {{0x52, 0x49, 0x46, 0x46}, 4},
-    // MP3
+    // MP3 (ID3 tag or frame sync)
     {{0xFF, 0xFB}, 2},
-    // MP4/MOV
-    {{0x00, 0x00, 0x00}, 3},
+    // PDF
+    {{0x25, 0x50, 0x44, 0x46}, 4},
+    // 7-Zip
+    {{0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C}, 6},
 }};
+
+// MP4/MOV ftyp signature (at offset 4)
+auto is_mp4_format(std::span<const std::byte> data) -> bool {
+    if (data.size() < 12) {
+        return false;
+    }
+    // Check for 'ftyp' at offset 4
+    return static_cast<uint8_t>(data[4]) == 0x66 &&   // 'f'
+           static_cast<uint8_t>(data[5]) == 0x74 &&   // 't'
+           static_cast<uint8_t>(data[6]) == 0x79 &&   // 'y'
+           static_cast<uint8_t>(data[7]) == 0x70;     // 'p'
+}
 
 auto is_precompressed_format(std::span<const std::byte> data) -> bool {
     if (data.size() < 8) {
         return false;
     }
 
+    // Check magic byte signatures
     for (const auto& sig : compressed_signatures) {
         if (data.size() >= sig.length) {
             bool match = true;
@@ -75,6 +90,12 @@ auto is_precompressed_format(std::span<const std::byte> data) -> bool {
             }
         }
     }
+
+    // Check MP4/MOV format (ftyp at offset 4)
+    if (is_mp4_format(data)) {
+        return true;
+    }
+
     return false;
 }
 
@@ -251,6 +272,64 @@ public:
 
     auto set_level(compression_level level) -> void { level_ = level; }
 
+    auto record_skipped(std::size_t data_size) -> void {
+        std::lock_guard lock(stats_mutex_);
+        stats_.skipped_compressions++;
+        stats_.total_chunks++;
+        stats_.total_input_bytes += data_size;
+        stats_.total_output_bytes += data_size;  // No compression, same size
+    }
+
+    auto compress_adaptive(std::span<const std::byte> input, compression_mode mode)
+        -> result<std::pair<std::vector<std::byte>, bool>> {
+#ifndef FILE_TRANS_ENABLE_LZ4
+        (void)input;
+        (void)mode;
+        return unexpected(error(error_code::internal_error, "LZ4 compression not enabled"));
+#else
+        if (input.empty()) {
+            std::lock_guard lock(stats_mutex_);
+            stats_.total_chunks++;
+            return std::make_pair(std::vector<std::byte>{}, false);
+        }
+
+        bool should_compress = false;
+        switch (mode) {
+            case compression_mode::disabled:
+                should_compress = false;
+                break;
+            case compression_mode::enabled:
+                should_compress = true;
+                break;
+            case compression_mode::adaptive:
+            default:
+                should_compress = is_compressible(input);
+                break;
+        }
+
+        if (!should_compress) {
+            // Skip compression - record stats and return original data
+            record_skipped(input.size());
+            return std::make_pair(
+                std::vector<std::byte>(input.begin(), input.end()), false);
+        }
+
+        // Perform compression
+        auto compress_result = compress(input);
+        if (!compress_result.has_value()) {
+            return unexpected(compress_result.error());
+        }
+
+        {
+            std::lock_guard lock(stats_mutex_);
+            stats_.total_chunks++;
+            stats_.compressed_chunks++;
+        }
+
+        return std::make_pair(std::move(compress_result.value()), true);
+#endif
+    }
+
 private:
     compression_level level_;
     compression_stats stats_;
@@ -304,6 +383,16 @@ auto compression_engine::max_compressed_size(std::size_t input_size) -> std::siz
 #else
     return input_size;
 #endif
+}
+
+auto compression_engine::record_skipped(std::size_t data_size) -> void {
+    impl_->record_skipped(data_size);
+}
+
+auto compression_engine::compress_adaptive(std::span<const std::byte> input,
+                                           compression_mode mode)
+    -> result<std::pair<std::vector<std::byte>, bool>> {
+    return impl_->compress_adaptive(input, mode);
 }
 
 }  // namespace kcenon::file_transfer

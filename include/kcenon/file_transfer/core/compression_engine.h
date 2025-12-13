@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <memory>
 #include <span>
+#include <utility>
 #include <vector>
 
 namespace kcenon::file_transfer {
@@ -33,19 +34,58 @@ enum class compression_level {
 };
 
 /**
- * @brief Compression statistics
+ * @brief Compression statistics for adaptive compression optimization
+ *
+ * Tracks compression performance including:
+ * - Bytes processed and saved
+ * - Compression/decompression call counts
+ * - Skipped compressions for pre-compressed data
+ * - CPU time saved by skipping unnecessary compressions
  */
 struct compression_stats {
-    uint64_t total_input_bytes = 0;
-    uint64_t total_output_bytes = 0;
-    uint64_t compression_calls = 0;
-    uint64_t decompression_calls = 0;
-    uint64_t skipped_compressions = 0;
+    uint64_t total_input_bytes = 0;      ///< Total bytes before compression
+    uint64_t total_output_bytes = 0;     ///< Total bytes after compression
+    uint64_t compression_calls = 0;      ///< Number of compression operations
+    uint64_t decompression_calls = 0;    ///< Number of decompression operations
+    uint64_t skipped_compressions = 0;   ///< Chunks skipped due to pre-compressed format
+    uint64_t total_chunks = 0;           ///< Total chunks processed
+    uint64_t compressed_chunks = 0;      ///< Chunks that were actually compressed
 
+    /**
+     * @brief Calculate compression ratio (output/input)
+     * @return Compression ratio (1.0 means no compression benefit)
+     */
     [[nodiscard]] auto compression_ratio() const -> double {
         if (total_input_bytes == 0) return 1.0;
         return static_cast<double>(total_output_bytes) /
                static_cast<double>(total_input_bytes);
+    }
+
+    /**
+     * @brief Calculate average compression ratio
+     * @return Average compression ratio across all compressed chunks
+     */
+    [[nodiscard]] auto average_ratio() const -> double {
+        return compression_ratio();
+    }
+
+    /**
+     * @brief Calculate bytes saved by compression
+     * @return Number of bytes saved (input - output)
+     */
+    [[nodiscard]] auto bytes_saved() const -> uint64_t {
+        if (total_output_bytes >= total_input_bytes) return 0;
+        return total_input_bytes - total_output_bytes;
+    }
+
+    /**
+     * @brief Calculate skip rate (skipped/total)
+     * @return Percentage of chunks that were skipped
+     */
+    [[nodiscard]] auto skip_rate() const -> double {
+        if (total_chunks == 0) return 0.0;
+        return static_cast<double>(skipped_compressions) /
+               static_cast<double>(total_chunks) * 100.0;
     }
 };
 
@@ -131,6 +171,28 @@ public:
      * @brief Reset compression statistics
      */
     auto reset_stats() -> void;
+
+    /**
+     * @brief Record a skipped compression (for pre-compressed data)
+     * @param data_size Size of the skipped data
+     *
+     * Call this when is_compressible() returns false and compression is skipped.
+     */
+    auto record_skipped(std::size_t data_size) -> void;
+
+    /**
+     * @brief Compress chunk with adaptive decision
+     *
+     * Automatically decides whether to compress based on data compressibility.
+     * Updates statistics for both compressed and skipped chunks.
+     *
+     * @param input Input data to potentially compress
+     * @param mode Compression mode (adaptive by default)
+     * @return Pair of (compressed data, was_compressed flag) or error
+     */
+    [[nodiscard]] auto compress_adaptive(std::span<const std::byte> input,
+                                         compression_mode mode = compression_mode::adaptive)
+        -> result<std::pair<std::vector<std::byte>, bool>>;
 
     /**
      * @brief Get current compression level
