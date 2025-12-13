@@ -408,10 +408,13 @@ target_link_libraries(your_target PRIVATE kcenon::file_transfer)
 - `batch_upload_example.cpp` - 배치 진행 추적을 포함한 다중 파일 병렬 업로드
 - `batch_download_example.cpp` - 패턴 매칭을 포함한 다중 파일 병렬 다운로드
 
-### 고급 예제 (계획됨)
-- `resume_transfer.cpp` - 전송 재개 처리
-- `custom_pipeline.cpp` - 파이프라인 설정 튜닝
-- `auto_reconnect.cpp` - 자동 재연결 데모
+### 고급 예제
+- `resume_transfer.cpp` - 전송 일시정지/재개 및 중단 처리
+- `auto_reconnect.cpp` - 자동 재연결 구성 및 콜백 처리
+- `custom_pipeline.cpp` - 파이프라인 커스터마이징 (청크 크기, 압축 설정)
+- `bandwidth_throttling.cpp` - 업로드/다운로드 대역폭 제한
+- `server_callbacks.cpp` - 서버측 요청 검증 및 접근 제어
+- `quota_management.cpp` - 스토리지 쿼터 구성 및 모니터링
 
 ## 오류 처리
 

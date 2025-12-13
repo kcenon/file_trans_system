@@ -116,6 +116,114 @@ set_target_properties(batch_download_example PROPERTIES
 )
 
 ##################################################
+# Resume Transfer Example
+##################################################
+
+add_executable(resume_transfer
+    resume_transfer.cpp
+)
+
+target_link_libraries(resume_transfer
+    PRIVATE
+        kcenon::file_transfer
+)
+
+set_target_properties(resume_transfer PROPERTIES
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
+)
+
+##################################################
+# Auto Reconnect Example
+##################################################
+
+add_executable(auto_reconnect
+    auto_reconnect.cpp
+)
+
+target_link_libraries(auto_reconnect
+    PRIVATE
+        kcenon::file_transfer
+)
+
+set_target_properties(auto_reconnect PROPERTIES
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
+)
+
+##################################################
+# Custom Pipeline Example
+##################################################
+
+add_executable(custom_pipeline
+    custom_pipeline.cpp
+)
+
+target_link_libraries(custom_pipeline
+    PRIVATE
+        kcenon::file_transfer
+)
+
+set_target_properties(custom_pipeline PROPERTIES
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
+)
+
+##################################################
+# Bandwidth Throttling Example
+##################################################
+
+add_executable(bandwidth_throttling
+    bandwidth_throttling.cpp
+)
+
+target_link_libraries(bandwidth_throttling
+    PRIVATE
+        kcenon::file_transfer
+)
+
+set_target_properties(bandwidth_throttling PROPERTIES
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
+)
+
+##################################################
+# Server Callbacks Example
+##################################################
+
+add_executable(server_callbacks
+    server_callbacks.cpp
+)
+
+target_link_libraries(server_callbacks
+    PRIVATE
+        kcenon::file_transfer
+)
+
+set_target_properties(server_callbacks PROPERTIES
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
+)
+
+##################################################
+# Quota Management Example
+##################################################
+
+add_executable(quota_management
+    quota_management.cpp
+)
+
+target_link_libraries(quota_management
+    PRIVATE
+        kcenon::file_transfer
+)
+
+set_target_properties(quota_management PROPERTIES
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
+)
+
+##################################################
 # Installation
 ##################################################
 
@@ -126,5 +234,11 @@ install(TARGETS
     batch_upload_example
     download_example
     batch_download_example
+    resume_transfer
+    auto_reconnect
+    custom_pipeline
+    bandwidth_throttling
+    server_callbacks
+    quota_management
     RUNTIME DESTINATION bin/examples
 )
