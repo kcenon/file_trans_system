@@ -148,8 +148,20 @@ jobs:
         fail-on-alert: false
         alert-comment-cc-users: '@kcenon'
 
-    - name: Compare with baseline (PR)
+    - name: Check if gh-pages branch exists
       if: github.event_name == 'pull_request'
+      id: check-gh-pages
+      run: |
+        if git ls-remote --heads origin gh-pages | grep -q gh-pages; then
+          echo "exists=true" >> $GITHUB_OUTPUT
+        else
+          echo "exists=false" >> $GITHUB_OUTPUT
+          echo "⚠️ gh-pages branch does not exist yet. Baseline comparison will be skipped."
+          echo "The branch will be created when the first benchmark runs on main."
+        fi
+
+    - name: Compare with baseline (PR)
+      if: github.event_name == 'pull_request' && steps.check-gh-pages.outputs.exists == 'true'
       uses: benchmark-action/github-action-benchmark@v1
       with:
         name: 'File Transfer System Benchmarks'
