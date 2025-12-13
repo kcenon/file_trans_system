@@ -246,21 +246,9 @@ if(BUILD_WITH_COMMON_SYSTEM)
     target_compile_definitions(FileTransSystem PUBLIC BUILD_WITH_COMMON_SYSTEM)
 endif()
 
-if(BUILD_WITH_THREAD_SYSTEM)
-    if(THREAD_SYSTEM_INCLUDE_DIR)
-        target_include_directories(FileTransSystem PUBLIC
-            $<BUILD_INTERFACE:${THREAD_SYSTEM_INCLUDE_DIR}>
-        )
-    endif()
-    target_compile_definitions(FileTransSystem PUBLIC BUILD_WITH_THREAD_SYSTEM)
-
-    # Link thread_system library (prefer CMake target if available)
-    if(TARGET ThreadSystem)
-        target_link_libraries(FileTransSystem PUBLIC ThreadSystem)
-    elseif(THREAD_SYSTEM_LIBRARY)
-        target_link_libraries(FileTransSystem PUBLIC ${THREAD_SYSTEM_LIBRARY})
-    endif()
-endif()
+# IMPORTANT: Link order matters for static libraries on Linux/Windows.
+# NetworkSystem depends on ThreadSystem, so NetworkSystem must be linked first.
+# This ensures the linker processes dependencies in the correct order.
 
 if(BUILD_WITH_NETWORK_SYSTEM)
     if(NETWORK_SYSTEM_INCLUDE_DIR)
@@ -286,6 +274,22 @@ if(BUILD_WITH_NETWORK_SYSTEM)
             $<BUILD_INTERFACE:${ASIO_INCLUDE_DIR}>
         )
         target_compile_definitions(FileTransSystem PUBLIC ASIO_STANDALONE ASIO_NO_DEPRECATED)
+    endif()
+endif()
+
+if(BUILD_WITH_THREAD_SYSTEM)
+    if(THREAD_SYSTEM_INCLUDE_DIR)
+        target_include_directories(FileTransSystem PUBLIC
+            $<BUILD_INTERFACE:${THREAD_SYSTEM_INCLUDE_DIR}>
+        )
+    endif()
+    target_compile_definitions(FileTransSystem PUBLIC BUILD_WITH_THREAD_SYSTEM)
+
+    # Link thread_system library (prefer CMake target if available)
+    if(TARGET ThreadSystem)
+        target_link_libraries(FileTransSystem PUBLIC ThreadSystem)
+    elseif(THREAD_SYSTEM_LIBRARY)
+        target_link_libraries(FileTransSystem PUBLIC ${THREAD_SYSTEM_LIBRARY})
     endif()
 endif()
 
