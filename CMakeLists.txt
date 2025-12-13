@@ -233,13 +233,19 @@ if(FILE_TRANS_ENABLE_LZ4 AND LZ4_FOUND)
 endif()
 
 # Ecosystem dependencies
+# Use BUILD_INTERFACE to avoid exporting build-tree paths during installation
+# This is especially important when dependencies are fetched via FetchContent
 if(BUILD_WITH_COMMON_SYSTEM AND COMMON_SYSTEM_INCLUDE_DIR)
-    target_include_directories(FileTransSystem PUBLIC ${COMMON_SYSTEM_INCLUDE_DIR})
+    target_include_directories(FileTransSystem PUBLIC
+        $<BUILD_INTERFACE:${COMMON_SYSTEM_INCLUDE_DIR}>
+    )
     target_compile_definitions(FileTransSystem PUBLIC BUILD_WITH_COMMON_SYSTEM)
 endif()
 
 if(BUILD_WITH_THREAD_SYSTEM AND THREAD_SYSTEM_INCLUDE_DIR)
-    target_include_directories(FileTransSystem PUBLIC ${THREAD_SYSTEM_INCLUDE_DIR})
+    target_include_directories(FileTransSystem PUBLIC
+        $<BUILD_INTERFACE:${THREAD_SYSTEM_INCLUDE_DIR}>
+    )
     target_compile_definitions(FileTransSystem PUBLIC BUILD_WITH_THREAD_SYSTEM)
 
     # Link thread_system library
@@ -249,7 +255,9 @@ if(BUILD_WITH_THREAD_SYSTEM AND THREAD_SYSTEM_INCLUDE_DIR)
 endif()
 
 if(BUILD_WITH_NETWORK_SYSTEM AND NETWORK_SYSTEM_INCLUDE_DIR)
-    target_include_directories(FileTransSystem PUBLIC ${NETWORK_SYSTEM_INCLUDE_DIR})
+    target_include_directories(FileTransSystem PUBLIC
+        $<BUILD_INTERFACE:${NETWORK_SYSTEM_INCLUDE_DIR}>
+    )
     target_compile_definitions(FileTransSystem PUBLIC BUILD_WITH_NETWORK_SYSTEM)
 
     # Link network_system library
@@ -262,7 +270,6 @@ if(BUILD_WITH_NETWORK_SYSTEM AND NETWORK_SYSTEM_INCLUDE_DIR)
         target_link_libraries(FileTransSystem PUBLIC ${ASIO_TARGET})
         target_compile_definitions(FileTransSystem PUBLIC ASIO_STANDALONE ASIO_NO_DEPRECATED)
     elseif(ASIO_INCLUDE_DIR)
-        # Use BUILD_INTERFACE to avoid exporting build-tree paths during installation
         target_include_directories(FileTransSystem PUBLIC
             $<BUILD_INTERFACE:${ASIO_INCLUDE_DIR}>
         )
@@ -271,12 +278,16 @@ if(BUILD_WITH_NETWORK_SYSTEM AND NETWORK_SYSTEM_INCLUDE_DIR)
 endif()
 
 if(BUILD_WITH_CONTAINER_SYSTEM AND CONTAINER_SYSTEM_INCLUDE_DIR)
-    target_include_directories(FileTransSystem PUBLIC ${CONTAINER_SYSTEM_INCLUDE_DIR})
+    target_include_directories(FileTransSystem PUBLIC
+        $<BUILD_INTERFACE:${CONTAINER_SYSTEM_INCLUDE_DIR}>
+    )
     target_compile_definitions(FileTransSystem PUBLIC BUILD_WITH_CONTAINER_SYSTEM)
 endif()
 
 if(BUILD_WITH_LOGGER_SYSTEM AND LOGGER_SYSTEM_INCLUDE_DIR)
-    target_include_directories(FileTransSystem PUBLIC ${LOGGER_SYSTEM_INCLUDE_DIR})
+    target_include_directories(FileTransSystem PUBLIC
+        $<BUILD_INTERFACE:${LOGGER_SYSTEM_INCLUDE_DIR}>
+    )
     target_compile_definitions(FileTransSystem PUBLIC BUILD_WITH_LOGGER_SYSTEM)
 
     # Link logger_system library
