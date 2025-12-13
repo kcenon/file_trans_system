@@ -337,6 +337,19 @@ endif()
 # Tests
 ##################################################
 
+# Disable tests when dependencies are fetched via FetchContent
+# This avoids static destruction order issues with singleton patterns
+# in network_system (io_context_thread_manager) that cause heap corruption
+# during test teardown. See PR #103 for details.
+if(NETWORK_SYSTEM_FETCHED OR THREAD_SYSTEM_FETCHED OR COMMON_SYSTEM_FETCHED)
+    if(FILE_TRANS_BUILD_TESTS)
+        message(WARNING "Tests disabled: Dependencies were fetched via FetchContent. "
+                        "Static destruction order issues may cause heap corruption. "
+                        "Build with local dependencies to run tests.")
+        set(FILE_TRANS_BUILD_TESTS OFF)
+    endif()
+endif()
+
 if(FILE_TRANS_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
@@ -386,10 +399,15 @@ message(STATUS "  ENABLE_TSAN: ${FILE_TRANS_ENABLE_TSAN}")
 message(STATUS "  ENABLE_UBSAN: ${FILE_TRANS_ENABLE_UBSAN}")
 message(STATUS "")
 message(STATUS "Dependencies:")
-message(STATUS "  common_system: ${BUILD_WITH_COMMON_SYSTEM}")
-message(STATUS "  thread_system: ${BUILD_WITH_THREAD_SYSTEM}")
-message(STATUS "  network_system: ${BUILD_WITH_NETWORK_SYSTEM}")
-message(STATUS "  container_system: ${BUILD_WITH_CONTAINER_SYSTEM}")
-message(STATUS "  logger_system: ${BUILD_WITH_LOGGER_SYSTEM}")
+message(STATUS "  common_system: ${BUILD_WITH_COMMON_SYSTEM} (fetched: ${COMMON_SYSTEM_FETCHED})")
+message(STATUS "  thread_system: ${BUILD_WITH_THREAD_SYSTEM} (fetched: ${THREAD_SYSTEM_FETCHED})")
+message(STATUS "  network_system: ${BUILD_WITH_NETWORK_SYSTEM} (fetched: ${NETWORK_SYSTEM_FETCHED})")
+message(STATUS "  container_system: ${BUILD_WITH_CONTAINER_SYSTEM} (fetched: ${CONTAINER_SYSTEM_FETCHED})")
+message(STATUS "  logger_system: ${BUILD_WITH_LOGGER_SYSTEM} (fetched: ${LOGGER_SYSTEM_FETCHED})")
+if(NETWORK_SYSTEM_FETCHED OR THREAD_SYSTEM_FETCHED OR COMMON_SYSTEM_FETCHED)
+    message(STATUS "")
+    message(STATUS "NOTE: Tests disabled due to FetchContent build.")
+    message(STATUS "      Use unified_system structure for full test support.")
+endif()
 message(STATUS "========================================")
 message(STATUS "")
