@@ -6,6 +6,7 @@
 #ifndef KCENON_FILE_TRANSFER_SERVER_SERVER_TYPES_H
 #define KCENON_FILE_TRANSFER_SERVER_SERVER_TYPES_H
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -93,12 +94,15 @@ struct server_config {
  * @brief Server statistics
  */
 struct server_statistics {
-    uint64_t total_bytes_received = 0;
-    uint64_t total_bytes_sent = 0;
-    uint64_t total_files_uploaded = 0;
-    uint64_t total_files_downloaded = 0;
-    std::size_t active_connections = 0;
-    std::size_t active_transfers = 0;
+    uint64_t total_bytes_received = 0;         ///< Total bytes received from clients
+    uint64_t total_bytes_sent = 0;             ///< Total bytes sent to clients
+    uint64_t total_files_uploaded = 0;         ///< Total files uploaded by clients
+    uint64_t total_files_downloaded = 0;       ///< Total files downloaded by clients
+    std::size_t active_connections = 0;        ///< Current active connections
+    std::size_t active_transfers = 0;          ///< Current active transfers (total)
+    std::size_t active_uploads = 0;            ///< Current active uploads
+    std::size_t active_downloads = 0;          ///< Current active downloads
+    std::chrono::milliseconds uptime{0};       ///< Server uptime
 };
 
 /**
