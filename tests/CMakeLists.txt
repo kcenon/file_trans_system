@@ -53,6 +53,7 @@ add_executable(file_trans_unit_tests
     unit/server/test_quota_manager.cpp
     unit/client/test_transfer_control.cpp
     unit/client/test_batch_transfer.cpp
+    unit/transport/test_transport_interface.cpp
 )
 
 target_link_libraries(file_trans_unit_tests PRIVATE
