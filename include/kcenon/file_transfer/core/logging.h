@@ -19,6 +19,8 @@
 #include <iostream>
 #include <regex>
 #include <algorithm>
+#include <unordered_map>
+#include <fstream>
 
 // logger_system integration requires common_system
 #if defined(BUILD_WITH_LOGGER_SYSTEM) && defined(BUILD_WITH_COMMON_SYSTEM)
@@ -690,6 +692,52 @@ enum class log_output_format {
 };
 
 /**
+ * @brief Output destination for log messages
+ */
+enum class log_output_destination {
+    console,    ///< Output to console (stderr)
+    file,       ///< Output to file only
+    both,       ///< Output to both console and file
+    none        ///< Disable output (only callbacks are called)
+};
+
+/**
+ * @brief Configuration for file output
+ */
+struct file_output_config {
+    std::string file_path;          ///< Path to log file
+    bool append = true;             ///< Append to file or overwrite
+    size_t max_file_size = 0;       ///< Max file size (0 = unlimited)
+    bool rotate_on_size = false;    ///< Rotate file when max size reached
+
+    /**
+     * @brief Create default file output config
+     */
+    static file_output_config defaults() {
+        return {"", true, 0, false};
+    }
+};
+
+/**
+ * @brief Complete logger configuration
+ */
+struct log_config {
+    log_level global_level = log_level::info;
+    std::unordered_map<std::string, log_level> category_levels;
+    log_output_format format = log_output_format::text;
+    log_output_destination destination = log_output_destination::console;
+    file_output_config file_config;
+    masking_config masking;
+
+    /**
+     * @brief Create default configuration
+     */
+    static log_config defaults() {
+        return {};
+    }
+};
+
+/**
  * @brief File transfer logging interface
  */
 class file_transfer_logger {
@@ -740,6 +788,11 @@ public:
             logger_.reset();
         }
 #endif
+        {
+            std::lock_guard<std::mutex> lock(config_mutex_);
+            close_log_file();
+            category_levels_.clear();
+        }
         initialized_ = false;
     }
 
@@ -764,6 +817,216 @@ public:
      * @brief Get current log level
      */
     [[nodiscard]] auto get_level() const -> log_level { return min_level_.load(); }
+
+    // =========================================================================
+    // Per-category log level settings
+    // =========================================================================
+
+    /**
+     * @brief Set log level for a specific category
+     *
+     * @param category The category to set level for
+     * @param level The minimum log level for this category
+     */
+    void set_category_level(std::string_view category, log_level level) {
+        std::lock_guard<std::mutex> lock(config_mutex_);
+        category_levels_[std::string(category)] = level;
+    }
+
+    /**
+     * @brief Get log level for a specific category
+     *
+     * @param category The category to query
+     * @return The category-specific level if set, or global level otherwise
+     */
+    [[nodiscard]] auto get_category_level(std::string_view category) const -> log_level {
+        std::lock_guard<std::mutex> lock(config_mutex_);
+        auto it = category_levels_.find(std::string(category));
+        if (it != category_levels_.end()) {
+            return it->second;
+        }
+        return min_level_.load();
+    }
+
+    /**
+     * @brief Clear log level for a specific category (use global level)
+     *
+     * @param category The category to clear
+     */
+    void clear_category_level(std::string_view category) {
+        std::lock_guard<std::mutex> lock(config_mutex_);
+        category_levels_.erase(std::string(category));
+    }
+
+    /**
+     * @brief Clear all category-specific log levels
+     */
+    void clear_all_category_levels() {
+        std::lock_guard<std::mutex> lock(config_mutex_);
+        category_levels_.clear();
+    }
+
+    /**
+     * @brief Get all category-specific log levels
+     */
+    [[nodiscard]] auto get_all_category_levels() const -> std::unordered_map<std::string, log_level> {
+        std::lock_guard<std::mutex> lock(config_mutex_);
+        return category_levels_;
+    }
+
+    // =========================================================================
+    // Output destination settings
+    // =========================================================================
+
+    /**
+     * @brief Set output destination
+     */
+    void set_output_destination(log_output_destination dest) {
+        std::lock_guard<std::mutex> lock(config_mutex_);
+        output_destination_ = dest;
+    }
+
+    /**
+     * @brief Get current output destination
+     */
+    [[nodiscard]] auto get_output_destination() const -> log_output_destination {
+        std::lock_guard<std::mutex> lock(config_mutex_);
+        return output_destination_;
+    }
+
+    /**
+     * @brief Enable or disable console output
+     */
+    void set_console_output(bool enabled) {
+        std::lock_guard<std::mutex> lock(config_mutex_);
+        if (enabled) {
+            if (output_destination_ == log_output_destination::file) {
+                output_destination_ = log_output_destination::both;
+            } else if (output_destination_ == log_output_destination::none) {
+                output_destination_ = log_output_destination::console;
+            }
+        } else {
+            if (output_destination_ == log_output_destination::both) {
+                output_destination_ = log_output_destination::file;
+            } else if (output_destination_ == log_output_destination::console) {
+                output_destination_ = log_output_destination::none;
+            }
+        }
+    }
+
+    /**
+     * @brief Check if console output is enabled
+     */
+    [[nodiscard]] auto is_console_output_enabled() const -> bool {
+        std::lock_guard<std::mutex> lock(config_mutex_);
+        return output_destination_ == log_output_destination::console ||
+               output_destination_ == log_output_destination::both;
+    }
+
+    /**
+     * @brief Set file output with path
+     *
+     * @param config File output configuration
+     * @return true if file was opened successfully
+     */
+    auto set_file_output(const file_output_config& config) -> bool {
+        std::lock_guard<std::mutex> lock(config_mutex_);
+        return open_log_file(config);
+    }
+
+    /**
+     * @brief Set file output with path (convenience overload)
+     *
+     * @param file_path Path to log file
+     * @param append Append to existing file (default: true)
+     * @return true if file was opened successfully
+     */
+    auto set_file_output(const std::string& file_path, bool append = true) -> bool {
+        file_output_config config;
+        config.file_path = file_path;
+        config.append = append;
+        return set_file_output(config);
+    }
+
+    /**
+     * @brief Disable file output
+     */
+    void disable_file_output() {
+        std::lock_guard<std::mutex> lock(config_mutex_);
+        close_log_file();
+        if (output_destination_ == log_output_destination::file) {
+            output_destination_ = log_output_destination::none;
+        } else if (output_destination_ == log_output_destination::both) {
+            output_destination_ = log_output_destination::console;
+        }
+    }
+
+    /**
+     * @brief Check if file output is enabled
+     */
+    [[nodiscard]] auto is_file_output_enabled() const -> bool {
+        std::lock_guard<std::mutex> lock(config_mutex_);
+        return (output_destination_ == log_output_destination::file ||
+                output_destination_ == log_output_destination::both) &&
+               log_file_.is_open();
+    }
+
+    /**
+     * @brief Get current file output path
+     */
+    [[nodiscard]] auto get_file_output_path() const -> std::string {
+        std::lock_guard<std::mutex> lock(config_mutex_);
+        return file_config_.file_path;
+    }
+
+    // =========================================================================
+    // Configuration API
+    // =========================================================================
+
+    /**
+     * @brief Apply complete logger configuration
+     *
+     * @param config Configuration to apply
+     * @return true if all settings were applied successfully
+     */
+    auto configure(const log_config& config) -> bool {
+        set_level(config.global_level);
+
+        {
+            std::lock_guard<std::mutex> lock(config_mutex_);
+            category_levels_ = config.category_levels;
+            output_format_ = config.format;
+            output_destination_ = config.destination;
+            masker_.set_config(config.masking);
+        }
+
+        // Handle file output
+        if (config.destination == log_output_destination::file ||
+            config.destination == log_output_destination::both) {
+            if (!config.file_config.file_path.empty()) {
+                return set_file_output(config.file_config);
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * @brief Get current logger configuration
+     */
+    [[nodiscard]] auto get_config() const -> log_config {
+        log_config config;
+        config.global_level = min_level_.load();
+
+        std::lock_guard<std::mutex> lock(config_mutex_);
+        config.category_levels = category_levels_;
+        config.format = output_format_;
+        config.destination = output_destination_;
+        config.file_config = file_config_;
+        config.masking = masker_.get_config();
+
+        return config;
+    }
 
     /**
      * @brief Set output format (text or JSON)
@@ -842,6 +1105,18 @@ public:
     }
 
     /**
+     * @brief Check if logging is enabled for level and category
+     *
+     * Uses category-specific level if set, otherwise global level
+     */
+    [[nodiscard]] auto is_enabled_for(log_level level, std::string_view category) const -> bool {
+        std::lock_guard<std::mutex> lock(config_mutex_);
+        auto it = category_levels_.find(std::string(category));
+        log_level effective_level = (it != category_levels_.end()) ? it->second : min_level_.load();
+        return static_cast<int>(level) >= static_cast<int>(effective_level);
+    }
+
+    /**
      * @brief Log a message
      */
     void log(log_level level,
@@ -852,7 +1127,7 @@ public:
              [[maybe_unused]] int line = 0,
              [[maybe_unused]] const char* function = nullptr) {
 
-        if (!is_enabled(level)) return;
+        if (!is_enabled_for(level, category)) return;
 
         // Call custom callback if set
         {
@@ -862,19 +1137,26 @@ public:
             }
         }
 
-        // Get current format and masker
+        // Get current format, destination, and masker
         log_output_format format;
+        log_output_destination destination;
         sensitive_info_masker current_masker;
         {
             std::lock_guard<std::mutex> lock(config_mutex_);
             format = output_format_;
+            destination = output_destination_;
             current_masker = masker_;
         }
 
+        // Skip output if destination is none (only callbacks are called)
+        if (destination == log_output_destination::none) {
+            return;
+        }
+
         if (format == log_output_format::json) {
-            log_json(level, category, message, context, file, line, function, current_masker);
+            log_json(level, category, message, context, file, line, function, current_masker, destination);
         } else {
-            log_text(level, category, message, context, file, line, function, current_masker);
+            log_text(level, category, message, context, file, line, function, current_masker, destination);
         }
     }
 
@@ -882,13 +1164,15 @@ public:
      * @brief Log a structured entry directly
      */
     void log(const structured_log_entry& entry) {
-        if (!is_enabled(entry.level)) return;
+        if (!is_enabled_for(entry.level, entry.category)) return;
 
-        // Get current masker
+        // Get current masker and destination
         sensitive_info_masker current_masker;
+        log_output_destination destination;
         {
             std::lock_guard<std::mutex> lock(config_mutex_);
             current_masker = masker_;
+            destination = output_destination_;
         }
 
         std::string json_str = entry.to_json_with_masking(&current_masker);
@@ -901,6 +1185,11 @@ public:
             }
         }
 
+        // Skip output if destination is none
+        if (destination == log_output_destination::none) {
+            return;
+        }
+
 #ifdef FILE_TRANSFER_USE_LOGGER_SYSTEM
         if (logger_) {
             if (entry.source_file && entry.source_line && entry.function_name) {
@@ -911,8 +1200,13 @@ public:
                 logger_->log(to_logger_level(entry.level), json_str);
             }
         }
+        // Also output to file if configured (logger_system handles console)
+        if (destination == log_output_destination::file ||
+            destination == log_output_destination::both) {
+            output_to_file(json_str);
+        }
 #else
-        output_to_stderr(json_str);
+        output_message(json_str, destination);
 #endif
     }
 
@@ -935,7 +1229,8 @@ private:
                   const char* file,
                   int line,
                   const char* function,
-                  const sensitive_info_masker& masker) {
+                  const sensitive_info_masker& masker,
+                  [[maybe_unused]] log_output_destination destination) {
 
         auto builder = log_entry_builder()
             .with_level(level)
@@ -969,8 +1264,13 @@ private:
                 logger_->log(to_logger_level(level), json_str);
             }
         }
+        // Also output to file if configured (logger_system handles console)
+        if (destination == log_output_destination::file ||
+            destination == log_output_destination::both) {
+            output_to_file(json_str);
+        }
 #else
-        output_to_stderr(json_str);
+        output_message(json_str, destination);
 #endif
     }
 
@@ -981,7 +1281,8 @@ private:
                   [[maybe_unused]] const char* file,
                   [[maybe_unused]] int line,
                   [[maybe_unused]] const char* function,
-                  const sensitive_info_masker& masker) {
+                  const sensitive_info_masker& masker,
+                  [[maybe_unused]] log_output_destination destination) {
 
 #ifdef FILE_TRANSFER_USE_LOGGER_SYSTEM
         if (logger_) {
@@ -990,6 +1291,11 @@ private:
                 logger_->log(to_logger_level(level), full_message, file, line, function);
             } else {
                 logger_->log(to_logger_level(level), full_message);
+            }
+            // Also output to file if configured (logger_system handles console)
+            if (destination == log_output_destination::file ||
+                destination == log_output_destination::both) {
+                output_to_file(full_message);
             }
         }
 #else
@@ -1003,16 +1309,111 @@ private:
         if (context) {
             oss << " " << context->to_json_with_masking(&masker);
         }
-        oss << "\n";
 
-        output_to_stderr(oss.str());
+        output_message(oss.str(), destination);
 #endif
+    }
+
+    void output_message(const std::string& msg, log_output_destination destination) {
+        bool to_console = (destination == log_output_destination::console ||
+                          destination == log_output_destination::both);
+        bool to_file = (destination == log_output_destination::file ||
+                       destination == log_output_destination::both);
+
+        if (to_console) {
+            output_to_stderr(msg);
+        }
+
+        if (to_file) {
+            output_to_file(msg);
+        }
     }
 
     static void output_to_stderr(const std::string& msg) {
         static std::mutex stderr_mutex;
         std::lock_guard<std::mutex> lock(stderr_mutex);
         std::cerr << msg << "\n";
+    }
+
+    void output_to_file(const std::string& msg) {
+        std::lock_guard<std::mutex> lock(config_mutex_);
+        if (log_file_.is_open()) {
+            log_file_ << msg << "\n";
+            log_file_.flush();
+
+            // Handle file rotation if configured
+            if (file_config_.rotate_on_size && file_config_.max_file_size > 0) {
+                auto pos = log_file_.tellp();
+                if (pos > 0 && static_cast<size_t>(pos) >= file_config_.max_file_size) {
+                    rotate_log_file();
+                }
+            }
+        }
+    }
+
+    auto open_log_file(const file_output_config& config) -> bool {
+        close_log_file();
+
+        if (config.file_path.empty()) {
+            return false;
+        }
+
+        file_config_ = config;
+        auto mode = config.append ? (std::ios::out | std::ios::app)
+                                  : (std::ios::out | std::ios::trunc);
+        log_file_.open(config.file_path, mode);
+
+        if (log_file_.is_open()) {
+            // Update destination to include file if not already set
+            if (output_destination_ == log_output_destination::console) {
+                output_destination_ = log_output_destination::both;
+            } else if (output_destination_ == log_output_destination::none) {
+                output_destination_ = log_output_destination::file;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    void close_log_file() {
+        if (log_file_.is_open()) {
+            log_file_.flush();
+            log_file_.close();
+        }
+        file_config_ = file_output_config::defaults();
+    }
+
+    void rotate_log_file() {
+        if (!log_file_.is_open() || file_config_.file_path.empty()) {
+            return;
+        }
+
+        log_file_.close();
+
+        // Create rotated filename with timestamp
+        std::string rotated_path = file_config_.file_path + "." + get_rotation_timestamp();
+
+        // Rename current file
+        std::rename(file_config_.file_path.c_str(), rotated_path.c_str());
+
+        // Reopen the log file
+        log_file_.open(file_config_.file_path, std::ios::out | std::ios::trunc);
+    }
+
+    static auto get_rotation_timestamp() -> std::string {
+        auto now = std::chrono::system_clock::now();
+        auto time_t_val = std::chrono::system_clock::to_time_t(now);
+
+        std::tm tm_buf{};
+#if defined(_WIN32)
+        localtime_s(&tm_buf, &time_t_val);
+#else
+        localtime_r(&time_t_val, &tm_buf);
+#endif
+
+        std::ostringstream oss;
+        oss << std::put_time(&tm_buf, "%Y%m%d_%H%M%S");
+        return oss.str();
     }
 
 #ifdef FILE_TRANSFER_USE_LOGGER_SYSTEM
@@ -1076,6 +1477,10 @@ private:
     std::mutex callback_mutex_;
 
     log_output_format output_format_{log_output_format::text};
+    log_output_destination output_destination_{log_output_destination::console};
+    std::unordered_map<std::string, log_level> category_levels_;
+    std::ofstream log_file_;
+    file_output_config file_config_;
     sensitive_info_masker masker_;
     mutable std::mutex config_mutex_;
 };
