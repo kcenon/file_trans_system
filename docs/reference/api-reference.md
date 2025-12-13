@@ -20,9 +20,11 @@ Complete API documentation for the **file_trans_system** library.
    - [transfer_state](#transfer_state)
    - [resume_handler_config](#resume_handler_config)
    - [resume_handler](#resume_handler)
-5. [Compression](#compression)
-6. [Pipeline](#pipeline)
-7. [Transport](#transport)
+5. [Statistics Collection](#statistics-collection)
+   - [statistics_collector](#statistics_collector)
+6. [Compression](#compression)
+7. [Pipeline](#pipeline)
+8. [Transport](#transport)
 
 ---
 
@@ -1791,6 +1793,94 @@ for (const auto& t : transfers) {
 
 // Cleanup old states
 auto removed = handler.cleanup_expired_states();
+```
+
+---
+
+## Statistics Collection
+
+### statistics_collector
+
+Thread-safe statistics collector for transfer progress monitoring.
+
+```cpp
+class statistics_collector {
+public:
+    // Configuration
+    struct config {
+        std::size_t rate_window_size = 10;      // Samples for moving average
+        duration rate_sample_interval{100};      // Interval between samples
+        duration min_eta_update_interval{500};   // Minimum ETA update interval
+    };
+
+    // Statistics snapshot
+    struct snapshot {
+        uint64_t bytes_transferred;
+        uint64_t bytes_on_wire;
+        uint64_t total_bytes;
+        uint64_t chunks_transferred;
+        uint64_t chunks_compressed;
+        uint64_t error_count;
+        double current_rate;         // Current transfer rate (bytes/sec)
+        double average_rate;         // Average transfer rate (bytes/sec)
+        double compression_ratio;    // Compression ratio
+        duration elapsed;
+        duration estimated_remaining;
+    };
+
+    // Constructors
+    statistics_collector();
+    explicit statistics_collector(config cfg);
+
+    // Lifecycle
+    void start(uint64_t total_bytes);
+    void stop();
+    void reset();
+    [[nodiscard]] auto is_active() const noexcept -> bool;
+
+    // Recording
+    void record_bytes_transferred(uint64_t bytes,
+                                  std::optional<uint64_t> bytes_on_wire = std::nullopt);
+    void record_chunk_processed(bool compressed);
+    void record_error(transfer_error_code code);
+
+    // Metrics
+    [[nodiscard]] auto get_transfer_rate() const -> double;
+    [[nodiscard]] auto get_average_rate() const -> double;
+    [[nodiscard]] auto get_compression_ratio() const -> double;
+    [[nodiscard]] auto get_eta() const -> duration;
+    [[nodiscard]] auto get_elapsed() const -> duration;
+    [[nodiscard]] auto get_completion_percentage() const -> double;
+    [[nodiscard]] auto get_bytes_transferred() const -> uint64_t;
+    [[nodiscard]] auto get_snapshot() const -> snapshot;
+};
+```
+
+#### Usage Example
+
+```cpp
+#include "kcenon/file_transfer/core/statistics_collector.h"
+
+statistics_collector stats;
+stats.start(file_size);
+
+// During transfer
+for (const auto& chunk : chunks) {
+    transfer_chunk(chunk);
+    stats.record_bytes_transferred(chunk.size(), compressed_size);
+    stats.record_chunk_processed(chunk.is_compressed());
+
+    // Get current progress
+    auto rate = stats.get_transfer_rate();
+    auto eta = stats.get_eta();
+    auto percentage = stats.get_completion_percentage();
+
+    report_progress(percentage, rate, eta);
+}
+
+// Get final statistics
+auto final_stats = stats.get_snapshot();
+stats.stop();
 ```
 
 ---

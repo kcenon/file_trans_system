@@ -139,10 +139,12 @@ struct detailed_transfer_progress {
     uint64_t total_bytes;                // Total file size
     uint64_t chunks_transferred;         // Chunks transferred
     uint64_t total_chunks;               // Total number of chunks
-    double transfer_rate;                // Bytes per second
+    double transfer_rate;                // Current bytes per second
+    double average_rate;                 // Average bytes per second
     double compression_ratio;            // Compressed/Original ratio
     duration elapsed_time;               // Time elapsed
     duration estimated_remaining;        // Estimated time remaining
+    std::size_t retry_count;             // Number of retries
 
     detailed_transfer_progress()
         : direction(transfer_direction::upload)
@@ -153,9 +155,11 @@ struct detailed_transfer_progress {
         , chunks_transferred(0)
         , total_chunks(0)
         , transfer_rate(0.0)
+        , average_rate(0.0)
         , compression_ratio(1.0)
         , elapsed_time(0)
-        , estimated_remaining(0) {}
+        , estimated_remaining(0)
+        , retry_count(0) {}
 
     [[nodiscard]] auto completion_percentage() const noexcept -> double {
         if (total_bytes == 0) return 0.0;

@@ -197,6 +197,7 @@ add_library(FileTransSystem
     src/core/transfer_id.cpp
     src/core/resume_handler.cpp
     src/core/bandwidth_limiter.cpp
+    src/core/statistics_collector.cpp
     src/server/file_transfer_server.cpp
     src/server/server_pipeline.cpp
     src/server/quota_manager.cpp
