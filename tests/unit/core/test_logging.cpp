@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 #include <regex>
+#include <filesystem>
 
 namespace kcenon::file_transfer::test {
 
@@ -727,7 +728,7 @@ protected:
         get_logger().initialize();
         get_logger().set_level(log_level::info);
         get_logger().set_output_destination(log_output_destination::console);
-        temp_log_path_ = "/tmp/test_logging_" + std::to_string(time(nullptr)) + ".log";
+        temp_log_path_ = (std::filesystem::temp_directory_path() / ("test_logging_" + std::to_string(time(nullptr)) + ".log")).string();
     }
 
     void TearDown() override {
@@ -840,7 +841,7 @@ protected:
         get_logger().clear_all_category_levels();
         get_logger().disable_file_output();
         get_logger().set_output_destination(log_output_destination::console);
-        temp_log_path_ = "/tmp/test_config_" + std::to_string(time(nullptr)) + ".log";
+        temp_log_path_ = (std::filesystem::temp_directory_path() / ("test_config_" + std::to_string(time(nullptr)) + ".log")).string();
     }
 
     void TearDown() override {
