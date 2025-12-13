@@ -235,33 +235,45 @@ endif()
 # Ecosystem dependencies
 # Use BUILD_INTERFACE to avoid exporting build-tree paths during installation
 # This is especially important when dependencies are fetched via FetchContent
-if(BUILD_WITH_COMMON_SYSTEM AND COMMON_SYSTEM_INCLUDE_DIR)
-    target_include_directories(FileTransSystem PUBLIC
-        $<BUILD_INTERFACE:${COMMON_SYSTEM_INCLUDE_DIR}>
-    )
+# When dependencies are fetched, link to CMake targets; otherwise, use library files
+
+if(BUILD_WITH_COMMON_SYSTEM)
+    if(COMMON_SYSTEM_INCLUDE_DIR)
+        target_include_directories(FileTransSystem PUBLIC
+            $<BUILD_INTERFACE:${COMMON_SYSTEM_INCLUDE_DIR}>
+        )
+    endif()
     target_compile_definitions(FileTransSystem PUBLIC BUILD_WITH_COMMON_SYSTEM)
 endif()
 
-if(BUILD_WITH_THREAD_SYSTEM AND THREAD_SYSTEM_INCLUDE_DIR)
-    target_include_directories(FileTransSystem PUBLIC
-        $<BUILD_INTERFACE:${THREAD_SYSTEM_INCLUDE_DIR}>
-    )
+if(BUILD_WITH_THREAD_SYSTEM)
+    if(THREAD_SYSTEM_INCLUDE_DIR)
+        target_include_directories(FileTransSystem PUBLIC
+            $<BUILD_INTERFACE:${THREAD_SYSTEM_INCLUDE_DIR}>
+        )
+    endif()
     target_compile_definitions(FileTransSystem PUBLIC BUILD_WITH_THREAD_SYSTEM)
 
-    # Link thread_system library
-    if(THREAD_SYSTEM_LIBRARY)
+    # Link thread_system library (prefer CMake target if available)
+    if(TARGET ThreadSystem)
+        target_link_libraries(FileTransSystem PUBLIC ThreadSystem)
+    elseif(THREAD_SYSTEM_LIBRARY)
         target_link_libraries(FileTransSystem PUBLIC ${THREAD_SYSTEM_LIBRARY})
     endif()
 endif()
 
-if(BUILD_WITH_NETWORK_SYSTEM AND NETWORK_SYSTEM_INCLUDE_DIR)
-    target_include_directories(FileTransSystem PUBLIC
-        $<BUILD_INTERFACE:${NETWORK_SYSTEM_INCLUDE_DIR}>
-    )
+if(BUILD_WITH_NETWORK_SYSTEM)
+    if(NETWORK_SYSTEM_INCLUDE_DIR)
+        target_include_directories(FileTransSystem PUBLIC
+            $<BUILD_INTERFACE:${NETWORK_SYSTEM_INCLUDE_DIR}>
+        )
+    endif()
     target_compile_definitions(FileTransSystem PUBLIC BUILD_WITH_NETWORK_SYSTEM)
 
-    # Link network_system library
-    if(NETWORK_SYSTEM_LIBRARY)
+    # Link network_system library (prefer CMake target if available)
+    if(TARGET NetworkSystem)
+        target_link_libraries(FileTransSystem PUBLIC NetworkSystem)
+    elseif(NETWORK_SYSTEM_LIBRARY)
         target_link_libraries(FileTransSystem PUBLIC ${NETWORK_SYSTEM_LIBRARY})
     endif()
 
@@ -277,21 +289,27 @@ if(BUILD_WITH_NETWORK_SYSTEM AND NETWORK_SYSTEM_INCLUDE_DIR)
     endif()
 endif()
 
-if(BUILD_WITH_CONTAINER_SYSTEM AND CONTAINER_SYSTEM_INCLUDE_DIR)
-    target_include_directories(FileTransSystem PUBLIC
-        $<BUILD_INTERFACE:${CONTAINER_SYSTEM_INCLUDE_DIR}>
-    )
+if(BUILD_WITH_CONTAINER_SYSTEM)
+    if(CONTAINER_SYSTEM_INCLUDE_DIR)
+        target_include_directories(FileTransSystem PUBLIC
+            $<BUILD_INTERFACE:${CONTAINER_SYSTEM_INCLUDE_DIR}>
+        )
+    endif()
     target_compile_definitions(FileTransSystem PUBLIC BUILD_WITH_CONTAINER_SYSTEM)
 endif()
 
-if(BUILD_WITH_LOGGER_SYSTEM AND LOGGER_SYSTEM_INCLUDE_DIR)
-    target_include_directories(FileTransSystem PUBLIC
-        $<BUILD_INTERFACE:${LOGGER_SYSTEM_INCLUDE_DIR}>
-    )
+if(BUILD_WITH_LOGGER_SYSTEM)
+    if(LOGGER_SYSTEM_INCLUDE_DIR)
+        target_include_directories(FileTransSystem PUBLIC
+            $<BUILD_INTERFACE:${LOGGER_SYSTEM_INCLUDE_DIR}>
+        )
+    endif()
     target_compile_definitions(FileTransSystem PUBLIC BUILD_WITH_LOGGER_SYSTEM)
 
-    # Link logger_system library
-    if(LOGGER_SYSTEM_LIBRARY)
+    # Link logger_system library (prefer CMake target if available)
+    if(TARGET LoggerSystem)
+        target_link_libraries(FileTransSystem PUBLIC LoggerSystem)
+    elseif(LOGGER_SYSTEM_LIBRARY)
         target_link_libraries(FileTransSystem PUBLIC ${LOGGER_SYSTEM_LIBRARY})
     endif()
 endif()

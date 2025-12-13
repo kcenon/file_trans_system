@@ -4,7 +4,7 @@
 # This module handles finding and configuring
 # all dependencies for file_trans_system.
 #
-# Dependencies are automatically fetched from GitHub
+# Dependencies are automatically fetched and built from GitHub
 # if not found locally (e.g., in unified_system structure).
 ##################################################
 
@@ -15,6 +15,14 @@ set(COMMON_SYSTEM_GIT_TAG "main" CACHE STRING "Git tag/branch for common_system"
 set(THREAD_SYSTEM_GIT_TAG "main" CACHE STRING "Git tag/branch for thread_system")
 set(NETWORK_SYSTEM_GIT_TAG "main" CACHE STRING "Git tag/branch for network_system")
 set(CONTAINER_SYSTEM_GIT_TAG "main" CACHE STRING "Git tag/branch for container_system")
+set(LOGGER_SYSTEM_GIT_TAG "main" CACHE STRING "Git tag/branch for logger_system")
+
+# Track which dependencies were fetched vs found locally
+set(COMMON_SYSTEM_FETCHED FALSE CACHE INTERNAL "")
+set(THREAD_SYSTEM_FETCHED FALSE CACHE INTERNAL "")
+set(NETWORK_SYSTEM_FETCHED FALSE CACHE INTERNAL "")
+set(CONTAINER_SYSTEM_FETCHED FALSE CACHE INTERNAL "")
+set(LOGGER_SYSTEM_FETCHED FALSE CACHE INTERNAL "")
 
 ##################################################
 # Find ASIO (required for network_system headers)
@@ -83,282 +91,228 @@ function(find_asio_library)
     message(FATAL_ERROR "Failed to find or fetch standalone ASIO - cannot build without ASIO")
 endfunction()
 
-function(find_file_trans_dependencies)
-    ##################################################
-    # Find ecosystem dependencies
-    ##################################################
+##################################################
+# Helper: Check if local path exists
+##################################################
+function(check_local_dependency NAME HEADER_SUBPATH RESULT_VAR INCLUDE_DIR_VAR)
+    set(_paths
+        "${CMAKE_CURRENT_SOURCE_DIR}/../${NAME}/include"
+        "${CMAKE_SOURCE_DIR}/../${NAME}/include"
+    )
 
-    # common_system (Result<T>, error handling, time utilities)
-    if(BUILD_WITH_COMMON_SYSTEM)
-        if(NOT COMMON_SYSTEM_INCLUDE_DIR)
-            # Try to find in parent directory (unified_system structure)
-            set(_common_paths
-                "${CMAKE_CURRENT_SOURCE_DIR}/../common_system/include"
-                "${CMAKE_SOURCE_DIR}/../common_system/include"
-            )
-
-            foreach(_path ${_common_paths})
-                if(EXISTS "${_path}/kcenon/common")
-                    get_filename_component(COMMON_SYSTEM_INCLUDE_DIR "${_path}" ABSOLUTE)
-                    break()
-                endif()
-            endforeach()
+    foreach(_path ${_paths})
+        if(EXISTS "${_path}/${HEADER_SUBPATH}")
+            get_filename_component(_abs_path "${_path}" ABSOLUTE)
+            set(${RESULT_VAR} TRUE PARENT_SCOPE)
+            set(${INCLUDE_DIR_VAR} "${_abs_path}" PARENT_SCOPE)
+            return()
         endif()
+    endforeach()
 
-        if(COMMON_SYSTEM_INCLUDE_DIR)
-            message(STATUS "Found common_system: ${COMMON_SYSTEM_INCLUDE_DIR}")
+    set(${RESULT_VAR} FALSE PARENT_SCOPE)
+endfunction()
+
+##################################################
+# Helper: Find local library
+##################################################
+function(find_local_library NAME LIB_NAMES RESULT_VAR)
+    set(_lib_paths
+        "${CMAKE_CURRENT_SOURCE_DIR}/../${NAME}/build/lib"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../${NAME}/build"
+        "${CMAKE_SOURCE_DIR}/../${NAME}/build/lib"
+        "${CMAKE_SOURCE_DIR}/../${NAME}/build"
+    )
+
+    # Use unique cache variable name to avoid cache conflicts
+    set(_cache_var "_${NAME}_LIBRARY_PATH")
+
+    # Clear previous cache entry
+    unset(${_cache_var} CACHE)
+
+    find_library(${_cache_var}
+        NAMES ${LIB_NAMES}
+        PATHS ${_lib_paths}
+        NO_DEFAULT_PATH
+    )
+
+    if(${_cache_var})
+        set(${RESULT_VAR} "${${_cache_var}}" PARENT_SCOPE)
+    else()
+        set(${RESULT_VAR} "" PARENT_SCOPE)
+    endif()
+endfunction()
+
+##################################################
+# Main dependency discovery function
+##################################################
+function(find_file_trans_dependencies)
+    # First, find ASIO (required for network_system)
+    find_asio_library()
+    set(ASIO_FOUND ${ASIO_FOUND} PARENT_SCOPE)
+    set(ASIO_INCLUDE_DIR ${ASIO_INCLUDE_DIR} PARENT_SCOPE)
+    set(ASIO_TARGET ${ASIO_TARGET} PARENT_SCOPE)
+
+    ##################################################
+    # common_system (Result<T>, error handling, time utilities)
+    # Tier 0 - no dependencies
+    ##################################################
+    if(BUILD_WITH_COMMON_SYSTEM)
+        check_local_dependency(common_system "kcenon/common" _found COMMON_SYSTEM_INCLUDE_DIR)
+
+        if(_found)
+            message(STATUS "Found common_system locally: ${COMMON_SYSTEM_INCLUDE_DIR}")
             set(COMMON_SYSTEM_INCLUDE_DIR ${COMMON_SYSTEM_INCLUDE_DIR} PARENT_SCOPE)
+            find_local_library(common_system "CommonSystem;common_system" COMMON_SYSTEM_LIBRARY)
+            if(COMMON_SYSTEM_LIBRARY)
+                message(STATUS "Found common_system library: ${COMMON_SYSTEM_LIBRARY}")
+                set(COMMON_SYSTEM_LIBRARY ${COMMON_SYSTEM_LIBRARY} PARENT_SCOPE)
+            endif()
         else()
-            # Fetch from GitHub
-            message(STATUS "common_system not found locally - fetching from GitHub...")
+            message(STATUS "common_system not found locally - fetching and building from GitHub...")
+            set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
+            set(BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
+
             FetchContent_Declare(common_system
                 GIT_REPOSITORY https://github.com/kcenon/common_system.git
                 GIT_TAG ${COMMON_SYSTEM_GIT_TAG}
             )
-            FetchContent_GetProperties(common_system)
-            if(NOT common_system_POPULATED)
-                FetchContent_Populate(common_system)
-            endif()
+            FetchContent_MakeAvailable(common_system)
 
-            set(_fetched_include "${common_system_SOURCE_DIR}/include")
-            if(EXISTS "${_fetched_include}/kcenon/common")
-                message(STATUS "Fetched common_system: ${_fetched_include}")
-                set(COMMON_SYSTEM_INCLUDE_DIR ${_fetched_include} PARENT_SCOPE)
-            else()
-                message(FATAL_ERROR "Failed to fetch common_system from GitHub")
-            endif()
+            set(COMMON_SYSTEM_INCLUDE_DIR "${common_system_SOURCE_DIR}/include" PARENT_SCOPE)
+            set(COMMON_SYSTEM_FETCHED TRUE CACHE INTERNAL "")
+            message(STATUS "Fetched and built common_system")
         endif()
     endif()
 
+    ##################################################
     # thread_system (typed_thread_pool for pipeline parallelism)
+    # Tier 1 - depends on common_system
+    ##################################################
     if(BUILD_WITH_THREAD_SYSTEM)
-        set(_thread_found FALSE)
+        check_local_dependency(thread_system "kcenon/thread" _found THREAD_SYSTEM_INCLUDE_DIR)
 
-        if(NOT THREAD_SYSTEM_INCLUDE_DIR)
-            set(_thread_paths
-                "${CMAKE_CURRENT_SOURCE_DIR}/../thread_system/include"
-                "${CMAKE_SOURCE_DIR}/../thread_system/include"
-            )
-
-            foreach(_path ${_thread_paths})
-                if(EXISTS "${_path}/kcenon/thread")
-                    get_filename_component(THREAD_SYSTEM_INCLUDE_DIR "${_path}" ABSOLUTE)
-                    set(_thread_found TRUE)
-                    break()
-                endif()
-            endforeach()
-        else()
-            set(_thread_found TRUE)
-        endif()
-
-        if(_thread_found)
-            message(STATUS "Found thread_system: ${THREAD_SYSTEM_INCLUDE_DIR}")
+        if(_found)
+            message(STATUS "Found thread_system locally: ${THREAD_SYSTEM_INCLUDE_DIR}")
             set(THREAD_SYSTEM_INCLUDE_DIR ${THREAD_SYSTEM_INCLUDE_DIR} PARENT_SCOPE)
-
-            # Find thread_system library
-            set(_thread_lib_paths
-                "${CMAKE_CURRENT_SOURCE_DIR}/../thread_system/build/lib"
-                "${CMAKE_CURRENT_SOURCE_DIR}/../thread_system/build"
-                "${CMAKE_SOURCE_DIR}/../thread_system/build/lib"
-                "${CMAKE_SOURCE_DIR}/../thread_system/build"
-            )
-
-            find_library(THREAD_SYSTEM_LIBRARY
-                NAMES ThreadSystem thread_system
-                PATHS ${_thread_lib_paths}
-                NO_DEFAULT_PATH
-            )
-
+            find_local_library(thread_system "ThreadSystem;thread_system" THREAD_SYSTEM_LIBRARY)
             if(THREAD_SYSTEM_LIBRARY)
                 message(STATUS "Found thread_system library: ${THREAD_SYSTEM_LIBRARY}")
                 set(THREAD_SYSTEM_LIBRARY ${THREAD_SYSTEM_LIBRARY} PARENT_SCOPE)
-            else()
-                message(WARNING "thread_system library not found - linking may fail")
             endif()
         else()
-            # Fetch from GitHub
-            message(STATUS "thread_system not found locally - fetching from GitHub...")
+            message(STATUS "thread_system not found locally - fetching and building from GitHub...")
+            set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
+            set(BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
+
             FetchContent_Declare(thread_system
                 GIT_REPOSITORY https://github.com/kcenon/thread_system.git
                 GIT_TAG ${THREAD_SYSTEM_GIT_TAG}
             )
-            FetchContent_GetProperties(thread_system)
-            if(NOT thread_system_POPULATED)
-                FetchContent_Populate(thread_system)
-            endif()
+            FetchContent_MakeAvailable(thread_system)
 
-            set(_fetched_include "${thread_system_SOURCE_DIR}/include")
-            if(EXISTS "${_fetched_include}/kcenon/thread")
-                message(STATUS "Fetched thread_system: ${_fetched_include}")
-                set(THREAD_SYSTEM_INCLUDE_DIR ${_fetched_include} PARENT_SCOPE)
-            else()
-                message(FATAL_ERROR "Failed to fetch thread_system from GitHub")
-            endif()
+            set(THREAD_SYSTEM_INCLUDE_DIR "${thread_system_SOURCE_DIR}/include" PARENT_SCOPE)
+            set(THREAD_SYSTEM_FETCHED TRUE CACHE INTERNAL "")
+            message(STATUS "Fetched and built thread_system")
         endif()
     endif()
 
-    # network_system (TCP/TLS transport layer)
-    if(BUILD_WITH_NETWORK_SYSTEM)
-        set(_network_found FALSE)
+    ##################################################
+    # logger_system (structured logging support)
+    # Tier 2 - depends on common_system, thread_system
+    ##################################################
+    if(BUILD_WITH_LOGGER_SYSTEM)
+        check_local_dependency(logger_system "kcenon/logger" _found LOGGER_SYSTEM_INCLUDE_DIR)
 
-        if(NOT NETWORK_SYSTEM_INCLUDE_DIR)
-            set(_network_paths
-                "${CMAKE_CURRENT_SOURCE_DIR}/../network_system/include"
-                "${CMAKE_SOURCE_DIR}/../network_system/include"
-            )
-
-            foreach(_path ${_network_paths})
-                # Check for both kcenon/network (new) and network_system (legacy) structures
-                if(EXISTS "${_path}/kcenon/network" OR EXISTS "${_path}/network_system")
-                    get_filename_component(NETWORK_SYSTEM_INCLUDE_DIR "${_path}" ABSOLUTE)
-                    set(_network_found TRUE)
-                    break()
-                endif()
-            endforeach()
-        else()
-            set(_network_found TRUE)
-        endif()
-
-        if(_network_found)
-            message(STATUS "Found network_system: ${NETWORK_SYSTEM_INCLUDE_DIR}")
-            set(NETWORK_SYSTEM_INCLUDE_DIR ${NETWORK_SYSTEM_INCLUDE_DIR} PARENT_SCOPE)
-
-            # Find network_system library
-            set(_network_lib_paths
-                "${CMAKE_CURRENT_SOURCE_DIR}/../network_system/build/lib"
-                "${CMAKE_CURRENT_SOURCE_DIR}/../network_system/build"
-                "${CMAKE_SOURCE_DIR}/../network_system/build/lib"
-                "${CMAKE_SOURCE_DIR}/../network_system/build"
-            )
-
-            find_library(NETWORK_SYSTEM_LIBRARY
-                NAMES NetworkSystem network_system
-                PATHS ${_network_lib_paths}
-                NO_DEFAULT_PATH
-            )
-
-            if(NETWORK_SYSTEM_LIBRARY)
-                message(STATUS "Found network_system library: ${NETWORK_SYSTEM_LIBRARY}")
-                set(NETWORK_SYSTEM_LIBRARY ${NETWORK_SYSTEM_LIBRARY} PARENT_SCOPE)
-            else()
-                message(WARNING "network_system library not found - linking may fail")
+        if(_found)
+            message(STATUS "Found logger_system locally: ${LOGGER_SYSTEM_INCLUDE_DIR}")
+            set(LOGGER_SYSTEM_INCLUDE_DIR ${LOGGER_SYSTEM_INCLUDE_DIR} PARENT_SCOPE)
+            find_local_library(logger_system "LoggerSystem;logger_system" LOGGER_SYSTEM_LIBRARY)
+            if(LOGGER_SYSTEM_LIBRARY)
+                message(STATUS "Found logger_system library: ${LOGGER_SYSTEM_LIBRARY}")
+                set(LOGGER_SYSTEM_LIBRARY ${LOGGER_SYSTEM_LIBRARY} PARENT_SCOPE)
             endif()
         else()
-            # Fetch from GitHub
-            message(STATUS "network_system not found locally - fetching from GitHub...")
-            FetchContent_Declare(network_system
-                GIT_REPOSITORY https://github.com/kcenon/network_system.git
-                GIT_TAG ${NETWORK_SYSTEM_GIT_TAG}
+            message(STATUS "logger_system not found locally - fetching and building from GitHub...")
+            set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
+            set(BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
+
+            FetchContent_Declare(logger_system
+                GIT_REPOSITORY https://github.com/kcenon/logger_system.git
+                GIT_TAG ${LOGGER_SYSTEM_GIT_TAG}
             )
-            FetchContent_GetProperties(network_system)
-            if(NOT network_system_POPULATED)
-                FetchContent_Populate(network_system)
-            endif()
+            FetchContent_MakeAvailable(logger_system)
 
-            set(_fetched_include "${network_system_SOURCE_DIR}/include")
-            if(EXISTS "${_fetched_include}/kcenon/network" OR EXISTS "${_fetched_include}/network_system")
-                message(STATUS "Fetched network_system: ${_fetched_include}")
-                set(NETWORK_SYSTEM_INCLUDE_DIR ${_fetched_include} PARENT_SCOPE)
-            else()
-                message(FATAL_ERROR "Failed to fetch network_system from GitHub")
-            endif()
+            set(LOGGER_SYSTEM_INCLUDE_DIR "${logger_system_SOURCE_DIR}/include" PARENT_SCOPE)
+            set(LOGGER_SYSTEM_FETCHED TRUE CACHE INTERNAL "")
+            message(STATUS "Fetched and built logger_system")
         endif()
-
-        # ASIO is required when using network_system (network_system headers include asio.hpp)
-        find_asio_library()
-        set(ASIO_FOUND ${ASIO_FOUND} PARENT_SCOPE)
-        set(ASIO_INCLUDE_DIR ${ASIO_INCLUDE_DIR} PARENT_SCOPE)
-        set(ASIO_TARGET ${ASIO_TARGET} PARENT_SCOPE)
     endif()
 
+    ##################################################
     # container_system (bounded_queue for backpressure)
+    # Header-only library
+    ##################################################
     if(BUILD_WITH_CONTAINER_SYSTEM)
-        set(_container_found FALSE)
+        check_local_dependency(container_system "container" _found CONTAINER_SYSTEM_INCLUDE_DIR)
 
-        if(NOT CONTAINER_SYSTEM_INCLUDE_DIR)
-            set(_container_paths
-                "${CMAKE_CURRENT_SOURCE_DIR}/../container_system/include"
-                "${CMAKE_SOURCE_DIR}/../container_system/include"
-            )
-
-            foreach(_path ${_container_paths})
-                if(EXISTS "${_path}/container")
-                    get_filename_component(CONTAINER_SYSTEM_INCLUDE_DIR "${_path}" ABSOLUTE)
-                    set(_container_found TRUE)
-                    break()
-                endif()
-            endforeach()
-        else()
-            set(_container_found TRUE)
-        endif()
-
-        if(_container_found)
-            message(STATUS "Found container_system: ${CONTAINER_SYSTEM_INCLUDE_DIR}")
+        if(_found)
+            message(STATUS "Found container_system locally: ${CONTAINER_SYSTEM_INCLUDE_DIR}")
             set(CONTAINER_SYSTEM_INCLUDE_DIR ${CONTAINER_SYSTEM_INCLUDE_DIR} PARENT_SCOPE)
         else()
-            # Fetch from GitHub
             message(STATUS "container_system not found locally - fetching from GitHub...")
+            set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
+            set(BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
+
             FetchContent_Declare(container_system
                 GIT_REPOSITORY https://github.com/kcenon/container_system.git
                 GIT_TAG ${CONTAINER_SYSTEM_GIT_TAG}
             )
-            FetchContent_GetProperties(container_system)
-            if(NOT container_system_POPULATED)
-                FetchContent_Populate(container_system)
-            endif()
+            FetchContent_MakeAvailable(container_system)
 
-            set(_fetched_include "${container_system_SOURCE_DIR}/include")
-            if(EXISTS "${_fetched_include}/container")
-                message(STATUS "Fetched container_system: ${_fetched_include}")
-                set(CONTAINER_SYSTEM_INCLUDE_DIR ${_fetched_include} PARENT_SCOPE)
-            else()
-                message(FATAL_ERROR "Failed to fetch container_system from GitHub")
-            endif()
+            set(CONTAINER_SYSTEM_INCLUDE_DIR "${container_system_SOURCE_DIR}/include" PARENT_SCOPE)
+            set(CONTAINER_SYSTEM_FETCHED TRUE CACHE INTERNAL "")
+            message(STATUS "Fetched container_system")
         endif()
     endif()
 
-    # logger_system (structured logging support)
-    if(BUILD_WITH_LOGGER_SYSTEM)
-        if(NOT LOGGER_SYSTEM_INCLUDE_DIR)
-            set(_logger_paths
-                "${CMAKE_CURRENT_SOURCE_DIR}/../logger_system/include"
-                "${CMAKE_SOURCE_DIR}/../logger_system/include"
-            )
+    ##################################################
+    # network_system (TCP/TLS transport layer)
+    # Tier 4 - depends on common_system, thread_system, logger_system
+    ##################################################
+    if(BUILD_WITH_NETWORK_SYSTEM)
+        check_local_dependency(network_system "kcenon/network" _found NETWORK_SYSTEM_INCLUDE_DIR)
 
-            foreach(_path ${_logger_paths})
-                if(EXISTS "${_path}/kcenon/logger")
-                    get_filename_component(LOGGER_SYSTEM_INCLUDE_DIR "${_path}" ABSOLUTE)
-                    break()
-                endif()
-            endforeach()
+        # Also check legacy path
+        if(NOT _found)
+            check_local_dependency(network_system "network_system" _found NETWORK_SYSTEM_INCLUDE_DIR)
         endif()
 
-        if(LOGGER_SYSTEM_INCLUDE_DIR)
-            message(STATUS "Found logger_system: ${LOGGER_SYSTEM_INCLUDE_DIR}")
-            set(LOGGER_SYSTEM_INCLUDE_DIR ${LOGGER_SYSTEM_INCLUDE_DIR} PARENT_SCOPE)
-
-            # Find logger_system library
-            set(_logger_lib_paths
-                "${CMAKE_CURRENT_SOURCE_DIR}/../logger_system/build/lib"
-                "${CMAKE_CURRENT_SOURCE_DIR}/../logger_system/build"
-                "${CMAKE_SOURCE_DIR}/../logger_system/build/lib"
-                "${CMAKE_SOURCE_DIR}/../logger_system/build"
-            )
-
-            find_library(LOGGER_SYSTEM_LIBRARY
-                NAMES LoggerSystem logger_system
-                PATHS ${_logger_lib_paths}
-                NO_DEFAULT_PATH
-            )
-
-            if(LOGGER_SYSTEM_LIBRARY)
-                message(STATUS "Found logger_system library: ${LOGGER_SYSTEM_LIBRARY}")
-                set(LOGGER_SYSTEM_LIBRARY ${LOGGER_SYSTEM_LIBRARY} PARENT_SCOPE)
-            else()
-                message(WARNING "logger_system library not found - linking may fail")
+        if(_found)
+            message(STATUS "Found network_system locally: ${NETWORK_SYSTEM_INCLUDE_DIR}")
+            set(NETWORK_SYSTEM_INCLUDE_DIR ${NETWORK_SYSTEM_INCLUDE_DIR} PARENT_SCOPE)
+            find_local_library(network_system "NetworkSystem;network_system" NETWORK_SYSTEM_LIBRARY)
+            if(NETWORK_SYSTEM_LIBRARY)
+                message(STATUS "Found network_system library: ${NETWORK_SYSTEM_LIBRARY}")
+                set(NETWORK_SYSTEM_LIBRARY ${NETWORK_SYSTEM_LIBRARY} PARENT_SCOPE)
             endif()
         else()
-            message(WARNING "logger_system not found - logging features will be unavailable")
+            message(STATUS "network_system not found locally - fetching and building from GitHub...")
+            set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
+            set(BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
+            set(BUILD_WEBSOCKET_SUPPORT OFF CACHE BOOL "" FORCE)
+            set(BUILD_MESSAGING_BRIDGE OFF CACHE BOOL "" FORCE)
+            set(NETWORK_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
+            set(NETWORK_BUILD_INTEGRATION_TESTS OFF CACHE BOOL "" FORCE)
+
+            FetchContent_Declare(network_system
+                GIT_REPOSITORY https://github.com/kcenon/network_system.git
+                GIT_TAG ${NETWORK_SYSTEM_GIT_TAG}
+            )
+            FetchContent_MakeAvailable(network_system)
+
+            set(NETWORK_SYSTEM_INCLUDE_DIR "${network_system_SOURCE_DIR}/include" PARENT_SCOPE)
+            set(NETWORK_SYSTEM_FETCHED TRUE CACHE INTERNAL "")
+            message(STATUS "Fetched and built network_system")
         endif()
     endif()
 
