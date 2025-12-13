@@ -130,6 +130,7 @@ public:
     auto compress(std::span<const std::byte> input) -> result<std::vector<std::byte>> {
 #ifndef FILE_TRANS_ENABLE_LZ4
         (void)input;
+        FT_LOG_WARN(log_category::compression, "LZ4 compression not enabled");
         return unexpected(error(error_code::internal_error, "LZ4 compression not enabled"));
 #else
         if (input.empty()) {
@@ -160,10 +161,19 @@ public:
         }
 
         if (compressed_size <= 0) {
+            FT_LOG_ERROR(log_category::compression,
+                "LZ4 compression failed for " + std::to_string(input.size()) + " bytes");
             return unexpected(error(error_code::internal_error, "LZ4 compression failed"));
         }
 
         output.resize(static_cast<std::size_t>(compressed_size));
+
+        double ratio = static_cast<double>(input.size()) /
+                       static_cast<double>(compressed_size);
+        FT_LOG_TRACE(log_category::compression,
+            "Compressed " + std::to_string(input.size()) + " -> " +
+            std::to_string(compressed_size) + " bytes (ratio: " +
+            std::to_string(ratio).substr(0, 4) + ")");
 
         {
             std::lock_guard lock(stats_mutex_);
@@ -181,6 +191,7 @@ public:
 #ifndef FILE_TRANS_ENABLE_LZ4
         (void)input;
         (void)original_size;
+        FT_LOG_WARN(log_category::compression, "LZ4 compression not enabled");
         return unexpected(error(error_code::internal_error, "LZ4 compression not enabled"));
 #else
         if (input.empty()) {
@@ -198,14 +209,25 @@ public:
             static_cast<int>(original_size));
 
         if (decompressed_size < 0) {
+            FT_LOG_ERROR(log_category::compression,
+                "LZ4 decompression failed: corrupted data (" +
+                std::to_string(input.size()) + " bytes input)");
             return unexpected(
                 error(error_code::internal_error, "LZ4 decompression failed: corrupted data"));
         }
 
         if (static_cast<std::size_t>(decompressed_size) != original_size) {
+            FT_LOG_ERROR(log_category::compression,
+                "LZ4 decompression size mismatch: expected " +
+                std::to_string(original_size) + ", got " +
+                std::to_string(decompressed_size));
             return unexpected(error(error_code::internal_error,
                                     "LZ4 decompression size mismatch"));
         }
+
+        FT_LOG_TRACE(log_category::compression,
+            "Decompressed " + std::to_string(input.size()) + " -> " +
+            std::to_string(original_size) + " bytes");
 
         {
             std::lock_guard lock(stats_mutex_);
@@ -227,6 +249,8 @@ public:
 
         // Check for pre-compressed formats
         if (is_precompressed_format(data)) {
+            FT_LOG_TRACE(log_category::compression,
+                "Data detected as pre-compressed format, skipping compression");
             return false;
         }
 
@@ -254,7 +278,12 @@ public:
         const double ratio =
             static_cast<double>(sample.size()) / static_cast<double>(compressed_size);
 
-        return ratio >= min_compression_ratio;
+        bool compressible = ratio >= min_compression_ratio;
+        FT_LOG_TRACE(log_category::compression,
+            "Compressibility check: ratio=" + std::to_string(ratio).substr(0, 4) +
+            ", compressible=" + (compressible ? "true" : "false"));
+
+        return compressible;
 #endif
     }
 
