@@ -196,6 +196,7 @@ add_library(FileTransSystem
     src/core/compression_engine.cpp
     src/core/transfer_id.cpp
     src/core/resume_handler.cpp
+    src/core/bandwidth_limiter.cpp
     src/server/file_transfer_server.cpp
     src/server/server_pipeline.cpp
     src/client/file_transfer_client.cpp
