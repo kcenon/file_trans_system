@@ -162,6 +162,8 @@ function(find_file_trans_dependencies)
         if(_found)
             message(STATUS "Found common_system locally: ${COMMON_SYSTEM_INCLUDE_DIR}")
             set(COMMON_SYSTEM_INCLUDE_DIR ${COMMON_SYSTEM_INCLUDE_DIR} PARENT_SCOPE)
+            # Set as CACHE so downstream dependencies can find it
+            set(COMMON_SYSTEM_INCLUDE_DIR ${COMMON_SYSTEM_INCLUDE_DIR} CACHE PATH "common_system include directory" FORCE)
             find_local_library(common_system "CommonSystem;common_system" COMMON_SYSTEM_LIBRARY)
             if(COMMON_SYSTEM_LIBRARY)
                 message(STATUS "Found common_system library: ${COMMON_SYSTEM_LIBRARY}")
@@ -179,8 +181,10 @@ function(find_file_trans_dependencies)
             FetchContent_MakeAvailable(common_system)
 
             set(COMMON_SYSTEM_INCLUDE_DIR "${common_system_SOURCE_DIR}/include" PARENT_SCOPE)
+            # Set as CACHE so downstream dependencies (thread_system, etc.) can find it
+            set(COMMON_SYSTEM_INCLUDE_DIR "${common_system_SOURCE_DIR}/include" CACHE PATH "common_system include directory" FORCE)
             set(COMMON_SYSTEM_FETCHED TRUE CACHE INTERNAL "")
-            message(STATUS "Fetched and built common_system")
+            message(STATUS "Fetched and built common_system: ${common_system_SOURCE_DIR}/include")
         endif()
     endif()
 
@@ -194,6 +198,8 @@ function(find_file_trans_dependencies)
         if(_found)
             message(STATUS "Found thread_system locally: ${THREAD_SYSTEM_INCLUDE_DIR}")
             set(THREAD_SYSTEM_INCLUDE_DIR ${THREAD_SYSTEM_INCLUDE_DIR} PARENT_SCOPE)
+            # Set as CACHE so downstream dependencies can find it
+            set(THREAD_SYSTEM_INCLUDE_DIR ${THREAD_SYSTEM_INCLUDE_DIR} CACHE PATH "thread_system include directory" FORCE)
             find_local_library(thread_system "ThreadSystem;thread_system" THREAD_SYSTEM_LIBRARY)
             if(THREAD_SYSTEM_LIBRARY)
                 message(STATUS "Found thread_system library: ${THREAD_SYSTEM_LIBRARY}")
@@ -211,8 +217,10 @@ function(find_file_trans_dependencies)
             FetchContent_MakeAvailable(thread_system)
 
             set(THREAD_SYSTEM_INCLUDE_DIR "${thread_system_SOURCE_DIR}/include" PARENT_SCOPE)
+            # Set as CACHE so downstream dependencies (network_system, etc.) can find it
+            set(THREAD_SYSTEM_INCLUDE_DIR "${thread_system_SOURCE_DIR}/include" CACHE PATH "thread_system include directory" FORCE)
             set(THREAD_SYSTEM_FETCHED TRUE CACHE INTERNAL "")
-            message(STATUS "Fetched and built thread_system")
+            message(STATUS "Fetched and built thread_system: ${thread_system_SOURCE_DIR}/include")
         endif()
     endif()
 
@@ -226,6 +234,8 @@ function(find_file_trans_dependencies)
         if(_found)
             message(STATUS "Found logger_system locally: ${LOGGER_SYSTEM_INCLUDE_DIR}")
             set(LOGGER_SYSTEM_INCLUDE_DIR ${LOGGER_SYSTEM_INCLUDE_DIR} PARENT_SCOPE)
+            # Set as CACHE so downstream dependencies can find it
+            set(LOGGER_SYSTEM_INCLUDE_DIR ${LOGGER_SYSTEM_INCLUDE_DIR} CACHE PATH "logger_system include directory" FORCE)
             find_local_library(logger_system "LoggerSystem;logger_system" LOGGER_SYSTEM_LIBRARY)
             if(LOGGER_SYSTEM_LIBRARY)
                 message(STATUS "Found logger_system library: ${LOGGER_SYSTEM_LIBRARY}")
@@ -243,8 +253,10 @@ function(find_file_trans_dependencies)
             FetchContent_MakeAvailable(logger_system)
 
             set(LOGGER_SYSTEM_INCLUDE_DIR "${logger_system_SOURCE_DIR}/include" PARENT_SCOPE)
+            # Set as CACHE so downstream dependencies (network_system, etc.) can find it
+            set(LOGGER_SYSTEM_INCLUDE_DIR "${logger_system_SOURCE_DIR}/include" CACHE PATH "logger_system include directory" FORCE)
             set(LOGGER_SYSTEM_FETCHED TRUE CACHE INTERNAL "")
-            message(STATUS "Fetched and built logger_system")
+            message(STATUS "Fetched and built logger_system: ${logger_system_SOURCE_DIR}/include")
         endif()
     endif()
 
