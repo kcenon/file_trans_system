@@ -47,6 +47,20 @@ struct file_transfer_server::impl {
     std::unordered_map<uint64_t, client_info> clients;
     std::atomic<uint64_t> next_client_id{1};
 
+    // Helper to log client connection
+    void log_client_connected(const client_info& info) {
+        transfer_log_context ctx;
+        ctx.client_id = std::to_string(info.id.value);
+        FT_LOG_INFO_CTX(log_category::server, "Client connected", ctx);
+    }
+
+    // Helper to log client disconnection
+    void log_client_disconnected(const client_info& info) {
+        transfer_log_context ctx;
+        ctx.client_id = std::to_string(info.id.value);
+        FT_LOG_INFO_CTX(log_category::server, "Client disconnected", ctx);
+    }
+
     explicit impl(server_config cfg) : config(std::move(cfg)) {
         // Initialize quota manager
         auto qm_result = quota_manager::create(
@@ -223,31 +237,37 @@ auto file_transfer_server::port() const -> uint16_t {
 
 void file_transfer_server::on_upload_request(
     std::function<bool(const upload_request&)> callback) {
+    FT_LOG_DEBUG(log_category::server, "Upload request callback registered");
     impl_->upload_callback = std::move(callback);
 }
 
 void file_transfer_server::on_download_request(
     std::function<bool(const download_request&)> callback) {
+    FT_LOG_DEBUG(log_category::server, "Download request callback registered");
     impl_->download_callback = std::move(callback);
 }
 
 void file_transfer_server::on_client_connected(
     std::function<void(const client_info&)> callback) {
+    FT_LOG_DEBUG(log_category::server, "Client connected callback registered");
     impl_->connect_callback = std::move(callback);
 }
 
 void file_transfer_server::on_client_disconnected(
     std::function<void(const client_info&)> callback) {
+    FT_LOG_DEBUG(log_category::server, "Client disconnected callback registered");
     impl_->disconnect_callback = std::move(callback);
 }
 
 void file_transfer_server::on_transfer_complete(
     std::function<void(const transfer_result&)> callback) {
+    FT_LOG_DEBUG(log_category::server, "Transfer complete callback registered");
     impl_->complete_callback = std::move(callback);
 }
 
 void file_transfer_server::on_progress(
     std::function<void(const transfer_progress&)> callback) {
+    FT_LOG_DEBUG(log_category::server, "Progress callback registered");
     impl_->progress_callback = std::move(callback);
 }
 
