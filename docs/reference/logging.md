@@ -139,6 +139,120 @@ get_logger().set_callback([](log_level level,
 });
 ```
 
+### Per-Category Log Level Settings
+
+You can set different log levels for different categories, allowing fine-grained control over logging verbosity.
+
+```cpp
+// Set debug level for client category, while keeping others at info
+get_logger().set_level(log_level::info);
+get_logger().set_category_level(log_category::client, log_level::debug);
+get_logger().set_category_level(log_category::chunk, log_level::trace);
+
+// Check if a level is enabled for a specific category
+if (get_logger().is_enabled_for(log_level::debug, log_category::client)) {
+    // Debug logging for client category is enabled
+}
+
+// Get the effective level for a category
+log_level client_level = get_logger().get_category_level(log_category::client);
+
+// Clear a category-specific level (reverts to global level)
+get_logger().clear_category_level(log_category::client);
+
+// Clear all category-specific levels
+get_logger().clear_all_category_levels();
+
+// Get all category-specific levels
+auto levels = get_logger().get_all_category_levels();
+for (const auto& [category, level] : levels) {
+    std::cout << category << ": " << log_level_to_string(level) << "\n";
+}
+```
+
+### Output Destination Settings
+
+Control where log messages are written: console, file, both, or none (callbacks only).
+
+```cpp
+// Set output destination
+get_logger().set_output_destination(log_output_destination::console);  // Default
+get_logger().set_output_destination(log_output_destination::file);
+get_logger().set_output_destination(log_output_destination::both);
+get_logger().set_output_destination(log_output_destination::none);  // Only callbacks
+
+// Enable/disable console output
+get_logger().set_console_output(true);
+if (get_logger().is_console_output_enabled()) {
+    // Console output is active
+}
+
+// Enable file output with path
+get_logger().set_file_output("/var/log/file_transfer.log");
+get_logger().set_file_output("/var/log/file_transfer.log", false);  // Overwrite mode
+
+// File output with configuration
+file_output_config config;
+config.file_path = "/var/log/file_transfer.log";
+config.append = true;
+config.max_file_size = 10 * 1024 * 1024;  // 10 MB
+config.rotate_on_size = true;
+get_logger().set_file_output(config);
+
+// Check file output status
+if (get_logger().is_file_output_enabled()) {
+    std::string path = get_logger().get_file_output_path();
+}
+
+// Disable file output
+get_logger().disable_file_output();
+```
+
+### Configuration API
+
+Apply complete logger configuration at once using the `log_config` struct.
+
+```cpp
+// Create and apply a complete configuration
+log_config config;
+config.global_level = log_level::debug;
+config.category_levels[std::string(log_category::client)] = log_level::trace;
+config.category_levels[std::string(log_category::chunk)] = log_level::warn;
+config.format = log_output_format::json;
+config.destination = log_output_destination::both;
+config.file_config.file_path = "/var/log/file_transfer.log";
+config.file_config.append = true;
+config.file_config.max_file_size = 50 * 1024 * 1024;  // 50 MB
+config.file_config.rotate_on_size = true;
+config.masking = masking_config::all_masked();
+
+bool success = get_logger().configure(config);
+
+// Get current configuration
+log_config current = get_logger().get_config();
+
+// Use default configuration
+log_config defaults = log_config::defaults();
+```
+
+### Output Destinations
+
+| Destination | Description |
+|-------------|-------------|
+| `console` | Output to stderr only (default) |
+| `file` | Output to file only |
+| `both` | Output to both console and file |
+| `none` | Disable output (only callbacks are called) |
+
+### File Output Configuration
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `file_path` | string | "" | Path to log file |
+| `append` | bool | true | Append to file or overwrite |
+| `max_file_size` | size_t | 0 | Max file size in bytes (0 = unlimited) |
+| `rotate_on_size` | bool | false | Rotate file when max size reached |
+
 ## Integration with logger_system
 
 When both `BUILD_WITH_LOGGER_SYSTEM` and `BUILD_WITH_COMMON_SYSTEM` are enabled,

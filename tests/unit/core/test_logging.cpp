@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 #include <regex>
+#include <filesystem>
 
 namespace kcenon::file_transfer::test {
 
@@ -630,6 +631,276 @@ TEST_F(FileTransferLoggerTest, MaskingInJsonOutput) {
     ASSERT_EQ(captured_json.size(), 1u);
     EXPECT_EQ(captured_json[0].find("192.168.1.100"), std::string::npos);
     EXPECT_NE(captured_json[0].find(".100"), std::string::npos);
+}
+
+// =============================================================================
+// Per-Category Log Level Tests
+// =============================================================================
+
+class CategoryLevelTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        get_logger().initialize();
+        get_logger().set_level(log_level::info);
+        get_logger().clear_all_category_levels();
+    }
+
+    void TearDown() override {
+        get_logger().set_callback(nullptr);
+        get_logger().clear_all_category_levels();
+    }
+};
+
+TEST_F(CategoryLevelTest, SetAndGetCategoryLevel) {
+    get_logger().set_category_level(log_category::client, log_level::debug);
+
+    EXPECT_EQ(get_logger().get_category_level(log_category::client), log_level::debug);
+    EXPECT_EQ(get_logger().get_category_level(log_category::server), log_level::info);
+}
+
+TEST_F(CategoryLevelTest, ClearCategoryLevel) {
+    get_logger().set_category_level(log_category::client, log_level::debug);
+    EXPECT_EQ(get_logger().get_category_level(log_category::client), log_level::debug);
+
+    get_logger().clear_category_level(log_category::client);
+    EXPECT_EQ(get_logger().get_category_level(log_category::client), log_level::info);
+}
+
+TEST_F(CategoryLevelTest, ClearAllCategoryLevels) {
+    get_logger().set_category_level(log_category::client, log_level::debug);
+    get_logger().set_category_level(log_category::server, log_level::trace);
+
+    get_logger().clear_all_category_levels();
+
+    EXPECT_EQ(get_logger().get_category_level(log_category::client), log_level::info);
+    EXPECT_EQ(get_logger().get_category_level(log_category::server), log_level::info);
+}
+
+TEST_F(CategoryLevelTest, GetAllCategoryLevels) {
+    get_logger().set_category_level(log_category::client, log_level::debug);
+    get_logger().set_category_level(log_category::server, log_level::trace);
+
+    auto levels = get_logger().get_all_category_levels();
+
+    EXPECT_EQ(levels.size(), 2u);
+    EXPECT_EQ(levels[std::string(log_category::client)], log_level::debug);
+    EXPECT_EQ(levels[std::string(log_category::server)], log_level::trace);
+}
+
+TEST_F(CategoryLevelTest, CategoryLevelFiltering) {
+    std::vector<std::string> captured;
+
+    get_logger().set_callback([&](log_level, std::string_view,
+                                  std::string_view message, const transfer_log_context*) {
+        captured.push_back(std::string(message));
+    });
+
+    get_logger().set_level(log_level::warn);
+    get_logger().set_category_level(log_category::client, log_level::debug);
+
+    FT_LOG_DEBUG(log_category::client, "Client debug");
+    FT_LOG_DEBUG(log_category::server, "Server debug");
+    FT_LOG_WARN(log_category::server, "Server warn");
+
+    EXPECT_EQ(captured.size(), 2u);
+    EXPECT_EQ(captured[0], "Client debug");
+    EXPECT_EQ(captured[1], "Server warn");
+}
+
+TEST_F(CategoryLevelTest, IsEnabledFor) {
+    get_logger().set_level(log_level::warn);
+    get_logger().set_category_level(log_category::client, log_level::debug);
+
+    EXPECT_TRUE(get_logger().is_enabled_for(log_level::debug, log_category::client));
+    EXPECT_FALSE(get_logger().is_enabled_for(log_level::debug, log_category::server));
+    EXPECT_TRUE(get_logger().is_enabled_for(log_level::warn, log_category::server));
+}
+
+// =============================================================================
+// Output Destination Tests
+// =============================================================================
+
+class OutputDestinationTest : public ::testing::Test {
+protected:
+    std::string temp_log_path_;
+
+    void SetUp() override {
+        get_logger().initialize();
+        get_logger().set_level(log_level::info);
+        get_logger().set_output_destination(log_output_destination::console);
+        temp_log_path_ = (std::filesystem::temp_directory_path() / ("test_logging_" + std::to_string(time(nullptr)) + ".log")).string();
+    }
+
+    void TearDown() override {
+        get_logger().disable_file_output();
+        get_logger().set_callback(nullptr);
+        std::remove(temp_log_path_.c_str());
+    }
+};
+
+TEST_F(OutputDestinationTest, SetAndGetOutputDestination) {
+    get_logger().set_output_destination(log_output_destination::file);
+    EXPECT_EQ(get_logger().get_output_destination(), log_output_destination::file);
+
+    get_logger().set_output_destination(log_output_destination::both);
+    EXPECT_EQ(get_logger().get_output_destination(), log_output_destination::both);
+
+    get_logger().set_output_destination(log_output_destination::none);
+    EXPECT_EQ(get_logger().get_output_destination(), log_output_destination::none);
+}
+
+TEST_F(OutputDestinationTest, SetConsoleOutput) {
+    get_logger().set_output_destination(log_output_destination::console);
+
+    get_logger().set_console_output(false);
+    EXPECT_EQ(get_logger().get_output_destination(), log_output_destination::none);
+
+    get_logger().set_console_output(true);
+    EXPECT_EQ(get_logger().get_output_destination(), log_output_destination::console);
+}
+
+TEST_F(OutputDestinationTest, IsConsoleOutputEnabled) {
+    get_logger().set_output_destination(log_output_destination::console);
+    EXPECT_TRUE(get_logger().is_console_output_enabled());
+
+    get_logger().set_output_destination(log_output_destination::both);
+    EXPECT_TRUE(get_logger().is_console_output_enabled());
+
+    get_logger().set_output_destination(log_output_destination::file);
+    EXPECT_FALSE(get_logger().is_console_output_enabled());
+
+    get_logger().set_output_destination(log_output_destination::none);
+    EXPECT_FALSE(get_logger().is_console_output_enabled());
+}
+
+TEST_F(OutputDestinationTest, SetFileOutput) {
+    EXPECT_TRUE(get_logger().set_file_output(temp_log_path_));
+    EXPECT_TRUE(get_logger().is_file_output_enabled());
+    EXPECT_EQ(get_logger().get_file_output_path(), temp_log_path_);
+}
+
+TEST_F(OutputDestinationTest, DisableFileOutput) {
+    get_logger().set_file_output(temp_log_path_);
+    EXPECT_TRUE(get_logger().is_file_output_enabled());
+
+    get_logger().disable_file_output();
+    EXPECT_FALSE(get_logger().is_file_output_enabled());
+}
+
+TEST_F(OutputDestinationTest, FileOutputWithConfig) {
+    file_output_config config;
+    config.file_path = temp_log_path_;
+    config.append = false;
+    config.max_file_size = 1024;
+    config.rotate_on_size = true;
+
+    EXPECT_TRUE(get_logger().set_file_output(config));
+    EXPECT_TRUE(get_logger().is_file_output_enabled());
+}
+
+TEST_F(OutputDestinationTest, OutputNoneOnlyCallsCallbacks) {
+    std::vector<std::string> captured;
+
+    get_logger().set_callback([&](log_level, std::string_view,
+                                  std::string_view message, const transfer_log_context*) {
+        captured.push_back(std::string(message));
+    });
+
+    get_logger().set_output_destination(log_output_destination::none);
+    FT_LOG_INFO(log_category::client, "Test message");
+
+    EXPECT_EQ(captured.size(), 1u);
+    EXPECT_EQ(captured[0], "Test message");
+}
+
+TEST_F(OutputDestinationTest, WriteToFile) {
+    get_logger().set_output_destination(log_output_destination::file);
+    get_logger().set_file_output(temp_log_path_, false);
+
+    FT_LOG_INFO(log_category::client, "Test file output");
+    get_logger().flush();
+
+    std::ifstream file(temp_log_path_);
+    std::string content((std::istreambuf_iterator<char>(file)),
+                        std::istreambuf_iterator<char>());
+
+    EXPECT_NE(content.find("Test file output"), std::string::npos);
+}
+
+// =============================================================================
+// Configuration API Tests
+// =============================================================================
+
+class ConfigurationApiTest : public ::testing::Test {
+protected:
+    std::string temp_log_path_;
+
+    void SetUp() override {
+        get_logger().initialize();
+        get_logger().set_level(log_level::info);
+        get_logger().clear_all_category_levels();
+        get_logger().disable_file_output();
+        get_logger().set_output_destination(log_output_destination::console);
+        temp_log_path_ = (std::filesystem::temp_directory_path() / ("test_config_" + std::to_string(time(nullptr)) + ".log")).string();
+    }
+
+    void TearDown() override {
+        get_logger().disable_file_output();
+        get_logger().set_callback(nullptr);
+        std::remove(temp_log_path_.c_str());
+    }
+};
+
+TEST_F(ConfigurationApiTest, GetConfig) {
+    get_logger().set_level(log_level::debug);
+    get_logger().set_category_level(log_category::client, log_level::trace);
+    get_logger().enable_json_output(true);
+    get_logger().enable_masking(true);
+
+    auto config = get_logger().get_config();
+
+    EXPECT_EQ(config.global_level, log_level::debug);
+    EXPECT_EQ(config.category_levels.size(), 1u);
+    EXPECT_EQ(config.category_levels[std::string(log_category::client)], log_level::trace);
+    EXPECT_EQ(config.format, log_output_format::json);
+    EXPECT_TRUE(config.masking.mask_paths);
+    EXPECT_TRUE(config.masking.mask_ips);
+}
+
+TEST_F(ConfigurationApiTest, Configure) {
+    log_config config;
+    config.global_level = log_level::debug;
+    config.category_levels[std::string(log_category::server)] = log_level::trace;
+    config.format = log_output_format::json;
+    config.destination = log_output_destination::both;
+    config.file_config.file_path = temp_log_path_;
+    config.masking = masking_config::all_masked();
+
+    EXPECT_TRUE(get_logger().configure(config));
+
+    EXPECT_EQ(get_logger().get_level(), log_level::debug);
+    EXPECT_EQ(get_logger().get_category_level(log_category::server), log_level::trace);
+    EXPECT_EQ(get_logger().get_output_format(), log_output_format::json);
+    EXPECT_TRUE(get_logger().is_file_output_enabled());
+    EXPECT_TRUE(get_logger().get_masking_config().mask_paths);
+}
+
+TEST_F(ConfigurationApiTest, DefaultConfig) {
+    auto config = log_config::defaults();
+
+    EXPECT_EQ(config.global_level, log_level::info);
+    EXPECT_TRUE(config.category_levels.empty());
+    EXPECT_EQ(config.format, log_output_format::text);
+    EXPECT_EQ(config.destination, log_output_destination::console);
+}
+
+TEST_F(ConfigurationApiTest, FileOutputConfigDefaults) {
+    auto config = file_output_config::defaults();
+
+    EXPECT_TRUE(config.file_path.empty());
+    EXPECT_TRUE(config.append);
+    EXPECT_EQ(config.max_file_size, 0u);
+    EXPECT_FALSE(config.rotate_on_size);
 }
 
 } // namespace kcenon::file_transfer::test
