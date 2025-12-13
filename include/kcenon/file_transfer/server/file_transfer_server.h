@@ -14,6 +14,7 @@
 #include <unordered_map>
 
 #include "kcenon/file_transfer/core/types.h"
+#include "kcenon/file_transfer/server/quota_manager.h"
 #include "kcenon/file_transfer/server/server_types.h"
 
 namespace kcenon::file_transfer {
@@ -184,6 +185,45 @@ public:
      * @return Server configuration
      */
     [[nodiscard]] auto config() const -> const server_config&;
+
+    // Quota management
+
+    /**
+     * @brief Get the quota manager instance
+     * @return Reference to quota manager
+     */
+    [[nodiscard]] auto get_quota_manager() -> quota_manager&;
+
+    /**
+     * @brief Get the quota manager instance (const)
+     * @return Const reference to quota manager
+     */
+    [[nodiscard]] auto get_quota_manager() const -> const quota_manager&;
+
+    /**
+     * @brief Get current quota usage
+     * @return Current quota usage information
+     */
+    [[nodiscard]] auto get_quota_usage() const -> quota_usage;
+
+    /**
+     * @brief Check if an upload of given size is allowed
+     * @param file_size Size of the file to upload
+     * @return Result<void> on success, error if quota exceeded or file too large
+     */
+    [[nodiscard]] auto check_upload_allowed(uint64_t file_size) -> result<void>;
+
+    /**
+     * @brief Set callback for quota warning events
+     * @param callback Function called when quota warning threshold is reached
+     */
+    void on_quota_warning(std::function<void(const quota_usage&)> callback);
+
+    /**
+     * @brief Set callback for quota exceeded events
+     * @param callback Function called when quota is exceeded
+     */
+    void on_quota_exceeded(std::function<void(const quota_usage&)> callback);
 
 private:
     explicit file_transfer_server(server_config config);
