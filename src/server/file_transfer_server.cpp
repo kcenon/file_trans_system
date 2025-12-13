@@ -50,14 +50,14 @@ struct file_transfer_server::impl {
     // Helper to log client connection
     void log_client_connected(const client_info& info) {
         transfer_log_context ctx;
-        ctx.client_id = info.client_id;
+        ctx.client_id = std::to_string(info.id.value);
         FT_LOG_INFO_CTX(log_category::server, "Client connected", ctx);
     }
 
     // Helper to log client disconnection
     void log_client_disconnected(const client_info& info) {
         transfer_log_context ctx;
-        ctx.client_id = info.client_id;
+        ctx.client_id = std::to_string(info.id.value);
         FT_LOG_INFO_CTX(log_category::server, "Client disconnected", ctx);
     }
 
