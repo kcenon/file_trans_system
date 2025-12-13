@@ -189,6 +189,90 @@ FT_LOG_FATAL_CTX(category, message, context)
 2025-12-13 10:30:00.123 [INFO] [file_transfer.client] Upload completed {"transfer_id":"abc123","filename":"data.zip","file_size":1048576,"duration_ms":500,"rate_mbps":2.0}
 ```
 
+## Log Points by Module
+
+The following log points are implemented across all modules:
+
+### Server Module (`file_transfer.server`)
+
+| Event | Level | Description |
+|-------|-------|-------------|
+| Server start | INFO | Server starting with address and port |
+| Server started | INFO | Server successfully started |
+| Server stop | INFO | Server stopping |
+| Server stopped | INFO | Server successfully stopped |
+| Client connected | INFO | Client connection event |
+| Client disconnected | INFO | Client disconnection event |
+| Upload rejected | WARN | Upload rejected due to size/quota |
+| Callback registered | DEBUG | Callback registration events |
+| Start/stop failures | WARN/ERROR | Server lifecycle errors |
+
+### Client Module (`file_transfer.client`)
+
+| Event | Level | Description |
+|-------|-------|-------------|
+| Connect to server | INFO | Connection attempt |
+| Connected | INFO | Successfully connected |
+| Disconnect | INFO | Disconnection event |
+| Upload started | INFO | Upload initiated with context |
+| Download started | INFO | Download initiated with context |
+| Download completed | INFO | Download finished with metrics |
+| Download failed | ERROR | Download error with reason |
+| Download cancelled | INFO | User-initiated cancellation |
+| Reconnection attempt | INFO | Auto-reconnect in progress |
+| Reconnection success | INFO | Reconnection successful |
+| Reconnection failed | WARN | Reconnection failed |
+
+### Pipeline Module (`file_transfer.pipeline`)
+
+| Event | Level | Description |
+|-------|-------|-------------|
+| Pipeline start | INFO | Pipeline starting with config |
+| Pipeline started | INFO | Pipeline successfully started |
+| Pipeline stop | INFO | Pipeline stopping |
+| Pipeline stopped | INFO | Pipeline stopped with stats |
+| Worker started | DEBUG | Worker thread started |
+| Worker stopped | DEBUG | Worker thread stopped |
+| Chunk processing | TRACE | Chunk entering each stage |
+| Chunk decompressed | TRACE | Decompression completed |
+| Chunk verified | TRACE | Checksum verification passed |
+| Chunk written | TRACE | Chunk written to file |
+| Chunk read | TRACE | Chunk read from file |
+| Chunk compressed | TRACE | Compression with ratio |
+| Chunk sent | TRACE | Chunk sent to network |
+| Checksum mismatch | ERROR | Verification failed |
+| File operation error | ERROR | Read/write failures |
+
+### Resume Handler Module (`file_transfer.resume`)
+
+| Event | Level | Description |
+|-------|-------|-------------|
+| State saved | DEBUG | Transfer state persisted |
+| State persisted | TRACE | File write completed |
+| State loaded | DEBUG | Transfer state recovered |
+| State from cache | TRACE | Cache hit |
+| State deleted | DEBUG | Transfer state removed |
+| State not found | DEBUG | State file missing |
+| State recovered | DEBUG | Recovery with progress info |
+| Cleanup started | INFO | Expired state cleanup |
+| Cleanup completed | INFO | Cleanup results |
+| State expired | DEBUG | Individual state expired |
+| List transfers | INFO | Resumable transfer listing |
+| Deserialization error | ERROR | State parse failure |
+
+### Compression Module (`file_transfer.compression`)
+
+| Event | Level | Description |
+|-------|-------|-------------|
+| Compressed | TRACE | Compression with ratio |
+| Decompressed | TRACE | Decompression completed |
+| Compression failed | ERROR | LZ4 compression error |
+| Decompression failed | ERROR | LZ4 decompression error |
+| Size mismatch | ERROR | Decompressed size mismatch |
+| Pre-compressed detected | TRACE | Format detection skip |
+| Compressibility check | TRACE | Sample analysis result |
+| LZ4 not enabled | WARN | Build without LZ4 |
+
 ## Best Practices
 
 1. **Use appropriate log levels**: TRACE for chunk-level details, DEBUG for development, INFO for operations, WARN/ERROR for issues.
@@ -206,3 +290,5 @@ FT_LOG_FATAL_CTX(category, message, context)
 4. **Automatic initialization**: The logger is automatically initialized when creating server or client instances. Manual `initialize()` calls are optional and safe to use for early configuration.
 
 5. **Shutdown properly**: Call `get_logger().shutdown()` before exit to flush pending logs.
+
+6. **Performance impact**: Log points are designed for minimal performance overhead (< 1%). TRACE level logs are disabled by default.
