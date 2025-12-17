@@ -29,6 +29,31 @@ jobs:
       uses: actions/checkout@v4
       with:
         submodules: recursive
+        path: file_trans_system
+
+    - name: Checkout common_system
+      uses: actions/checkout@v4
+      with:
+        repository: kcenon/common_system
+        path: common_system
+
+    - name: Checkout container_system
+      uses: actions/checkout@v4
+      with:
+        repository: kcenon/container_system
+        path: container_system
+
+    - name: Checkout thread_system
+      uses: actions/checkout@v4
+      with:
+        repository: kcenon/thread_system
+        path: thread_system
+
+    - name: Checkout network_system
+      uses: actions/checkout@v4
+      with:
+        repository: kcenon/network_system
+        path: network_system
 
     - name: Install dependencies (Ubuntu)
       if: runner.os == 'Linux'
@@ -69,38 +94,73 @@ jobs:
       if: matrix.compiler == 'msvc'
       uses: ilammy/msvc-dev-cmd@v1
 
+    - name: Build dependency libraries (Unix)
+      if: runner.os != 'Windows'
+      run: |
+        # Build common_system
+        cmake -S common_system -B common_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+        cmake --build common_system/build --config Debug
+
+        # Build container_system
+        cmake -S container_system -B container_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+        cmake --build container_system/build --config Debug
+
+        # Build thread_system
+        cmake -S thread_system -B thread_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+        cmake --build thread_system/build --config Debug
+
+        # Build network_system
+        cmake -S network_system -B network_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+        cmake --build network_system/build --config Debug
+
+    - name: Build dependency libraries (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        # Build common_system
+        cmake -S common_system -B common_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+        cmake --build common_system/build --config Debug
+
+        # Build container_system
+        cmake -S container_system -B container_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+        cmake --build container_system/build --config Debug
+
+        # Build thread_system
+        cmake -S thread_system -B thread_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+        cmake --build thread_system/build --config Debug
+
+        # Build network_system
+        cmake -S network_system -B network_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+        cmake --build network_system/build --config Debug
+
     - name: Configure CMake (Unix)
       if: runner.os != 'Windows'
+      working-directory: file_trans_system
       run: |
         cmake -B build -G Ninja \
           -DCMAKE_BUILD_TYPE=Debug \
-          -DBUILD_WITH_COMMON_SYSTEM=OFF \
-          -DBUILD_WITH_THREAD_SYSTEM=OFF \
-          -DBUILD_WITH_NETWORK_SYSTEM=OFF \
-          -DBUILD_WITH_CONTAINER_SYSTEM=OFF \
           -DFILE_TRANS_BUILD_TESTS=ON \
           -DFILE_TRANS_BUILD_EXAMPLES=OFF \
           -DFILE_TRANS_BUILD_BENCHMARKS=OFF
 
     - name: Configure CMake (Windows)
       if: runner.os == 'Windows'
+      working-directory: file_trans_system
       shell: pwsh
       run: |
         cmake -B build -G Ninja `
           -DCMAKE_BUILD_TYPE=Debug `
-          -DBUILD_WITH_COMMON_SYSTEM=OFF `
-          -DBUILD_WITH_THREAD_SYSTEM=OFF `
-          -DBUILD_WITH_NETWORK_SYSTEM=OFF `
-          -DBUILD_WITH_CONTAINER_SYSTEM=OFF `
           -DFILE_TRANS_BUILD_TESTS=ON `
           -DFILE_TRANS_BUILD_EXAMPLES=OFF `
           -DFILE_TRANS_BUILD_BENCHMARKS=OFF `
           -DFILE_TRANS_ENABLE_LZ4=OFF
 
     - name: Build
+      working-directory: file_trans_system
       run: cmake --build build --config Debug
 
     - name: Run tests
+      working-directory: file_trans_system
       run: ctest --test-dir build --output-on-failure --timeout 300
 
     - name: Upload test results
@@ -108,5 +168,5 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: test-results-${{ matrix.os }}-${{ matrix.compiler }}
-        path: build/Testing/
+        path: file_trans_system/build/Testing/
         retention-days: 7

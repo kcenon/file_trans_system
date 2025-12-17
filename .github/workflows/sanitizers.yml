@@ -16,31 +16,77 @@ jobs:
       uses: actions/checkout@v4
       with:
         submodules: recursive
+        path: file_trans_system
+
+    - name: Checkout common_system
+      uses: actions/checkout@v4
+      with:
+        repository: kcenon/common_system
+        path: common_system
+
+    - name: Checkout container_system
+      uses: actions/checkout@v4
+      with:
+        repository: kcenon/container_system
+        path: container_system
+
+    - name: Checkout thread_system
+      uses: actions/checkout@v4
+      with:
+        repository: kcenon/thread_system
+        path: thread_system
+
+    - name: Checkout network_system
+      uses: actions/checkout@v4
+      with:
+        repository: kcenon/network_system
+        path: network_system
 
     - name: Install dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y cmake ninja-build clang liblz4-dev
 
+    - name: Build dependency libraries
+      run: |
+        # Build common_system
+        cmake -S common_system -B common_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang
+        cmake --build common_system/build --config Debug
+
+        # Build container_system
+        cmake -S container_system -B container_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang
+        cmake --build container_system/build --config Debug
+
+        # Build thread_system
+        cmake -S thread_system -B thread_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang
+        cmake --build thread_system/build --config Debug
+
+        # Build network_system
+        cmake -S network_system -B network_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang
+        cmake --build network_system/build --config Debug
+
     - name: Configure CMake with ASAN
+      working-directory: file_trans_system
       run: |
         cmake -B build -G Ninja \
           -DCMAKE_BUILD_TYPE=Debug \
           -DCMAKE_CXX_COMPILER=clang++ \
           -DCMAKE_C_COMPILER=clang \
-          -DBUILD_WITH_COMMON_SYSTEM=OFF \
-          -DBUILD_WITH_THREAD_SYSTEM=OFF \
-          -DBUILD_WITH_NETWORK_SYSTEM=OFF \
-          -DBUILD_WITH_CONTAINER_SYSTEM=OFF \
           -DFILE_TRANS_BUILD_TESTS=ON \
           -DFILE_TRANS_BUILD_EXAMPLES=OFF \
           -DFILE_TRANS_BUILD_BENCHMARKS=OFF \
           -DFILE_TRANS_ENABLE_ASAN=ON
 
     - name: Build
+      working-directory: file_trans_system
       run: cmake --build build --config Debug
 
     - name: Run tests with ASAN
+      working-directory: file_trans_system
       env:
         ASAN_OPTIONS: "detect_leaks=1:abort_on_error=1:halt_on_error=1"
       run: ctest --test-dir build --output-on-failure --timeout 600
@@ -54,31 +100,77 @@ jobs:
       uses: actions/checkout@v4
       with:
         submodules: recursive
+        path: file_trans_system
+
+    - name: Checkout common_system
+      uses: actions/checkout@v4
+      with:
+        repository: kcenon/common_system
+        path: common_system
+
+    - name: Checkout container_system
+      uses: actions/checkout@v4
+      with:
+        repository: kcenon/container_system
+        path: container_system
+
+    - name: Checkout thread_system
+      uses: actions/checkout@v4
+      with:
+        repository: kcenon/thread_system
+        path: thread_system
+
+    - name: Checkout network_system
+      uses: actions/checkout@v4
+      with:
+        repository: kcenon/network_system
+        path: network_system
 
     - name: Install dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y cmake ninja-build clang liblz4-dev
 
+    - name: Build dependency libraries
+      run: |
+        # Build common_system
+        cmake -S common_system -B common_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang
+        cmake --build common_system/build --config Debug
+
+        # Build container_system
+        cmake -S container_system -B container_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang
+        cmake --build container_system/build --config Debug
+
+        # Build thread_system
+        cmake -S thread_system -B thread_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang
+        cmake --build thread_system/build --config Debug
+
+        # Build network_system
+        cmake -S network_system -B network_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang
+        cmake --build network_system/build --config Debug
+
     - name: Configure CMake with TSAN
+      working-directory: file_trans_system
       run: |
         cmake -B build -G Ninja \
           -DCMAKE_BUILD_TYPE=Debug \
           -DCMAKE_CXX_COMPILER=clang++ \
           -DCMAKE_C_COMPILER=clang \
-          -DBUILD_WITH_COMMON_SYSTEM=OFF \
-          -DBUILD_WITH_THREAD_SYSTEM=OFF \
-          -DBUILD_WITH_NETWORK_SYSTEM=OFF \
-          -DBUILD_WITH_CONTAINER_SYSTEM=OFF \
           -DFILE_TRANS_BUILD_TESTS=ON \
           -DFILE_TRANS_BUILD_EXAMPLES=OFF \
           -DFILE_TRANS_BUILD_BENCHMARKS=OFF \
           -DFILE_TRANS_ENABLE_TSAN=ON
 
     - name: Build
+      working-directory: file_trans_system
       run: cmake --build build --config Debug
 
     - name: Run tests with TSAN
+      working-directory: file_trans_system
       env:
         TSAN_OPTIONS: "abort_on_error=1:halt_on_error=1"
       run: ctest --test-dir build --output-on-failure --timeout 600
@@ -92,31 +184,77 @@ jobs:
       uses: actions/checkout@v4
       with:
         submodules: recursive
+        path: file_trans_system
+
+    - name: Checkout common_system
+      uses: actions/checkout@v4
+      with:
+        repository: kcenon/common_system
+        path: common_system
+
+    - name: Checkout container_system
+      uses: actions/checkout@v4
+      with:
+        repository: kcenon/container_system
+        path: container_system
+
+    - name: Checkout thread_system
+      uses: actions/checkout@v4
+      with:
+        repository: kcenon/thread_system
+        path: thread_system
+
+    - name: Checkout network_system
+      uses: actions/checkout@v4
+      with:
+        repository: kcenon/network_system
+        path: network_system
 
     - name: Install dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y cmake ninja-build clang liblz4-dev
 
+    - name: Build dependency libraries
+      run: |
+        # Build common_system
+        cmake -S common_system -B common_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang
+        cmake --build common_system/build --config Debug
+
+        # Build container_system
+        cmake -S container_system -B container_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang
+        cmake --build container_system/build --config Debug
+
+        # Build thread_system
+        cmake -S thread_system -B thread_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang
+        cmake --build thread_system/build --config Debug
+
+        # Build network_system
+        cmake -S network_system -B network_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang
+        cmake --build network_system/build --config Debug
+
     - name: Configure CMake with UBSAN
+      working-directory: file_trans_system
       run: |
         cmake -B build -G Ninja \
           -DCMAKE_BUILD_TYPE=Debug \
           -DCMAKE_CXX_COMPILER=clang++ \
           -DCMAKE_C_COMPILER=clang \
-          -DBUILD_WITH_COMMON_SYSTEM=OFF \
-          -DBUILD_WITH_THREAD_SYSTEM=OFF \
-          -DBUILD_WITH_NETWORK_SYSTEM=OFF \
-          -DBUILD_WITH_CONTAINER_SYSTEM=OFF \
           -DFILE_TRANS_BUILD_TESTS=ON \
           -DFILE_TRANS_BUILD_EXAMPLES=OFF \
           -DFILE_TRANS_BUILD_BENCHMARKS=OFF \
           -DFILE_TRANS_ENABLE_UBSAN=ON
 
     - name: Build
+      working-directory: file_trans_system
       run: cmake --build build --config Debug
 
     - name: Run tests with UBSAN
+      working-directory: file_trans_system
       env:
         UBSAN_OPTIONS: "print_stacktrace=1:abort_on_error=1:halt_on_error=1"
       run: ctest --test-dir build --output-on-failure --timeout 600
