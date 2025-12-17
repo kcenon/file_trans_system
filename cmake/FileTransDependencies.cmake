@@ -100,7 +100,8 @@ function(find_file_trans_dependencies)
             message(STATUS "Found common_system: ${COMMON_SYSTEM_INCLUDE_DIR}")
             set(COMMON_SYSTEM_INCLUDE_DIR ${COMMON_SYSTEM_INCLUDE_DIR} PARENT_SCOPE)
         else()
-            message(WARNING "common_system not found - some features will be unavailable")
+            message(FATAL_ERROR "common_system not found - this is a required dependency. "
+                "Please ensure common_system is available in the parent directory.")
         endif()
     endif()
 
@@ -145,7 +146,8 @@ function(find_file_trans_dependencies)
                 message(WARNING "thread_system library not found - linking may fail")
             endif()
         else()
-            message(WARNING "thread_system not found - some features will be unavailable")
+            message(FATAL_ERROR "thread_system not found - this is a required dependency. "
+                "Please ensure thread_system is available in the parent directory.")
         endif()
     endif()
 
@@ -196,7 +198,8 @@ function(find_file_trans_dependencies)
             set(ASIO_INCLUDE_DIR ${ASIO_INCLUDE_DIR} PARENT_SCOPE)
             set(ASIO_TARGET ${ASIO_TARGET} PARENT_SCOPE)
         else()
-            message(WARNING "network_system not found - some features will be unavailable")
+            message(FATAL_ERROR "network_system not found - this is a required dependency. "
+                "Please ensure network_system is available in the parent directory.")
         endif()
     endif()
 
@@ -220,7 +223,8 @@ function(find_file_trans_dependencies)
             message(STATUS "Found container_system: ${CONTAINER_SYSTEM_INCLUDE_DIR}")
             set(CONTAINER_SYSTEM_INCLUDE_DIR ${CONTAINER_SYSTEM_INCLUDE_DIR} PARENT_SCOPE)
         else()
-            message(WARNING "container_system not found - some features will be unavailable")
+            message(FATAL_ERROR "container_system not found - this is a required dependency. "
+                "Please ensure container_system is available in the parent directory.")
         endif()
     endif()
 

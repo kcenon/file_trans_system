@@ -51,31 +51,22 @@ option(FILE_TRANS_ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
 #     - LZ4 (compression)
 ##################################################
 
-option(BUILD_WITH_COMMON_SYSTEM "Build with common_system integration (REQUIRED)" ON)
-option(BUILD_WITH_THREAD_SYSTEM "Build with thread_system integration (REQUIRED)" ON)
-option(BUILD_WITH_NETWORK_SYSTEM "Build with network_system integration (REQUIRED)" ON)
-option(BUILD_WITH_CONTAINER_SYSTEM "Build with container_system integration (REQUIRED)" ON)
+# Required ecosystem dependencies (these are always enabled)
+set(BUILD_WITH_COMMON_SYSTEM ON CACHE BOOL "Build with common_system integration (REQUIRED)" FORCE)
+set(BUILD_WITH_THREAD_SYSTEM ON CACHE BOOL "Build with thread_system integration (REQUIRED)" FORCE)
+set(BUILD_WITH_NETWORK_SYSTEM ON CACHE BOOL "Build with network_system integration (REQUIRED)" FORCE)
+set(BUILD_WITH_CONTAINER_SYSTEM ON CACHE BOOL "Build with container_system integration (REQUIRED)" FORCE)
+
+# Optional ecosystem dependency
 option(BUILD_WITH_LOGGER_SYSTEM "Build with logger_system integration (structured logging)" ON)
 
 ##################################################
 # Dependency Validation
+#
+# Note: common_system, thread_system, network_system, and container_system
+# are required dependencies. They are always enabled and cannot be disabled.
+# The validation below will fail if these dependencies are not found.
 ##################################################
-
-if(NOT BUILD_WITH_COMMON_SYSTEM)
-    message(WARNING "common_system is disabled - some features may be unavailable")
-endif()
-
-if(NOT BUILD_WITH_THREAD_SYSTEM)
-    message(WARNING "thread_system is disabled - some features may be unavailable")
-endif()
-
-if(NOT BUILD_WITH_NETWORK_SYSTEM)
-    message(WARNING "network_system is disabled - some features may be unavailable")
-endif()
-
-if(NOT BUILD_WITH_CONTAINER_SYSTEM)
-    message(WARNING "container_system is disabled - some features may be unavailable")
-endif()
 
 ##################################################
 # Global Configuration
