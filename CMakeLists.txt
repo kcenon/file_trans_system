@@ -241,20 +241,22 @@ endif()
 if(BUILD_WITH_THREAD_SYSTEM AND THREAD_SYSTEM_INCLUDE_DIR)
     target_include_directories(FileTransSystem PUBLIC ${THREAD_SYSTEM_INCLUDE_DIR})
     target_compile_definitions(FileTransSystem PUBLIC BUILD_WITH_THREAD_SYSTEM)
-
-    # Link thread_system library
-    if(THREAD_SYSTEM_LIBRARY)
-        target_link_libraries(FileTransSystem PUBLIC ${THREAD_SYSTEM_LIBRARY})
-    endif()
+    # Note: thread_system library is linked AFTER network_system due to dependency order
 endif()
 
 if(BUILD_WITH_NETWORK_SYSTEM AND NETWORK_SYSTEM_INCLUDE_DIR)
     target_include_directories(FileTransSystem PUBLIC ${NETWORK_SYSTEM_INCLUDE_DIR})
     target_compile_definitions(FileTransSystem PUBLIC BUILD_WITH_NETWORK_SYSTEM)
 
-    # Link network_system library
+    # Link network_system library FIRST (it depends on thread_system)
     if(NETWORK_SYSTEM_LIBRARY)
         target_link_libraries(FileTransSystem PUBLIC ${NETWORK_SYSTEM_LIBRARY})
+    endif()
+
+    # Link thread_system library AFTER network_system (network_system depends on it)
+    # Static library link order: dependents must come before dependencies
+    if(THREAD_SYSTEM_LIBRARY)
+        target_link_libraries(FileTransSystem PUBLIC ${THREAD_SYSTEM_LIBRARY})
     endif()
 
     # ASIO is required for network_system headers (they include <asio.hpp>)
