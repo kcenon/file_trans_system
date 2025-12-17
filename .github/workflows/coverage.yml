@@ -49,20 +49,24 @@ jobs:
 
     - name: Build dependency libraries
       run: |
-        # Build common_system
-        cmake -S common_system -B common_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+        # Build common_system (library only, no tests/examples)
+        cmake -S common_system -B common_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+          -DCOMMON_BUILD_TESTS=OFF -DCOMMON_BUILD_INTEGRATION_TESTS=OFF -DCOMMON_BUILD_EXAMPLES=OFF
         cmake --build common_system/build --config Debug
 
-        # Build container_system
-        cmake -S container_system -B container_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+        # Build container_system (library only, no tests/samples)
+        cmake -S container_system -B container_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+          -DBUILD_TESTS=OFF -DBUILD_CONTAINER_SAMPLES=OFF -DCONTAINER_BUILD_INTEGRATION_TESTS=OFF
         cmake --build container_system/build --config Debug
 
-        # Build thread_system
-        cmake -S thread_system -B thread_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+        # Build thread_system (library only, no tests)
+        cmake -S thread_system -B thread_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+          -DTHREAD_BUILD_INTEGRATION_TESTS=OFF
         cmake --build thread_system/build --config Debug
 
-        # Build network_system
-        cmake -S network_system -B network_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+        # Build network_system (library only, no tests/samples)
+        cmake -S network_system -B network_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+          -DBUILD_TESTS=OFF -DBUILD_SAMPLES=OFF -DNETWORK_BUILD_INTEGRATION_TESTS=OFF
         cmake --build network_system/build --config Debug
 
     - name: Configure CMake with coverage

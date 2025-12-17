@@ -49,24 +49,28 @@ jobs:
 
     - name: Build dependency libraries
       run: |
-        # Build common_system
+        # Build common_system (library only, no tests/examples)
         cmake -S common_system -B common_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang
+          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang \
+          -DCOMMON_BUILD_TESTS=OFF -DCOMMON_BUILD_INTEGRATION_TESTS=OFF -DCOMMON_BUILD_EXAMPLES=OFF
         cmake --build common_system/build --config Debug
 
-        # Build container_system
+        # Build container_system (library only, no tests/samples)
         cmake -S container_system -B container_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang
+          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang \
+          -DBUILD_TESTS=OFF -DBUILD_CONTAINER_SAMPLES=OFF -DCONTAINER_BUILD_INTEGRATION_TESTS=OFF
         cmake --build container_system/build --config Debug
 
-        # Build thread_system
+        # Build thread_system (library only, no tests)
         cmake -S thread_system -B thread_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang
+          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang \
+          -DTHREAD_BUILD_INTEGRATION_TESTS=OFF
         cmake --build thread_system/build --config Debug
 
-        # Build network_system
+        # Build network_system (library only, no tests/samples)
         cmake -S network_system -B network_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang
+          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang \
+          -DBUILD_TESTS=OFF -DBUILD_SAMPLES=OFF -DNETWORK_BUILD_INTEGRATION_TESTS=OFF
         cmake --build network_system/build --config Debug
 
     - name: Configure CMake with ASAN
@@ -133,24 +137,28 @@ jobs:
 
     - name: Build dependency libraries
       run: |
-        # Build common_system
+        # Build common_system (library only, no tests/examples)
         cmake -S common_system -B common_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang
+          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang \
+          -DCOMMON_BUILD_TESTS=OFF -DCOMMON_BUILD_INTEGRATION_TESTS=OFF -DCOMMON_BUILD_EXAMPLES=OFF
         cmake --build common_system/build --config Debug
 
-        # Build container_system
+        # Build container_system (library only, no tests/samples)
         cmake -S container_system -B container_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang
+          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang \
+          -DBUILD_TESTS=OFF -DBUILD_CONTAINER_SAMPLES=OFF -DCONTAINER_BUILD_INTEGRATION_TESTS=OFF
         cmake --build container_system/build --config Debug
 
-        # Build thread_system
+        # Build thread_system (library only, no tests)
         cmake -S thread_system -B thread_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang
+          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang \
+          -DTHREAD_BUILD_INTEGRATION_TESTS=OFF
         cmake --build thread_system/build --config Debug
 
-        # Build network_system
+        # Build network_system (library only, no tests/samples)
         cmake -S network_system -B network_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang
+          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang \
+          -DBUILD_TESTS=OFF -DBUILD_SAMPLES=OFF -DNETWORK_BUILD_INTEGRATION_TESTS=OFF
         cmake --build network_system/build --config Debug
 
     - name: Configure CMake with TSAN
@@ -217,24 +225,28 @@ jobs:
 
     - name: Build dependency libraries
       run: |
-        # Build common_system
+        # Build common_system (library only, no tests/examples)
         cmake -S common_system -B common_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang
+          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang \
+          -DCOMMON_BUILD_TESTS=OFF -DCOMMON_BUILD_INTEGRATION_TESTS=OFF -DCOMMON_BUILD_EXAMPLES=OFF
         cmake --build common_system/build --config Debug
 
-        # Build container_system
+        # Build container_system (library only, no tests/samples)
         cmake -S container_system -B container_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang
+          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang \
+          -DBUILD_TESTS=OFF -DBUILD_CONTAINER_SAMPLES=OFF -DCONTAINER_BUILD_INTEGRATION_TESTS=OFF
         cmake --build container_system/build --config Debug
 
-        # Build thread_system
+        # Build thread_system (library only, no tests)
         cmake -S thread_system -B thread_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang
+          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang \
+          -DTHREAD_BUILD_INTEGRATION_TESTS=OFF
         cmake --build thread_system/build --config Debug
 
-        # Build network_system
+        # Build network_system (library only, no tests/samples)
         cmake -S network_system -B network_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang
+          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang \
+          -DBUILD_TESTS=OFF -DBUILD_SAMPLES=OFF -DNETWORK_BUILD_INTEGRATION_TESTS=OFF
         cmake --build network_system/build --config Debug
 
     - name: Configure CMake with UBSAN
