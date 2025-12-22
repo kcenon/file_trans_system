@@ -17,6 +17,7 @@ jobs:
       with:
         submodules: recursive
         path: file_trans_system
+        ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
     - name: Checkout common_system
       uses: actions/checkout@v4
