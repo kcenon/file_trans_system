@@ -55,6 +55,12 @@ jobs:
         repository: kcenon/network_system
         path: network_system
 
+    - name: Checkout logger_system
+      uses: actions/checkout@v4
+      with:
+        repository: kcenon/logger_system
+        path: logger_system
+
     - name: Install dependencies (Ubuntu)
       if: runner.os == 'Linux'
       run: |
@@ -117,6 +123,11 @@ jobs:
           -DBUILD_TESTS=OFF -DBUILD_SAMPLES=OFF -DNETWORK_BUILD_INTEGRATION_TESTS=OFF
         cmake --build network_system/build --config Debug
 
+        # Build logger_system (library only, no tests/samples)
+        cmake -S logger_system -B logger_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+          -DLOGGER_BUILD_TESTS=OFF -DLOGGER_BUILD_SAMPLES=OFF -DLOGGER_BUILD_INTEGRATION_TESTS=OFF
+        cmake --build logger_system/build --config Debug
+
     - name: Build dependency libraries (Windows)
       if: runner.os == 'Windows'
       shell: pwsh
@@ -140,6 +151,11 @@ jobs:
         cmake -S network_system -B network_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug `
           -DBUILD_TESTS=OFF -DBUILD_SAMPLES=OFF -DNETWORK_BUILD_INTEGRATION_TESTS=OFF
         cmake --build network_system/build --config Debug
+
+        # Build logger_system (library only, no tests/samples)
+        cmake -S logger_system -B logger_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug `
+          -DLOGGER_BUILD_TESTS=OFF -DLOGGER_BUILD_SAMPLES=OFF -DLOGGER_BUILD_INTEGRATION_TESTS=OFF
+        cmake --build logger_system/build --config Debug
 
     - name: Configure CMake (Unix)
       if: runner.os != 'Windows'
