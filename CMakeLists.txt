@@ -300,6 +300,14 @@ elseif(MSVC)
         /W4
         /WX
     )
+
+    if(BUILD_WITH_LOGGER_SYSTEM)
+        target_compile_options(FileTransSystem PRIVATE
+            /wd4267
+            /wd4996
+        )
+        target_compile_definitions(FileTransSystem PRIVATE _CRT_SECURE_NO_WARNINGS)
+    endif()
 endif()
 
 ##################################################

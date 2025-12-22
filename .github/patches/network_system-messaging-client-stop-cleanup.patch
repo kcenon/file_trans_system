@@ -1,0 +1,15 @@
+diff --git a/src/core/messaging_client.cpp b/src/core/messaging_client.cpp
+--- a/src/core/messaging_client.cpp
++++ b/src/core/messaging_client.cpp
+@@ -154,10 +154,6 @@ auto messaging_client::stop_client() -> VoidResult {
+     return ok();
+   }
+ 
+-  if (!is_running_.load()) {
+-    return ok(); // Already stopped, not an error
+-  }
+-
+   try {
+     is_running_.store(false);
+     is_connected_.store(false);
+
