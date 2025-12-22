@@ -1256,11 +1256,13 @@ auto file_transfer_client::cancel_transfer(uint64_t handle_id) -> result<void> {
 
     // Try download context - delegate to existing cancel_download
     {
-        std::lock_guard lock(impl_->download_mutex);
-        auto it = impl_->download_contexts.find(handle_id);
-        if (it != impl_->download_contexts.end()) {
-            // Release lock before calling cancel_download
-            lock.~lock_guard();
+        bool found = false;
+        {
+            std::lock_guard lock(impl_->download_mutex);
+            auto it = impl_->download_contexts.find(handle_id);
+            found = (it != impl_->download_contexts.end());
+        }  // lock released here safely
+        if (found) {
             return cancel_download(handle_id);
         }
     }
