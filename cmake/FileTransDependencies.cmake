@@ -187,7 +187,7 @@ function(find_file_trans_dependencies)
                 message(STATUS "Found network_system library: ${NETWORK_SYSTEM_LIBRARY}")
                 set(NETWORK_SYSTEM_LIBRARY ${NETWORK_SYSTEM_LIBRARY} PARENT_SCOPE)
             else()
-                message(WARNING "network_system library not found - linking may fail")
+                message(FATAL_ERROR "network_system library not found - network_system is required")
             endif()
 
             # ASIO is required when using network_system (network_system headers include asio.hpp)
@@ -196,7 +196,10 @@ function(find_file_trans_dependencies)
             set(ASIO_INCLUDE_DIR ${ASIO_INCLUDE_DIR} PARENT_SCOPE)
             set(ASIO_TARGET ${ASIO_TARGET} PARENT_SCOPE)
         else()
-            message(WARNING "network_system not found - some features will be unavailable")
+            message(FATAL_ERROR "network_system is required but not found. "
+                "Please ensure network_system is available in one of these locations:\n"
+                "  - ${CMAKE_CURRENT_SOURCE_DIR}/../network_system\n"
+                "  - ${CMAKE_SOURCE_DIR}/../network_system")
         endif()
     endif()
 
