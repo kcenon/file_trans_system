@@ -71,6 +71,16 @@ set_target_properties(file_trans_unit_tests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
+# MSVC warning suppression for external dependencies (logger_system)
+# These warnings come from logger_system headers and should not fail our build
+if(MSVC)
+    target_compile_options(file_trans_unit_tests PRIVATE
+        /wd4267  # conversion from 'size_t' to 'unsigned int'
+        /wd4996  # deprecated functions (getenv, strerror, etc.)
+    )
+    target_compile_definitions(file_trans_unit_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
+
 # Enable test discovery
 gtest_discover_tests(file_trans_unit_tests
     DISCOVERY_TIMEOUT 60

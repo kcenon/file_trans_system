@@ -206,6 +206,10 @@ auto tcp_transport::disconnect() -> result<void> {
     FT_LOG_INFO(log_category::transfer, "TCP transport disconnecting");
     impl_->set_state(transport_state::disconnecting);
 
+    // Clear receive callback before stopping to prevent accessing impl_ after destruction
+    // This prevents heap corruption when callbacks try to access destroyed memory
+    impl_->network_client->set_receive_callback(nullptr);
+
     auto result = impl_->network_client->stop_client();
     if (result.is_err()) {
         impl_->increment_errors();
