@@ -25,10 +25,29 @@ jobs:
             compiler: msvc
 
     steps:
-    - name: Checkout code
+    - name: Checkout file_trans_system
       uses: actions/checkout@v4
       with:
         submodules: recursive
+
+    - name: Checkout ecosystem dependencies (Unix)
+      if: runner.os != 'Windows'
+      run: |
+        cd ..
+        git clone --depth 1 https://github.com/kcenon/common_system.git
+        git clone --depth 1 https://github.com/kcenon/thread_system.git
+        git clone --depth 1 https://github.com/kcenon/network_system.git
+        git clone --depth 1 https://github.com/kcenon/container_system.git
+
+    - name: Checkout ecosystem dependencies (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        cd ..
+        git clone --depth 1 https://github.com/kcenon/common_system.git
+        git clone --depth 1 https://github.com/kcenon/thread_system.git
+        git clone --depth 1 https://github.com/kcenon/network_system.git
+        git clone --depth 1 https://github.com/kcenon/container_system.git
 
     - name: Install dependencies (Ubuntu)
       if: runner.os == 'Linux'
@@ -69,15 +88,41 @@ jobs:
       if: matrix.compiler == 'msvc'
       uses: ilammy/msvc-dev-cmd@v1
 
+    - name: Build thread_system (Unix)
+      if: runner.os != 'Windows'
+      run: |
+        cd ../thread_system
+        cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        cmake --build build
+
+    - name: Build network_system (Unix)
+      if: runner.os != 'Windows'
+      run: |
+        cd ../network_system
+        cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        cmake --build build
+
+    - name: Build thread_system (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        cd ../thread_system
+        cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        cmake --build build
+
+    - name: Build network_system (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        cd ../network_system
+        cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        cmake --build build
+
     - name: Configure CMake (Unix)
       if: runner.os != 'Windows'
       run: |
         cmake -B build -G Ninja \
           -DCMAKE_BUILD_TYPE=Debug \
-          -DBUILD_WITH_COMMON_SYSTEM=OFF \
-          -DBUILD_WITH_THREAD_SYSTEM=OFF \
-          -DBUILD_WITH_NETWORK_SYSTEM=OFF \
-          -DBUILD_WITH_CONTAINER_SYSTEM=OFF \
           -DFILE_TRANS_BUILD_TESTS=ON \
           -DFILE_TRANS_BUILD_EXAMPLES=OFF \
           -DFILE_TRANS_BUILD_BENCHMARKS=OFF
@@ -88,10 +133,6 @@ jobs:
       run: |
         cmake -B build -G Ninja `
           -DCMAKE_BUILD_TYPE=Debug `
-          -DBUILD_WITH_COMMON_SYSTEM=OFF `
-          -DBUILD_WITH_THREAD_SYSTEM=OFF `
-          -DBUILD_WITH_NETWORK_SYSTEM=OFF `
-          -DBUILD_WITH_CONTAINER_SYSTEM=OFF `
           -DFILE_TRANS_BUILD_TESTS=ON `
           -DFILE_TRANS_BUILD_EXAMPLES=OFF `
           -DFILE_TRANS_BUILD_BENCHMARKS=OFF `

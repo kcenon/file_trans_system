@@ -17,20 +17,36 @@ jobs:
       with:
         submodules: recursive
 
+    - name: Checkout ecosystem dependencies
+      run: |
+        cd ..
+        git clone --depth 1 https://github.com/kcenon/common_system.git
+        git clone --depth 1 https://github.com/kcenon/thread_system.git
+        git clone --depth 1 https://github.com/kcenon/network_system.git
+        git clone --depth 1 https://github.com/kcenon/container_system.git
+
     - name: Install dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y cmake ninja-build g++ liblz4-dev lcov
+
+    - name: Build thread_system
+      run: |
+        cd ../thread_system
+        cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        cmake --build build
+
+    - name: Build network_system
+      run: |
+        cd ../network_system
+        cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        cmake --build build
 
     - name: Configure CMake with coverage
       run: |
         cmake -B build -G Ninja \
           -DCMAKE_BUILD_TYPE=Debug \
           -DCMAKE_CXX_COMPILER=g++ \
-          -DBUILD_WITH_COMMON_SYSTEM=OFF \
-          -DBUILD_WITH_THREAD_SYSTEM=OFF \
-          -DBUILD_WITH_NETWORK_SYSTEM=OFF \
-          -DBUILD_WITH_CONTAINER_SYSTEM=OFF \
           -DFILE_TRANS_BUILD_TESTS=ON \
           -DFILE_TRANS_BUILD_EXAMPLES=OFF \
           -DFILE_TRANS_BUILD_BENCHMARKS=OFF \
