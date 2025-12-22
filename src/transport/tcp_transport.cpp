@@ -10,9 +10,7 @@
 #include <queue>
 #include <thread>
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
 #include <kcenon/network/core/messaging_client.h>
-#endif
 
 namespace kcenon::file_transfer {
 
@@ -37,15 +35,11 @@ struct tcp_transport::impl {
     std::condition_variable receive_cv;
     std::queue<std::vector<std::byte>> receive_queue;
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
     std::shared_ptr<network_system::core::messaging_client> network_client;
-#endif
 
     explicit impl(tcp_transport_config cfg) : config(std::move(cfg)) {
-#ifdef BUILD_WITH_NETWORK_SYSTEM
         network_client = std::make_shared<network_system::core::messaging_client>(
             "tcp_transport");
-#endif
     }
 
     void set_state(transport_state new_state) {
@@ -140,9 +134,9 @@ auto tcp_transport::connect(
     conn_result.remote_address = remote.host;
     conn_result.remote_port = remote.port;
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
     // Apply configuration
     // Note: Additional socket options would be configured here
+    (void)timeout;  // TODO: Use timeout in network_client configuration
 
     auto result = impl_->network_client->start_client(remote.host, remote.port);
     if (result.is_err()) {
@@ -177,10 +171,6 @@ auto tcp_transport::connect(
                 impl_->event_callback(event_data);
             }
         });
-#else
-    // Stub implementation without network_system
-    (void)timeout;
-#endif
 
     impl_->remote_ep = remote;
     impl_->set_state(transport_state::connected);
@@ -212,7 +202,6 @@ auto tcp_transport::disconnect() -> result<void> {
     FT_LOG_INFO(log_category::transfer, "TCP transport disconnecting");
     impl_->set_state(transport_state::disconnecting);
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
     auto result = impl_->network_client->stop_client();
     if (result.is_err()) {
         impl_->increment_errors();
@@ -222,7 +211,6 @@ auto tcp_transport::disconnect() -> result<void> {
         return unexpected{error{error_code::internal_error,
             "Disconnect failed: " + result.error().message}};
     }
-#endif
 
     impl_->local_ep = std::nullopt;
     impl_->remote_ep = std::nullopt;
@@ -253,7 +241,6 @@ auto tcp_transport::send(
         return 0;
     }
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
     // Convert to uint8_t vector
     std::vector<std::uint8_t> send_data(data.size());
     std::transform(data.begin(), data.end(), send_data.begin(),
@@ -273,11 +260,6 @@ auto tcp_transport::send(
     }
 
     return data.size();
-#else
-    (void)options;
-    return unexpected{error{error_code::internal_error,
-        "Network system not available"}};
-#endif
 }
 
 auto tcp_transport::receive(const receive_options& options)
