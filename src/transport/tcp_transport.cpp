@@ -12,6 +12,9 @@
 
 #include <kcenon/network/core/messaging_client.h>
 
+// Use network_system namespace alias for cleaner code
+namespace network = kcenon::network;
+
 namespace kcenon::file_transfer {
 
 struct tcp_transport::impl {
@@ -35,10 +38,10 @@ struct tcp_transport::impl {
     std::condition_variable receive_cv;
     std::queue<std::vector<std::byte>> receive_queue;
 
-    std::shared_ptr<network_system::core::messaging_client> network_client;
+    std::shared_ptr<network::core::messaging_client> network_client;
 
     explicit impl(tcp_transport_config cfg) : config(std::move(cfg)) {
-        network_client = std::make_shared<network_system::core::messaging_client>(
+        network_client = std::make_shared<network::core::messaging_client>(
             "tcp_transport");
     }
 

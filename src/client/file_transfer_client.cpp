@@ -23,6 +23,9 @@
 
 #include <kcenon/network/core/messaging_client.h>
 
+// Use network_system namespace alias for cleaner code
+namespace network = kcenon::network;
+
 namespace kcenon::file_transfer {
 
 /**
@@ -318,7 +321,7 @@ struct file_transfer_client::impl {
     std::atomic<connection_state> current_state{connection_state::disconnected};
     endpoint server_endpoint;
 
-    std::shared_ptr<network_system::core::messaging_client> network_client;
+    std::shared_ptr<network::core::messaging_client> network_client;
 
     // Callbacks
     std::function<void(const transfer_progress&)> progress_callback;
@@ -454,7 +457,7 @@ file_transfer_client::file_transfer_client(client_config config)
     // Initialize logger (safe to call multiple times)
     get_logger().initialize();
 
-    impl_->network_client = std::make_shared<network_system::core::messaging_client>(
+    impl_->network_client = std::make_shared<network::core::messaging_client>(
         "file_transfer_client");
 }
 

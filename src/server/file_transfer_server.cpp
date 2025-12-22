@@ -13,6 +13,9 @@
 #include <kcenon/network/core/messaging_server.h>
 #include <kcenon/network/session/messaging_session.h>
 
+// Use network_system namespace alias for cleaner code
+namespace network = kcenon::network;
+
 namespace kcenon::file_transfer {
 
 struct file_transfer_server::impl {
@@ -20,7 +23,7 @@ struct file_transfer_server::impl {
     std::atomic<server_state> current_state{server_state::stopped};
     uint16_t listen_port{0};
 
-    std::shared_ptr<network_system::core::messaging_server> network_server;
+    std::shared_ptr<network::core::messaging_server> network_server;
 
     // Callbacks
     std::function<bool(const upload_request&)> upload_callback;
@@ -147,7 +150,7 @@ file_transfer_server::file_transfer_server(server_config config)
     // Initialize logger (safe to call multiple times)
     get_logger().initialize();
 
-    impl_->network_server = std::make_shared<network_system::core::messaging_server>(
+    impl_->network_server = std::make_shared<network::core::messaging_server>(
         "file_transfer_server");
 }
 
