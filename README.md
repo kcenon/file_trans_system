@@ -329,9 +329,42 @@ file_trans_system is built on top of the kcenon ecosystem libraries:
 - CMake 3.20+
 - LZ4 library (v1.9.0+)
 
+### Ecosystem Dependencies
+
+file_trans_system requires the following ecosystem libraries to be available as sibling directories:
+
+```
+parent_directory/
+├── file_trans_system/    # This repository
+├── common_system/        # Required: Result<T>, error handling
+├── thread_system/        # Required: Thread pool implementation
+├── network_system/       # Required: TCP/TLS transport layer
+└── container_system/     # Required: Bounded queues
+```
+
+Clone the required repositories:
+
+```bash
+git clone https://github.com/kcenon/common_system.git
+git clone https://github.com/kcenon/thread_system.git
+git clone https://github.com/kcenon/network_system.git
+git clone https://github.com/kcenon/container_system.git
+```
+
+Build the dependencies first:
+
+```bash
+# Build thread_system
+cd thread_system && cmake -B build && cmake --build build && cd ..
+
+# Build network_system
+cd network_system && cmake -B build && cmake --build build && cd ..
+```
+
 ### Build Commands
 
 ```bash
+cd file_trans_system
 mkdir build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
 cmake --build . --parallel
