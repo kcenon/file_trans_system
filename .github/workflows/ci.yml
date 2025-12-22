@@ -75,16 +75,16 @@ jobs:
           exit 1
         }
 
-        apply_patch file_trans_system/.github/patches/network_system-session-cleanup-order.patch
-        apply_patch file_trans_system/.github/patches/network_system-messaging-client-stop-cleanup.patch
+        apply_patch ../file_trans_system/.github/patches/network_system-session-cleanup-order.patch
+        apply_patch ../file_trans_system/.github/patches/network_system-messaging-client-stop-cleanup.patch
 
     - name: Patch network_system (Windows)
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
         $patches = @(
-          "file_trans_system\\.github\\patches\\network_system-session-cleanup-order.patch",
-          "file_trans_system\\.github\\patches\\network_system-messaging-client-stop-cleanup.patch"
+          "..\\file_trans_system\\.github\\patches\\network_system-session-cleanup-order.patch",
+          "..\\file_trans_system\\.github\\patches\\network_system-messaging-client-stop-cleanup.patch"
         )
 
         foreach ($patch in $patches) {

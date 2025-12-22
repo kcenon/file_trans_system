@@ -61,8 +61,8 @@ jobs:
           exit 1
         }
 
-        apply_patch file_trans_system/.github/patches/network_system-session-cleanup-order.patch
-        apply_patch file_trans_system/.github/patches/network_system-messaging-client-stop-cleanup.patch
+        apply_patch ../file_trans_system/.github/patches/network_system-session-cleanup-order.patch
+        apply_patch ../file_trans_system/.github/patches/network_system-messaging-client-stop-cleanup.patch
 
     - name: Checkout logger_system
       uses: actions/checkout@v4
@@ -183,8 +183,8 @@ jobs:
           exit 1
         }
 
-        apply_patch file_trans_system/.github/patches/network_system-session-cleanup-order.patch
-        apply_patch file_trans_system/.github/patches/network_system-messaging-client-stop-cleanup.patch
+        apply_patch ../file_trans_system/.github/patches/network_system-session-cleanup-order.patch
+        apply_patch ../file_trans_system/.github/patches/network_system-messaging-client-stop-cleanup.patch
 
     - name: Checkout logger_system
       uses: actions/checkout@v4
@@ -305,8 +305,8 @@ jobs:
           exit 1
         }
 
-        apply_patch file_trans_system/.github/patches/network_system-session-cleanup-order.patch
-        apply_patch file_trans_system/.github/patches/network_system-messaging-client-stop-cleanup.patch
+        apply_patch ../file_trans_system/.github/patches/network_system-session-cleanup-order.patch
+        apply_patch ../file_trans_system/.github/patches/network_system-messaging-client-stop-cleanup.patch
 
     - name: Checkout logger_system
       uses: actions/checkout@v4
