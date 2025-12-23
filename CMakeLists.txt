@@ -60,6 +60,8 @@ option(BUILD_WITH_CONTAINER_SYSTEM "Build with container_system integration (REQ
 option(BUILD_WITH_LOGGER_SYSTEM "Build with logger_system integration (structured logging)" ON)
 
 # network_system is now mandatory - always enabled
+# Use FILE_TRANS_ALLOW_MISSING_DEPS=ON in CI environments where deps are unavailable
+option(FILE_TRANS_ALLOW_MISSING_DEPS "Allow missing dependencies (CI mode)" OFF)
 set(BUILD_WITH_NETWORK_SYSTEM ON CACHE INTERNAL "network_system is mandatory" FORCE)
 
 ##################################################
