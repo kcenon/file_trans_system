@@ -12,43 +12,88 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-    - name: Checkout code
+    - name: Checkout file_trans_system
       uses: actions/checkout@v4
       with:
         submodules: recursive
+        path: file_trans_system
+
+    - name: Checkout common_system
+      uses: actions/checkout@v4
+      with:
+        repository: kcenon/common_system
+        path: common_system
+
+    - name: Checkout container_system
+      uses: actions/checkout@v4
+      with:
+        repository: kcenon/container_system
+        path: container_system
+
+    - name: Checkout thread_system
+      uses: actions/checkout@v4
+      with:
+        repository: kcenon/thread_system
+        path: thread_system
+
+    - name: Checkout logger_system
+      uses: actions/checkout@v4
+      with:
+        repository: kcenon/logger_system
+        path: logger_system
+
+    - name: Checkout network_system
+      uses: actions/checkout@v4
+      with:
+        repository: kcenon/network_system
+        path: network_system
 
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y cmake ninja-build g++ liblz4-dev lcov
+        sudo apt-get install -y cmake ninja-build g++ liblz4-dev lcov libfmt-dev
+
+    - name: Build dependencies
+      run: |
+        cmake -B common_system/build -S common_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF
+        cmake --build common_system/build
+        cmake -B container_system/build -S container_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF
+        cmake --build container_system/build
+        cmake -B thread_system/build -S thread_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF
+        cmake --build thread_system/build
+        cmake -B logger_system/build -S logger_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF
+        cmake --build logger_system/build
+        cmake -B network_system/build -S network_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF
+        cmake --build network_system/build
 
     - name: Configure CMake with coverage
+      working-directory: file_trans_system
       run: |
         cmake -B build -G Ninja \
           -DCMAKE_BUILD_TYPE=Debug \
           -DCMAKE_CXX_COMPILER=g++ \
-          -DBUILD_WITH_COMMON_SYSTEM=OFF \
-          -DBUILD_WITH_THREAD_SYSTEM=OFF \
-          -DFILE_TRANS_ALLOW_MISSING_DEPS=ON \
-          -DBUILD_WITH_CONTAINER_SYSTEM=OFF \
           -DFILE_TRANS_BUILD_TESTS=ON \
           -DFILE_TRANS_BUILD_EXAMPLES=OFF \
           -DFILE_TRANS_BUILD_BENCHMARKS=OFF \
           -DFILE_TRANS_ENABLE_COVERAGE=ON
 
     - name: Build
+      working-directory: file_trans_system
       run: cmake --build build --config Debug
 
     - name: Run tests
+      working-directory: file_trans_system
       run: ctest --test-dir build --output-on-failure --timeout 300
 
     - name: Collect coverage data
+      working-directory: file_trans_system
       run: |
         lcov --capture --directory build --output-file coverage.info --ignore-errors mismatch
         lcov --remove coverage.info '/usr/*' '*/tests/*' '*/_deps/*' --output-file coverage_filtered.info --ignore-errors mismatch
         lcov --list coverage_filtered.info --ignore-errors mismatch
 
     - name: Generate HTML report
+      working-directory: file_trans_system
       run: |
         genhtml coverage_filtered.info --output-directory coverage_report --ignore-errors mismatch
 
@@ -56,13 +101,13 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: coverage-report
-        path: coverage_report/
+        path: file_trans_system/coverage_report/
         retention-days: 30
 
     - name: Upload to Codecov
       uses: codecov/codecov-action@v4
       with:
-        files: coverage_filtered.info
+        files: file_trans_system/coverage_filtered.info
         fail_ci_if_error: false
         verbose: true
       env:
