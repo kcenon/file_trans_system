@@ -281,6 +281,11 @@ if(BUILD_WITH_NETWORK_SYSTEM AND NETWORK_SYSTEM_INCLUDE_DIR)
     # Link network_system library
     if(NETWORK_SYSTEM_LIBRARY)
         target_link_libraries(FileTransSystem PUBLIC ${NETWORK_SYSTEM_LIBRARY})
+        # NetworkSystem may depend on ThreadSystem internally, so link ThreadSystem
+        # again to ensure proper symbol resolution on Unix linkers
+        if(THREAD_SYSTEM_LIBRARY)
+            target_link_libraries(FileTransSystem PUBLIC ${THREAD_SYSTEM_LIBRARY})
+        endif()
     endif()
 
     # ASIO is required for network_system headers (they include <asio.hpp>)
@@ -330,7 +335,9 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 elseif(MSVC)
     target_compile_options(FileTransSystem PRIVATE
         /W4
-        /WX
+        # Disable /WX for now due to warnings in external dependency headers (logger_system)
+        # TODO: Re-enable once upstream dependencies are fixed
+        # /WX
     )
 endif()
 
