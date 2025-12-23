@@ -22,9 +22,21 @@
 #include <unordered_map>
 #include <fstream>
 
-// logger_system integration requires common_system
-#if defined(BUILD_WITH_LOGGER_SYSTEM) && defined(BUILD_WITH_COMMON_SYSTEM)
+// Include unified feature flags from common_system if available
+#if __has_include(<kcenon/common/config/feature_flags.h>)
+#include <kcenon/common/config/feature_flags.h>
+#endif
+
+// logger_system integration detection
+// Uses KCENON_WITH_LOGGER_SYSTEM from unified feature flags (preferred)
+// Falls back to BUILD_WITH_* macros for backward compatibility
+#if defined(KCENON_WITH_LOGGER_SYSTEM) && KCENON_WITH_LOGGER_SYSTEM
 #define FILE_TRANSFER_USE_LOGGER_SYSTEM 1
+#elif defined(BUILD_WITH_LOGGER_SYSTEM) && defined(BUILD_WITH_COMMON_SYSTEM)
+#define FILE_TRANSFER_USE_LOGGER_SYSTEM 1
+#endif
+
+#ifdef FILE_TRANSFER_USE_LOGGER_SYSTEM
 #include <kcenon/logger/core/logger.h>
 #include <kcenon/logger/core/logger_builder.h>
 #include <kcenon/logger/writers/console_writer.h>

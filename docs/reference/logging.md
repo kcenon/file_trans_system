@@ -255,7 +255,7 @@ log_config defaults = log_config::defaults();
 
 ## Integration with logger_system
 
-When both `BUILD_WITH_LOGGER_SYSTEM` and `BUILD_WITH_COMMON_SYSTEM` are enabled,
+When `KCENON_WITH_LOGGER_SYSTEM` is enabled (or legacy `BUILD_WITH_LOGGER_SYSTEM` and `BUILD_WITH_COMMON_SYSTEM`),
 the logging system automatically integrates with `logger_system` for:
 
 - Asynchronous logging
