@@ -244,12 +244,20 @@ endif()
 # Ecosystem dependencies
 if(BUILD_WITH_COMMON_SYSTEM AND COMMON_SYSTEM_INCLUDE_DIR)
     target_include_directories(FileTransSystem PUBLIC ${COMMON_SYSTEM_INCLUDE_DIR})
-    target_compile_definitions(FileTransSystem PUBLIC BUILD_WITH_COMMON_SYSTEM)
+    # Define both legacy and new unified macros for compatibility
+    target_compile_definitions(FileTransSystem PUBLIC
+        BUILD_WITH_COMMON_SYSTEM
+        KCENON_WITH_COMMON_SYSTEM=1
+    )
 endif()
 
 if(BUILD_WITH_THREAD_SYSTEM AND THREAD_SYSTEM_INCLUDE_DIR)
     target_include_directories(FileTransSystem PUBLIC ${THREAD_SYSTEM_INCLUDE_DIR})
-    target_compile_definitions(FileTransSystem PUBLIC BUILD_WITH_THREAD_SYSTEM)
+    # Define both legacy and new unified macros for compatibility
+    target_compile_definitions(FileTransSystem PUBLIC
+        BUILD_WITH_THREAD_SYSTEM
+        KCENON_WITH_THREAD_SYSTEM=1
+    )
 
     # Link thread_system library
     if(THREAD_SYSTEM_LIBRARY)
@@ -259,7 +267,11 @@ endif()
 
 if(BUILD_WITH_NETWORK_SYSTEM AND NETWORK_SYSTEM_INCLUDE_DIR)
     target_include_directories(FileTransSystem PUBLIC ${NETWORK_SYSTEM_INCLUDE_DIR})
-    target_compile_definitions(FileTransSystem PUBLIC BUILD_WITH_NETWORK_SYSTEM)
+    # Define both legacy and new unified macros for compatibility
+    target_compile_definitions(FileTransSystem PUBLIC
+        BUILD_WITH_NETWORK_SYSTEM
+        KCENON_WITH_NETWORK_SYSTEM=1
+    )
 
     # Link network_system library
     if(NETWORK_SYSTEM_LIBRARY)
@@ -281,12 +293,20 @@ endif()
 
 if(BUILD_WITH_CONTAINER_SYSTEM AND CONTAINER_SYSTEM_INCLUDE_DIR)
     target_include_directories(FileTransSystem PUBLIC ${CONTAINER_SYSTEM_INCLUDE_DIR})
-    target_compile_definitions(FileTransSystem PUBLIC BUILD_WITH_CONTAINER_SYSTEM)
+    # Define both legacy and new unified macros for compatibility
+    target_compile_definitions(FileTransSystem PUBLIC
+        BUILD_WITH_CONTAINER_SYSTEM
+        KCENON_WITH_CONTAINER_SYSTEM=1
+    )
 endif()
 
 if(BUILD_WITH_LOGGER_SYSTEM AND LOGGER_SYSTEM_INCLUDE_DIR)
     target_include_directories(FileTransSystem PUBLIC ${LOGGER_SYSTEM_INCLUDE_DIR})
-    target_compile_definitions(FileTransSystem PUBLIC BUILD_WITH_LOGGER_SYSTEM)
+    # Define both legacy and new unified macros for compatibility
+    target_compile_definitions(FileTransSystem PUBLIC
+        BUILD_WITH_LOGGER_SYSTEM
+        KCENON_WITH_LOGGER_SYSTEM=1
+    )
 
     # Link logger_system library
     if(LOGGER_SYSTEM_LIBRARY)
