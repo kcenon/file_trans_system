@@ -63,7 +63,7 @@ jobs:
         cmake --build thread_system/build
         cmake -B logger_system/build -S logger_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF
         cmake --build logger_system/build
-        cmake -B network_system/build -S network_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF
+        cmake -B network_system/build -S network_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF -DBUILD_SAMPLES=OFF
         cmake --build network_system/build
 
     - name: Configure CMake with ASAN
@@ -144,7 +144,7 @@ jobs:
         cmake --build thread_system/build
         cmake -B logger_system/build -S logger_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF
         cmake --build logger_system/build
-        cmake -B network_system/build -S network_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF
+        cmake -B network_system/build -S network_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF -DBUILD_SAMPLES=OFF
         cmake --build network_system/build
 
     - name: Configure CMake with TSAN
@@ -225,7 +225,7 @@ jobs:
         cmake --build thread_system/build
         cmake -B logger_system/build -S logger_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF
         cmake --build logger_system/build
-        cmake -B network_system/build -S network_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF
+        cmake -B network_system/build -S network_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF -DBUILD_SAMPLES=OFF
         cmake --build network_system/build
 
     - name: Configure CMake with UBSAN
