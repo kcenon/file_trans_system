@@ -45,17 +45,22 @@ option(FILE_TRANS_ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
 #   Required:
 #     - common_system (Result<T>, error handling)
 #     - thread_system (typed_thread_pool for pipeline)
-#     - network_system (TCP/TLS transport layer)
+#     - network_system (TCP/TLS transport layer) - MANDATORY
 #     - container_system (bounded_queue for backpressure)
 #   Optional:
 #     - LZ4 (compression)
+#
+# Note: network_system is a mandatory dependency as of v0.3.0.
+# The BUILD_WITH_NETWORK_SYSTEM option has been removed.
 ##################################################
 
 option(BUILD_WITH_COMMON_SYSTEM "Build with common_system integration (REQUIRED)" ON)
 option(BUILD_WITH_THREAD_SYSTEM "Build with thread_system integration (REQUIRED)" ON)
-option(BUILD_WITH_NETWORK_SYSTEM "Build with network_system integration (REQUIRED)" ON)
 option(BUILD_WITH_CONTAINER_SYSTEM "Build with container_system integration (REQUIRED)" ON)
 option(BUILD_WITH_LOGGER_SYSTEM "Build with logger_system integration (structured logging)" ON)
+
+# network_system is now mandatory - always enabled
+set(BUILD_WITH_NETWORK_SYSTEM ON CACHE INTERNAL "network_system is mandatory" FORCE)
 
 ##################################################
 # Dependency Validation
@@ -69,9 +74,7 @@ if(NOT BUILD_WITH_THREAD_SYSTEM)
     message(WARNING "thread_system is disabled - some features may be unavailable")
 endif()
 
-if(NOT BUILD_WITH_NETWORK_SYSTEM)
-    message(WARNING "network_system is disabled - some features may be unavailable")
-endif()
+# network_system is mandatory - validation happens in FileTransDependencies.cmake
 
 if(NOT BUILD_WITH_CONTAINER_SYSTEM)
     message(WARNING "container_system is disabled - some features may be unavailable")

@@ -21,9 +21,7 @@
 #include <lz4.h>
 #endif
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
-#include <kcenon/network/core/messaging_client.h>
-#endif
+#include <network_system/core/messaging_client.h>
 
 namespace kcenon::file_transfer {
 
@@ -320,9 +318,7 @@ struct file_transfer_client::impl {
     std::atomic<connection_state> current_state{connection_state::disconnected};
     endpoint server_endpoint;
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
     std::shared_ptr<network_system::core::messaging_client> network_client;
-#endif
 
     // Callbacks
     std::function<void(const transfer_progress&)> progress_callback;
@@ -458,10 +454,8 @@ file_transfer_client::file_transfer_client(client_config config)
     // Initialize logger (safe to call multiple times)
     get_logger().initialize();
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
     impl_->network_client = std::make_shared<network_system::core::messaging_client>(
         "file_transfer_client");
-#endif
 }
 
 file_transfer_client::file_transfer_client(file_transfer_client&&) noexcept = default;
@@ -487,7 +481,6 @@ auto file_transfer_client::connect(const endpoint& server_addr) -> result<void> 
     impl_->set_state(connection_state::connecting);
     impl_->server_endpoint = server_addr;
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
     auto result = impl_->network_client->start_client(server_addr.host, server_addr.port);
     if (result.is_err()) {
         impl_->set_state(connection_state::disconnected);
@@ -496,7 +489,6 @@ auto file_transfer_client::connect(const endpoint& server_addr) -> result<void> 
         return unexpected{error{error_code::internal_error,
                                "Failed to connect: " + result.error().message}};
     }
-#endif
 
     impl_->set_state(connection_state::connected);
     FT_LOG_INFO(log_category::client, "Connected to server successfully");
@@ -512,7 +504,6 @@ auto file_transfer_client::disconnect() -> result<void> {
 
     FT_LOG_INFO(log_category::client, "Disconnecting from server");
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
     auto result = impl_->network_client->stop_client();
     if (result.is_err()) {
         FT_LOG_ERROR(log_category::client,
@@ -520,7 +511,6 @@ auto file_transfer_client::disconnect() -> result<void> {
         return unexpected{error{error_code::internal_error,
                                "Failed to disconnect: " + result.error().message}};
     }
-#endif
 
     impl_->set_state(connection_state::disconnected);
     FT_LOG_INFO(log_category::client, "Disconnected from server");
@@ -689,7 +679,6 @@ auto file_transfer_client::download_file(
         impl_->download_contexts[handle_id] = std::move(ctx);
     }
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
     // Get context pointer for operations
     download_context* dl_ctx = nullptr;
     {
@@ -713,7 +702,6 @@ auto file_transfer_client::download_file(
 
     // Wait for DOWNLOAD_ACCEPT or DOWNLOAD_REJECT
     // The actual implementation would use async message handling
-#endif
 
     // Update statistics
     {
