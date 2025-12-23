@@ -563,5 +563,5 @@ All systems follow semantic versioning. Within a major version:
 
 ---
 
-*Last Updated: 2025-12-11*
-*Version: 0.2.0*
+*Last Updated: 2025-12-24*
+*Version: 0.3.0*
