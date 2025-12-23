@@ -23,6 +23,17 @@
 
 #include <network_system/core/messaging_client.h>
 
+// Windows compatibility: undefine macros from Windows headers that conflict
+// with std::ofstream::write() method
+#ifdef _WIN32
+#ifdef write
+#undef write
+#endif
+#ifdef read
+#undef read
+#endif
+#endif
+
 namespace kcenon::file_transfer {
 
 /**
