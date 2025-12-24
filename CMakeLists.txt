@@ -320,11 +320,14 @@ if(FILE_TRANS_ENABLE_LZ4 AND LZ4_FOUND)
     endif()
 endif()
 
-# OpenSSL encryption
+# OpenSSL encryption and TLS support
+# Note: Both SSL and Crypto libraries are required:
+# - OpenSSL::Crypto: For encryption (AES-GCM, etc.)
+# - OpenSSL::SSL: For TLS support in network_system's QUIC transport
 if(FILE_TRANS_ENABLE_ENCRYPTION AND OpenSSL_FOUND)
     target_compile_definitions(FileTransSystem PUBLIC FILE_TRANS_ENABLE_ENCRYPTION)
     target_include_directories(FileTransSystem PRIVATE ${OPENSSL_INCLUDE_DIR})
-    target_link_libraries(FileTransSystem PRIVATE OpenSSL::Crypto)
+    target_link_libraries(FileTransSystem PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 endif()
 
 # Ecosystem dependencies
