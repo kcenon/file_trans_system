@@ -21,6 +21,9 @@ Detailed technical reference documentation index for **file_trans_system**.
 |----------|-------------|
 | [Pipeline Architecture](pipeline-architecture.md) | Multi-stage pipeline design details |
 | [Protocol Specification](protocol-spec.md) | Wire protocol and message formats |
+| [Transport Layer](transport-layer.md) | Transport abstraction (TCP, QUIC) |
+| [Encryption Layer](encryption-layer.md) | Encryption support (AES-256-GCM) |
+| [Cloud Storage Layer](cloud-storage-layer.md) | Cloud storage abstraction (S3, Azure, GCS) |
 
 ### Configuration & Tuning
 
@@ -130,6 +133,16 @@ auto files = client->list_files();
 | -760 ~ -779 | Resume errors |
 | -780 ~ -789 | Compression errors |
 | -790 ~ -799 | Configuration errors |
+| -800 ~ -809 | Cloud authentication errors |
+| -810 ~ -819 | Cloud authorization errors |
+| -820 ~ -829 | Cloud connection errors |
+| -830 ~ -839 | Bucket/container errors |
+| -840 ~ -849 | Object/blob errors |
+| -850 ~ -859 | Cloud transfer errors |
+| -860 ~ -869 | Quota/limit errors |
+| -870 ~ -879 | Provider-specific errors |
+| -880 ~ -889 | Cloud configuration errors |
+| -890 ~ -899 | Cloud internal errors |
 
 → See [Error Codes](error-codes.md) for details
 
@@ -153,6 +166,9 @@ auto files = client->list_files();
 | API Reference | 0.2.0 | 2025-12-11 |
 | Pipeline Architecture | 0.2.0 | 2025-12-11 |
 | Protocol Specification | 0.2.0 | 2025-12-11 |
+| Transport Layer | 0.1.0 | 2025-12-13 |
+| Encryption Layer | 0.1.0 | 2025-12-24 |
+| Cloud Storage Layer | 0.1.0 | 2025-12-24 |
 | Configuration Guide | 0.2.0 | 2025-12-11 |
 | LZ4 Compression Guide | 0.2.0 | 2025-12-11 |
 | Bandwidth Throttling Guide | 0.2.0 | 2025-12-13 |
