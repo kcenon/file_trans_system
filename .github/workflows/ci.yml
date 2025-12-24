@@ -56,56 +56,6 @@ jobs:
         repository: kcenon/network_system
         path: network_system
 
-    - name: Patch network_system (Unix)
-      if: runner.os != 'Windows'
-      run: |
-        apply_patch() {
-          local patch_path="$1"
-          if git -C network_system apply --check "$patch_path"; then
-            git -C network_system apply "$patch_path"
-            return 0
-          fi
-
-          if git -C network_system apply --reverse --check "$patch_path"; then
-            echo "Patch already applied: $patch_path"
-            return 0
-          fi
-
-          echo "Failed to apply patch: $patch_path" >&2
-          exit 1
-        }
-
-        apply_patch ../file_trans_system/.github/patches/network_system-session-cleanup-order.patch
-        apply_patch ../file_trans_system/.github/patches/network_system-messaging-client-stop-cleanup.patch
-        apply_patch ../file_trans_system/.github/patches/network_system-logger-interface-fix.patch
-
-    - name: Patch network_system (Windows)
-      if: runner.os == 'Windows'
-      shell: pwsh
-      run: |
-        $patches = @(
-          "..\\file_trans_system\\.github\\patches\\network_system-session-cleanup-order.patch",
-          "..\\file_trans_system\\.github\\patches\\network_system-messaging-client-stop-cleanup.patch",
-          "..\\file_trans_system\\.github\\patches\\network_system-logger-interface-fix.patch"
-        )
-
-        foreach ($patch in $patches) {
-          git -C network_system apply --check $patch
-          if ($LASTEXITCODE -eq 0) {
-            git -C network_system apply $patch
-            continue
-          }
-
-          git -C network_system apply --reverse --check $patch
-          if ($LASTEXITCODE -eq 0) {
-            Write-Host "Patch already applied: $patch"
-            continue
-          }
-
-          Write-Error "Failed to apply patch: $patch"
-          exit 1
-        }
-
     - name: Checkout logger_system
       uses: actions/checkout@v4
       with:
