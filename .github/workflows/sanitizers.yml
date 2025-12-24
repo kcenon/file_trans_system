@@ -53,17 +53,42 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y cmake ninja-build clang liblz4-dev libfmt-dev
 
-    - name: Build dependencies
+    - name: Build dependencies with ASAN
+      env:
+        CXXFLAGS: "-fsanitize=address -fno-omit-frame-pointer -g"
+        CFLAGS: "-fsanitize=address -fno-omit-frame-pointer -g"
+        LDFLAGS: "-fsanitize=address"
       run: |
-        cmake -B common_system/build -S common_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF
+        cmake -B common_system/build -S common_system -G Ninja \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_CXX_COMPILER=clang++ \
+          -DCMAKE_C_COMPILER=clang \
+          -DBUILD_TESTS=OFF
         cmake --build common_system/build
-        cmake -B container_system/build -S container_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF
+        cmake -B container_system/build -S container_system -G Ninja \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_CXX_COMPILER=clang++ \
+          -DCMAKE_C_COMPILER=clang \
+          -DBUILD_TESTS=OFF
         cmake --build container_system/build
-        cmake -B thread_system/build -S thread_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF
+        cmake -B thread_system/build -S thread_system -G Ninja \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_CXX_COMPILER=clang++ \
+          -DCMAKE_C_COMPILER=clang \
+          -DBUILD_TESTS=OFF
         cmake --build thread_system/build
-        cmake -B logger_system/build -S logger_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF
+        cmake -B logger_system/build -S logger_system -G Ninja \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_CXX_COMPILER=clang++ \
+          -DCMAKE_C_COMPILER=clang \
+          -DBUILD_TESTS=OFF
         cmake --build logger_system/build
-        cmake -B network_system/build -S network_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF -DBUILD_SAMPLES=OFF
+        cmake -B network_system/build -S network_system -G Ninja \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_CXX_COMPILER=clang++ \
+          -DCMAKE_C_COMPILER=clang \
+          -DBUILD_TESTS=OFF \
+          -DBUILD_SAMPLES=OFF
         cmake --build network_system/build
 
     - name: Configure CMake with ASAN
@@ -135,17 +160,42 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y cmake ninja-build clang liblz4-dev libfmt-dev
 
-    - name: Build dependencies
+    - name: Build dependencies with TSAN
+      env:
+        CXXFLAGS: "-fsanitize=thread -fno-omit-frame-pointer -g"
+        CFLAGS: "-fsanitize=thread -fno-omit-frame-pointer -g"
+        LDFLAGS: "-fsanitize=thread"
       run: |
-        cmake -B common_system/build -S common_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF
+        cmake -B common_system/build -S common_system -G Ninja \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_CXX_COMPILER=clang++ \
+          -DCMAKE_C_COMPILER=clang \
+          -DBUILD_TESTS=OFF
         cmake --build common_system/build
-        cmake -B container_system/build -S container_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF
+        cmake -B container_system/build -S container_system -G Ninja \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_CXX_COMPILER=clang++ \
+          -DCMAKE_C_COMPILER=clang \
+          -DBUILD_TESTS=OFF
         cmake --build container_system/build
-        cmake -B thread_system/build -S thread_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF
+        cmake -B thread_system/build -S thread_system -G Ninja \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_CXX_COMPILER=clang++ \
+          -DCMAKE_C_COMPILER=clang \
+          -DBUILD_TESTS=OFF
         cmake --build thread_system/build
-        cmake -B logger_system/build -S logger_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF
+        cmake -B logger_system/build -S logger_system -G Ninja \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_CXX_COMPILER=clang++ \
+          -DCMAKE_C_COMPILER=clang \
+          -DBUILD_TESTS=OFF
         cmake --build logger_system/build
-        cmake -B network_system/build -S network_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF -DBUILD_SAMPLES=OFF
+        cmake -B network_system/build -S network_system -G Ninja \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_CXX_COMPILER=clang++ \
+          -DCMAKE_C_COMPILER=clang \
+          -DBUILD_TESTS=OFF \
+          -DBUILD_SAMPLES=OFF
         cmake --build network_system/build
 
     - name: Configure CMake with TSAN
@@ -217,17 +267,42 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y cmake ninja-build clang liblz4-dev libfmt-dev
 
-    - name: Build dependencies
+    - name: Build dependencies with UBSAN
+      env:
+        CXXFLAGS: "-fsanitize=undefined -fno-omit-frame-pointer -g"
+        CFLAGS: "-fsanitize=undefined -fno-omit-frame-pointer -g"
+        LDFLAGS: "-fsanitize=undefined"
       run: |
-        cmake -B common_system/build -S common_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF
+        cmake -B common_system/build -S common_system -G Ninja \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_CXX_COMPILER=clang++ \
+          -DCMAKE_C_COMPILER=clang \
+          -DBUILD_TESTS=OFF
         cmake --build common_system/build
-        cmake -B container_system/build -S container_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF
+        cmake -B container_system/build -S container_system -G Ninja \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_CXX_COMPILER=clang++ \
+          -DCMAKE_C_COMPILER=clang \
+          -DBUILD_TESTS=OFF
         cmake --build container_system/build
-        cmake -B thread_system/build -S thread_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF
+        cmake -B thread_system/build -S thread_system -G Ninja \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_CXX_COMPILER=clang++ \
+          -DCMAKE_C_COMPILER=clang \
+          -DBUILD_TESTS=OFF
         cmake --build thread_system/build
-        cmake -B logger_system/build -S logger_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF
+        cmake -B logger_system/build -S logger_system -G Ninja \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_CXX_COMPILER=clang++ \
+          -DCMAKE_C_COMPILER=clang \
+          -DBUILD_TESTS=OFF
         cmake --build logger_system/build
-        cmake -B network_system/build -S network_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF -DBUILD_SAMPLES=OFF
+        cmake -B network_system/build -S network_system -G Ninja \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_CXX_COMPILER=clang++ \
+          -DCMAKE_C_COMPILER=clang \
+          -DBUILD_TESTS=OFF \
+          -DBUILD_SAMPLES=OFF
         cmake --build network_system/build
 
     - name: Configure CMake with UBSAN

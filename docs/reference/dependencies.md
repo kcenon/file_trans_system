@@ -531,6 +531,22 @@ All systems follow semantic versioning. Within a major version:
 
 > **WARNING**: Mixing different major versions of these systems is **NOT SUPPORTED** and will result in undefined behavior.
 
+### C++20 Feature Detection
+
+The **thread_system** uses conditional compilation based on C++20 feature availability:
+
+| Feature | Macro | Impact |
+|---------|-------|--------|
+| `std::jthread` | `USE_STD_JTHREAD` | Changes `thread_base` class layout |
+
+**IMPORTANT**: The `file_trans_system` CMakeLists.txt includes matching feature detection to ensure ABI compatibility with `thread_system`. If you're building `file_trans_system` manually or as part of a larger project:
+
+1. Ensure both projects detect C++20 features using identical logic
+2. Build both projects with the same compiler and flags
+3. Do not mix builds with different feature detection results
+
+If you see `heap-buffer-overflow` in `thread_worker` constructor, this indicates ABI mismatch due to different `USE_STD_JTHREAD` settings between `thread_system` and `file_trans_system`.
+
 ---
 
 ## Troubleshooting

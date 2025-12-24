@@ -90,6 +90,50 @@ endif()
 
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+##################################################
+# C++20 Feature Detection
+# Detect std::jthread to match thread_system ABI
+# This MUST use identical detection logic as thread_system's
+# ThreadSystemFeatures.cmake to ensure ABI compatibility.
+##################################################
+
+include(CheckCXXSourceCompiles)
+
+# Check for std::jthread support (must match thread_system detection exactly)
+function(check_std_jthread_support)
+    # Must match thread_system's check_cxx20_feature() exactly
+    set(CMAKE_REQUIRED_FLAGS "")
+    set(CMAKE_REQUIRED_LIBRARIES "${CMAKE_EXE_LINKER_FLAGS}")
+
+    if(MSVC)
+        set(CMAKE_REQUIRED_FLAGS "/std:c++20 /EHsc /Zc:__cplusplus /permissive-")
+    else()
+        set(CMAKE_REQUIRED_FLAGS "-std=c++20 ${CMAKE_CXX_FLAGS}")
+    endif()
+
+    # Test code must match thread_system exactly
+    check_cxx_source_compiles("
+        #include <cstddef>
+        #include <cstdint>
+        #include <utility>
+        #include <thread>
+        #include <stop_token>
+        int main() {
+            std::jthread t([](std::stop_token st) {});
+            return 0;
+        }
+    " HAS_STD_JTHREAD)
+
+    if(HAS_STD_JTHREAD)
+        add_definitions(-DUSE_STD_JTHREAD)
+        message(STATUS "✅ Using std::jthread (matches thread_system ABI)")
+    else()
+        message(STATUS "Using std::thread fallback (matches thread_system ABI)")
+    endif()
+endfunction()
+
+check_std_jthread_support()
+
 # Coverage settings
 if(FILE_TRANS_ENABLE_COVERAGE)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")

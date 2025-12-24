@@ -32,10 +32,13 @@ protected:
         stats_.compression_saved_bytes = 0;
         stats_.stalls_detected = 0;
         stats_.backpressure_events = 0;
-        context_->stats = &stats_;
+        context_->statistics = &stats_;
+        context_->running = &running_;
+        running_ = true;
 
-        // Create compression engine
-        engine_ = std::make_shared<compression_engine>(compression_level::fast);
+        // Create compression engines in context
+        context_->compression_engines.push_back(
+            std::make_unique<compression_engine>(compression_level::fast));
 
         // Check if LZ4 is available at runtime
         lz4_available_ = check_lz4_availability();
@@ -44,7 +47,8 @@ protected:
     auto check_lz4_availability() -> bool {
         // Try to compress a small test buffer to check if LZ4 is enabled
         std::vector<std::byte> test_data(64, std::byte{0x41});
-        auto result = engine_->compress(std::span<const std::byte>(test_data));
+        auto result = context_->compression_engines[0]->compress(
+            std::span<const std::byte>(test_data));
         return result.has_value();
     }
 
@@ -101,8 +105,8 @@ protected:
 
     std::filesystem::path test_dir_;
     std::shared_ptr<pipeline_context> context_;
-    std::shared_ptr<compression_engine> engine_;
     pipeline_stats stats_;
+    std::atomic<bool> running_{true};
     bool lz4_available_ = false;
 };
 
@@ -114,7 +118,7 @@ TEST_F(PipelineJobsTest, ContextReportError) {
     std::atomic<int> error_count{0};
     std::string last_error;
 
-    context_->on_error = [&](pipeline_stage stage, const std::string& msg) {
+    context_->on_error_cb = [&](pipeline_stage stage, const std::string& msg) {
         error_count++;
         last_error = msg;
         EXPECT_EQ(stage, pipeline_stage::decompress);
@@ -130,7 +134,7 @@ TEST_F(PipelineJobsTest, ContextReportStageComplete) {
     std::atomic<int> complete_count{0};
     pipeline_stage last_stage{};
 
-    context_->on_stage_complete = [&](pipeline_stage stage, const pipeline_chunk&) {
+    context_->on_stage_complete_cb = [&](pipeline_stage stage, const pipeline_chunk&) {
         complete_count++;
         last_stage = stage;
     };
@@ -163,12 +167,12 @@ TEST_F(PipelineJobsTest, DecompressJobUncompressedChunk) {
     chunk.is_compressed = false;
 
     std::atomic<int> stage_complete{0};
-    context_->on_stage_complete = [&](pipeline_stage stage, const pipeline_chunk&) {
+    context_->on_stage_complete_cb = [&](pipeline_stage stage, const pipeline_chunk&) {
         EXPECT_EQ(stage, pipeline_stage::decompress);
         stage_complete++;
     };
 
-    auto job = std::make_shared<decompress_job>(std::move(chunk), engine_, context_);
+    auto job = std::make_shared<decompress_job>(context_, std::move(chunk), 0);
     auto result = job->do_work();
 
     EXPECT_TRUE(result.is_ok());
@@ -183,7 +187,7 @@ TEST_F(PipelineJobsTest, DecompressJobCompressedChunk) {
 
     // First compress some data
     auto original_chunk = create_compressible_chunk(4096);
-    auto compress_result = engine_->compress(
+    auto compress_result = context_->compression_engines[0]->compress(
         std::span<const std::byte>(original_chunk.data));
     ASSERT_TRUE(compress_result.has_value());
 
@@ -196,13 +200,13 @@ TEST_F(PipelineJobsTest, DecompressJobCompressedChunk) {
     compressed_chunk.checksum = original_chunk.checksum;
 
     std::atomic<int> stage_complete{0};
-    context_->on_stage_complete = [&](pipeline_stage stage, const pipeline_chunk&) {
+    context_->on_stage_complete_cb = [&](pipeline_stage stage, const pipeline_chunk&) {
         EXPECT_EQ(stage, pipeline_stage::decompress);
         stage_complete++;
     };
 
     auto job = std::make_shared<decompress_job>(
-        std::move(compressed_chunk), engine_, context_);
+        context_, std::move(compressed_chunk), 0);
     auto result = job->do_work();
 
     EXPECT_TRUE(result.is_ok());
@@ -214,7 +218,7 @@ TEST_F(PipelineJobsTest, DecompressJobCompressedChunk) {
 TEST_F(PipelineJobsTest, DecompressJobCancelled) {
     auto chunk = create_test_chunk();
 
-    auto job = std::make_shared<decompress_job>(std::move(chunk), engine_, context_);
+    auto job = std::make_shared<decompress_job>(context_, std::move(chunk), 0);
 
     // Create and set a cancelled token
     thread::cancellation_token token;
@@ -230,7 +234,7 @@ TEST_F(PipelineJobsTest, DecompressJobCancelled) {
 
 TEST_F(PipelineJobsTest, DecompressJobName) {
     auto chunk = create_test_chunk();
-    auto job = std::make_shared<decompress_job>(std::move(chunk), engine_, context_);
+    auto job = std::make_shared<decompress_job>(context_, std::move(chunk), 0);
 
     EXPECT_EQ(job->get_name(), "decompress_job");
 }
@@ -243,7 +247,7 @@ TEST_F(PipelineJobsTest, VerifyJobValidChecksum) {
     auto chunk = create_test_chunk();
 
     std::atomic<int> stage_complete{0};
-    context_->on_stage_complete = [&](pipeline_stage stage, const pipeline_chunk&) {
+    context_->on_stage_complete_cb = [&](pipeline_stage stage, const pipeline_chunk&) {
         EXPECT_EQ(stage, pipeline_stage::chunk_verify);
         stage_complete++;
     };
@@ -261,7 +265,7 @@ TEST_F(PipelineJobsTest, VerifyJobInvalidChecksum) {
     chunk.checksum = 0xDEADBEEF;  // Invalid checksum
 
     std::atomic<int> error_count{0};
-    context_->on_error = [&](pipeline_stage stage, const std::string&) {
+    context_->on_error_cb = [&](pipeline_stage stage, const std::string&) {
         EXPECT_EQ(stage, pipeline_stage::chunk_verify);
         error_count++;
     };
@@ -303,13 +307,13 @@ TEST_F(PipelineJobsTest, WriteJobSuccess) {
     auto expected_size = chunk.data.size();
 
     std::atomic<int> stage_complete{0};
-    context_->on_stage_complete = [&](pipeline_stage stage, const pipeline_chunk&) {
+    context_->on_stage_complete_cb = [&](pipeline_stage stage, const pipeline_chunk&) {
         EXPECT_EQ(stage, pipeline_stage::file_write);
         stage_complete++;
     };
 
     std::atomic<int> upload_complete{0};
-    context_->on_upload_complete = [&](const transfer_id& id, uint64_t bytes) {
+    context_->on_upload_complete_cb = [&](const transfer_id& id, uint64_t bytes) {
         EXPECT_EQ(id, expected_id);
         EXPECT_EQ(bytes, expected_size);
         upload_complete++;
@@ -350,21 +354,15 @@ TEST_F(PipelineJobsTest, WriteJobName) {
 TEST_F(PipelineJobsTest, ReadJobSuccess) {
     // Create a test file
     auto file_path = create_test_file("read_test.bin", 1024);
-
-    download_request request;
-    request.id = transfer_id::generate();
-    request.chunk_index = 0;
-    request.file_path = file_path;
-    request.offset = 0;
-    request.size = 512;
+    auto id = transfer_id::generate();
 
     std::atomic<int> stage_complete{0};
-    context_->on_stage_complete = [&](pipeline_stage stage, const pipeline_chunk&) {
+    context_->on_stage_complete_cb = [&](pipeline_stage stage, const pipeline_chunk&) {
         EXPECT_EQ(stage, pipeline_stage::file_read);
         stage_complete++;
     };
 
-    auto job = std::make_shared<read_job>(std::move(request), context_);
+    auto job = std::make_shared<read_job>(context_, id, 0, file_path, 0, 512);
     auto result = job->do_work();
 
     EXPECT_TRUE(result.is_ok());
@@ -375,20 +373,16 @@ TEST_F(PipelineJobsTest, ReadJobSuccess) {
 }
 
 TEST_F(PipelineJobsTest, ReadJobFileNotFound) {
-    download_request request;
-    request.id = transfer_id::generate();
-    request.chunk_index = 0;
-    request.file_path = test_dir_ / "nonexistent.bin";
-    request.offset = 0;
-    request.size = 1024;
+    auto id = transfer_id::generate();
+    auto file_path = test_dir_ / "nonexistent.bin";
 
     std::atomic<int> error_count{0};
-    context_->on_error = [&](pipeline_stage stage, const std::string&) {
+    context_->on_error_cb = [&](pipeline_stage stage, const std::string&) {
         EXPECT_EQ(stage, pipeline_stage::file_read);
         error_count++;
     };
 
-    auto job = std::make_shared<read_job>(std::move(request), context_);
+    auto job = std::make_shared<read_job>(context_, id, 0, file_path, 0, 1024);
     auto result = job->do_work();
 
     EXPECT_TRUE(result.is_err());
@@ -398,15 +392,9 @@ TEST_F(PipelineJobsTest, ReadJobFileNotFound) {
 TEST_F(PipelineJobsTest, ReadJobPartialRead) {
     // Create a small file
     auto file_path = create_test_file("small_file.bin", 100);
+    auto id = transfer_id::generate();
 
-    download_request request;
-    request.id = transfer_id::generate();
-    request.chunk_index = 0;
-    request.file_path = file_path;
-    request.offset = 0;
-    request.size = 1024;  // Request more than file size
-
-    auto job = std::make_shared<read_job>(std::move(request), context_);
+    auto job = std::make_shared<read_job>(context_, id, 0, file_path, 0, 1024);
     auto result = job->do_work();
 
     EXPECT_TRUE(result.is_ok());
@@ -415,15 +403,9 @@ TEST_F(PipelineJobsTest, ReadJobPartialRead) {
 
 TEST_F(PipelineJobsTest, ReadJobCancelled) {
     auto file_path = create_test_file("cancelled_test.bin", 1024);
+    auto id = transfer_id::generate();
 
-    download_request request;
-    request.id = transfer_id::generate();
-    request.chunk_index = 0;
-    request.file_path = file_path;
-    request.offset = 0;
-    request.size = 512;
-
-    auto job = std::make_shared<read_job>(std::move(request), context_);
+    auto job = std::make_shared<read_job>(context_, id, 0, file_path, 0, 512);
 
     thread::cancellation_token token;
     token.cancel();
@@ -435,9 +417,9 @@ TEST_F(PipelineJobsTest, ReadJobCancelled) {
 }
 
 TEST_F(PipelineJobsTest, ReadJobName) {
-    download_request request;
-    request.file_path = test_dir_ / "test.bin";
-    auto job = std::make_shared<read_job>(std::move(request), context_);
+    auto file_path = test_dir_ / "test.bin";
+    auto id = transfer_id::generate();
+    auto job = std::make_shared<read_job>(context_, id, 0, file_path, 0, 1024);
 
     EXPECT_EQ(job->get_name(), "read_job");
 }
@@ -455,12 +437,12 @@ TEST_F(PipelineJobsTest, CompressJobCompressibleData) {
     auto original_size = chunk.data.size();
 
     std::atomic<int> stage_complete{0};
-    context_->on_stage_complete = [&](pipeline_stage stage, const pipeline_chunk&) {
+    context_->on_stage_complete_cb = [&](pipeline_stage stage, const pipeline_chunk&) {
         EXPECT_EQ(stage, pipeline_stage::compress);
         stage_complete++;
     };
 
-    auto job = std::make_shared<compress_job>(std::move(chunk), engine_, context_);
+    auto job = std::make_shared<compress_job>(context_, std::move(chunk), 0);
     auto result = job->do_work();
 
     EXPECT_TRUE(result.is_ok());
@@ -475,12 +457,12 @@ TEST_F(PipelineJobsTest, CompressJobRandomData) {
     auto chunk = create_test_chunk(1024);
 
     std::atomic<int> stage_complete{0};
-    context_->on_stage_complete = [&](pipeline_stage stage, const pipeline_chunk&) {
+    context_->on_stage_complete_cb = [&](pipeline_stage stage, const pipeline_chunk&) {
         EXPECT_EQ(stage, pipeline_stage::compress);
         stage_complete++;
     };
 
-    auto job = std::make_shared<compress_job>(std::move(chunk), engine_, context_);
+    auto job = std::make_shared<compress_job>(context_, std::move(chunk), 0);
     auto result = job->do_work();
 
     EXPECT_TRUE(result.is_ok());
@@ -490,7 +472,7 @@ TEST_F(PipelineJobsTest, CompressJobRandomData) {
 
 TEST_F(PipelineJobsTest, CompressJobCancelled) {
     auto chunk = create_test_chunk();
-    auto job = std::make_shared<compress_job>(std::move(chunk), engine_, context_);
+    auto job = std::make_shared<compress_job>(context_, std::move(chunk), 0);
 
     thread::cancellation_token token;
     token.cancel();
@@ -503,7 +485,7 @@ TEST_F(PipelineJobsTest, CompressJobCancelled) {
 
 TEST_F(PipelineJobsTest, CompressJobName) {
     auto chunk = create_test_chunk();
-    auto job = std::make_shared<compress_job>(std::move(chunk), engine_, context_);
+    auto job = std::make_shared<compress_job>(context_, std::move(chunk), 0);
 
     EXPECT_EQ(job->get_name(), "compress_job");
 }
@@ -517,13 +499,13 @@ TEST_F(PipelineJobsTest, SendJobSuccess) {
     auto expected_size = chunk.data.size();
 
     std::atomic<int> stage_complete{0};
-    context_->on_stage_complete = [&](pipeline_stage stage, const pipeline_chunk&) {
+    context_->on_stage_complete_cb = [&](pipeline_stage stage, const pipeline_chunk&) {
         EXPECT_EQ(stage, pipeline_stage::network_send);
         stage_complete++;
     };
 
     std::atomic<int> download_ready{0};
-    context_->on_download_ready = [&](const pipeline_chunk& c) {
+    context_->on_download_ready_cb = [&](const pipeline_chunk& c) {
         EXPECT_EQ(c.data.size(), expected_size);
         download_ready++;
     };
@@ -564,22 +546,21 @@ TEST_F(PipelineJobsTest, SendJobName) {
 
 TEST_F(PipelineJobsTest, AllJobsInheritFromJobBase) {
     auto chunk = create_test_chunk();
+    auto id = transfer_id::generate();
 
     // Test that all job types can be used as kcenon::thread::job
     std::shared_ptr<thread::job> decompress =
-        std::make_shared<decompress_job>(chunk, engine_, context_);
+        std::make_shared<decompress_job>(context_, chunk, 0);
     std::shared_ptr<thread::job> verify =
         std::make_shared<verify_job>(chunk, context_);
     std::shared_ptr<thread::job> write =
         std::make_shared<write_job>(chunk, context_);
 
-    download_request request;
-    request.file_path = test_dir_ / "test.bin";
     std::shared_ptr<thread::job> read =
-        std::make_shared<read_job>(std::move(request), context_);
+        std::make_shared<read_job>(context_, id, 0, test_dir_ / "test.bin", 0, 1024);
 
     std::shared_ptr<thread::job> compress =
-        std::make_shared<compress_job>(chunk, engine_, context_);
+        std::make_shared<compress_job>(context_, chunk, 0);
     std::shared_ptr<thread::job> send =
         std::make_shared<send_job>(std::move(chunk), context_);
 
@@ -590,24 +571,6 @@ TEST_F(PipelineJobsTest, AllJobsInheritFromJobBase) {
     EXPECT_FALSE(read->get_name().empty());
     EXPECT_FALSE(compress->get_name().empty());
     EXPECT_FALSE(send->get_name().empty());
-}
-
-// ----------------------------------------------------------------------------
-// Download request tests
-// ----------------------------------------------------------------------------
-
-TEST_F(PipelineJobsTest, DownloadRequestFields) {
-    download_request request;
-    request.id = transfer_id::generate();
-    request.chunk_index = 42;
-    request.file_path = "/path/to/file.bin";
-    request.offset = 1024;
-    request.size = 512;
-
-    EXPECT_EQ(request.chunk_index, 42);
-    EXPECT_EQ(request.file_path, "/path/to/file.bin");
-    EXPECT_EQ(request.offset, 1024);
-    EXPECT_EQ(request.size, 512);
 }
 
 }  // namespace
