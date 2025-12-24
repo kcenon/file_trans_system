@@ -85,6 +85,23 @@ target_link_libraries(file_trans_unit_tests PRIVATE
     Threads::Threads
 )
 
+# On Windows MSVC, static library transitive dependencies are not automatically
+# propagated to executables, and the linker may not include unreferenced symbols
+# from static libraries. We use /WHOLEARCHIVE to force inclusion of all symbols
+# from network_system to resolve messaging_client external symbols.
+# See: https://gitlab.kitware.com/cmake/cmake/-/issues/18075
+if(MSVC AND NETWORK_SYSTEM_LIBRARY)
+    # Use WHOLEARCHIVE to force all symbols from network_system to be included
+    target_link_options(file_trans_unit_tests PRIVATE
+        "/WHOLEARCHIVE:${NETWORK_SYSTEM_LIBRARY}"
+    )
+    # network_system depends on OpenSSL for TLS support
+    find_package(OpenSSL QUIET)
+    if(OpenSSL_FOUND)
+        target_link_libraries(file_trans_unit_tests PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    endif()
+endif()
+
 # Set properties
 set_target_properties(file_trans_unit_tests PROPERTIES
     CXX_STANDARD 20
