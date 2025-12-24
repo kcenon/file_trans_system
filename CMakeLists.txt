@@ -32,6 +32,7 @@ option(FILE_TRANS_BUILD_INTEGRATION_TESTS "Build integration tests (requires net
 option(FILE_TRANS_BUILD_EXAMPLES "Build examples" ON)
 option(FILE_TRANS_BUILD_BENCHMARKS "Build benchmarks" OFF)
 option(FILE_TRANS_ENABLE_LZ4 "Enable LZ4 compression" ON)
+option(FILE_TRANS_ENABLE_ENCRYPTION "Enable encryption support (requires OpenSSL)" ON)
 option(FILE_TRANS_ENABLE_COVERAGE "Enable code coverage" OFF)
 
 # Sanitizer options (mutually exclusive: ASAN and TSAN cannot be used together)
@@ -165,6 +166,20 @@ find_package(Threads REQUIRED)
 find_file_trans_dependencies()
 
 ##################################################
+# OpenSSL Encryption Support
+##################################################
+
+if(FILE_TRANS_ENABLE_ENCRYPTION)
+    find_package(OpenSSL REQUIRED)
+    if(OpenSSL_FOUND)
+        message(STATUS "OpenSSL encryption enabled")
+        message(STATUS "  OpenSSL version: ${OPENSSL_VERSION}")
+        message(STATUS "  OpenSSL include: ${OPENSSL_INCLUDE_DIR}")
+        message(STATUS "  OpenSSL libraries: ${OPENSSL_LIBRARIES}")
+    endif()
+endif()
+
+##################################################
 # LZ4 Compression Support
 ##################################################
 
@@ -194,7 +209,7 @@ endif()
 # Create Main Library
 ##################################################
 
-add_library(FileTransSystem
+set(FILE_TRANS_SOURCES
     src/file_transfer.cpp
     src/core/checksum.cpp
     src/core/chunk_splitter.cpp
@@ -210,6 +225,15 @@ add_library(FileTransSystem
     src/client/file_transfer_client.cpp
     src/transport/tcp_transport.cpp
 )
+
+# Add encryption sources if enabled
+if(FILE_TRANS_ENABLE_ENCRYPTION AND OpenSSL_FOUND)
+    list(APPEND FILE_TRANS_SOURCES
+        src/encryption/aes_gcm_engine.cpp
+    )
+endif()
+
+add_library(FileTransSystem ${FILE_TRANS_SOURCES})
 
 add_library(kcenon::file_transfer ALIAS FileTransSystem)
 
@@ -245,6 +269,13 @@ if(FILE_TRANS_ENABLE_LZ4 AND LZ4_FOUND)
     elseif(LZ4_LIBRARIES)
         target_link_libraries(FileTransSystem PRIVATE ${LZ4_LIBRARIES})
     endif()
+endif()
+
+# OpenSSL encryption
+if(FILE_TRANS_ENABLE_ENCRYPTION AND OpenSSL_FOUND)
+    target_compile_definitions(FileTransSystem PUBLIC FILE_TRANS_ENABLE_ENCRYPTION)
+    target_include_directories(FileTransSystem PRIVATE ${OPENSSL_INCLUDE_DIR})
+    target_link_libraries(FileTransSystem PRIVATE OpenSSL::Crypto)
 endif()
 
 # Ecosystem dependencies
@@ -390,6 +421,7 @@ message(STATUS "  BUILD_TESTS: ${FILE_TRANS_BUILD_TESTS}")
 message(STATUS "  BUILD_EXAMPLES: ${FILE_TRANS_BUILD_EXAMPLES}")
 message(STATUS "  BUILD_BENCHMARKS: ${FILE_TRANS_BUILD_BENCHMARKS}")
 message(STATUS "  ENABLE_LZ4: ${FILE_TRANS_ENABLE_LZ4}")
+message(STATUS "  ENABLE_ENCRYPTION: ${FILE_TRANS_ENABLE_ENCRYPTION}")
 message(STATUS "  ENABLE_COVERAGE: ${FILE_TRANS_ENABLE_COVERAGE}")
 message(STATUS "  ENABLE_ASAN: ${FILE_TRANS_ENABLE_ASAN}")
 message(STATUS "  ENABLE_TSAN: ${FILE_TRANS_ENABLE_TSAN}")
