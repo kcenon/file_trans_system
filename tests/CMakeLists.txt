@@ -12,10 +12,11 @@ enable_testing()
 include(FetchContent)
 
 # Declare Google Test dependency
+# Note: Using v1.17.0 to match system-installed version and ensure ABI compatibility
 FetchContent_Declare(
     googletest
     GIT_REPOSITORY https://github.com/google/googletest.git
-    GIT_TAG v1.14.0
+    GIT_TAG v1.17.0
     GIT_SHALLOW TRUE
 )
 
@@ -25,8 +26,19 @@ set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 # Disable installation of GTest
 set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
 
+# Ensure GoogleTest uses the same C++ standard as the parent project
+# This is critical for ABI compatibility on macOS/Linux with libc++
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
 # Make available
 FetchContent_MakeAvailable(googletest)
+
+# Explicitly set C++20 on gtest targets for ABI compatibility
+set_target_properties(gtest PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+set_target_properties(gtest_main PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+set_target_properties(gmock PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+set_target_properties(gmock_main PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
 
 # Include GoogleTest module for test discovery
 include(GoogleTest)
