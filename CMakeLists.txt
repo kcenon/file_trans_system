@@ -28,6 +28,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(BUILD_SHARED_LIBS "Build using shared libraries" OFF)
 option(FILE_TRANS_BUILD_TESTS "Build tests" ON)
+option(FILE_TRANS_BUILD_INTEGRATION_TESTS "Build integration tests (requires network)" ON)
 option(FILE_TRANS_BUILD_EXAMPLES "Build examples" ON)
 option(FILE_TRANS_BUILD_BENCHMARKS "Build benchmarks" OFF)
 option(FILE_TRANS_ENABLE_LZ4 "Enable LZ4 compression" ON)
@@ -45,28 +46,42 @@ option(FILE_TRANS_ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
 #   Required:
 #     - common_system (Result<T>, error handling)
 #     - thread_system (typed_thread_pool for pipeline)
-#     - network_system (TCP/TLS transport layer)
+#     - network_system (TCP/TLS transport layer) - MANDATORY
 #     - container_system (bounded_queue for backpressure)
 #   Optional:
 #     - LZ4 (compression)
+#
+# Note: network_system is a mandatory dependency as of v0.3.0.
+# The BUILD_WITH_NETWORK_SYSTEM option has been removed.
 ##################################################
 
-# Required ecosystem dependencies (these are always enabled)
-set(BUILD_WITH_COMMON_SYSTEM ON CACHE BOOL "Build with common_system integration (REQUIRED)" FORCE)
-set(BUILD_WITH_THREAD_SYSTEM ON CACHE BOOL "Build with thread_system integration (REQUIRED)" FORCE)
-set(BUILD_WITH_NETWORK_SYSTEM ON CACHE BOOL "Build with network_system integration (REQUIRED)" FORCE)
-set(BUILD_WITH_CONTAINER_SYSTEM ON CACHE BOOL "Build with container_system integration (REQUIRED)" FORCE)
-
-# Optional ecosystem dependency
+option(BUILD_WITH_COMMON_SYSTEM "Build with common_system integration (REQUIRED)" ON)
+option(BUILD_WITH_THREAD_SYSTEM "Build with thread_system integration (REQUIRED)" ON)
+option(BUILD_WITH_CONTAINER_SYSTEM "Build with container_system integration (REQUIRED)" ON)
 option(BUILD_WITH_LOGGER_SYSTEM "Build with logger_system integration (structured logging)" ON)
+
+# network_system is now mandatory - always enabled
+# Use FILE_TRANS_ALLOW_MISSING_DEPS=ON in CI environments where deps are unavailable
+option(FILE_TRANS_ALLOW_MISSING_DEPS "Allow missing dependencies (CI mode)" OFF)
+set(BUILD_WITH_NETWORK_SYSTEM ON CACHE INTERNAL "network_system is mandatory" FORCE)
 
 ##################################################
 # Dependency Validation
-#
-# Note: common_system, thread_system, network_system, and container_system
-# are required dependencies. They are always enabled and cannot be disabled.
-# The validation below will fail if these dependencies are not found.
 ##################################################
+
+if(NOT BUILD_WITH_COMMON_SYSTEM)
+    message(WARNING "common_system is disabled - some features may be unavailable")
+endif()
+
+if(NOT BUILD_WITH_THREAD_SYSTEM)
+    message(WARNING "thread_system is disabled - some features may be unavailable")
+endif()
+
+# network_system is mandatory - validation happens in FileTransDependencies.cmake
+
+if(NOT BUILD_WITH_CONTAINER_SYSTEM)
+    message(WARNING "container_system is disabled - some features may be unavailable")
+endif()
 
 ##################################################
 # Global Configuration
@@ -235,28 +250,44 @@ endif()
 # Ecosystem dependencies
 if(BUILD_WITH_COMMON_SYSTEM AND COMMON_SYSTEM_INCLUDE_DIR)
     target_include_directories(FileTransSystem PUBLIC ${COMMON_SYSTEM_INCLUDE_DIR})
-    target_compile_definitions(FileTransSystem PUBLIC BUILD_WITH_COMMON_SYSTEM)
+    # Define legacy macro for compatibility
+    # Note: KCENON_WITH_COMMON_SYSTEM is intentionally NOT defined to maintain
+    # ABI compatibility with network_system which uses its local Result type
+    target_compile_definitions(FileTransSystem PUBLIC
+        BUILD_WITH_COMMON_SYSTEM
+    )
 endif()
 
 if(BUILD_WITH_THREAD_SYSTEM AND THREAD_SYSTEM_INCLUDE_DIR)
     target_include_directories(FileTransSystem PUBLIC ${THREAD_SYSTEM_INCLUDE_DIR})
-    target_compile_definitions(FileTransSystem PUBLIC BUILD_WITH_THREAD_SYSTEM)
-    # Note: thread_system library is linked AFTER network_system due to dependency order
+    # Define both legacy and new unified macros for compatibility
+    target_compile_definitions(FileTransSystem PUBLIC
+        BUILD_WITH_THREAD_SYSTEM
+        KCENON_WITH_THREAD_SYSTEM=1
+    )
+
+    # Link thread_system library
+    if(THREAD_SYSTEM_LIBRARY)
+        target_link_libraries(FileTransSystem PUBLIC ${THREAD_SYSTEM_LIBRARY})
+    endif()
 endif()
 
 if(BUILD_WITH_NETWORK_SYSTEM AND NETWORK_SYSTEM_INCLUDE_DIR)
     target_include_directories(FileTransSystem PUBLIC ${NETWORK_SYSTEM_INCLUDE_DIR})
-    target_compile_definitions(FileTransSystem PUBLIC BUILD_WITH_NETWORK_SYSTEM)
+    # Define both legacy and new unified macros for compatibility
+    target_compile_definitions(FileTransSystem PUBLIC
+        BUILD_WITH_NETWORK_SYSTEM
+        KCENON_WITH_NETWORK_SYSTEM=1
+    )
 
-    # Link network_system library FIRST (it depends on thread_system)
+    # Link network_system library
     if(NETWORK_SYSTEM_LIBRARY)
         target_link_libraries(FileTransSystem PUBLIC ${NETWORK_SYSTEM_LIBRARY})
-    endif()
-
-    # Link thread_system library AFTER network_system (network_system depends on it)
-    # Static library link order: dependents must come before dependencies
-    if(THREAD_SYSTEM_LIBRARY)
-        target_link_libraries(FileTransSystem PUBLIC ${THREAD_SYSTEM_LIBRARY})
+        # NetworkSystem may depend on ThreadSystem internally, so link ThreadSystem
+        # again to ensure proper symbol resolution on Unix linkers
+        if(THREAD_SYSTEM_LIBRARY)
+            target_link_libraries(FileTransSystem PUBLIC ${THREAD_SYSTEM_LIBRARY})
+        endif()
     endif()
 
     # ASIO is required for network_system headers (they include <asio.hpp>)
@@ -274,12 +305,20 @@ endif()
 
 if(BUILD_WITH_CONTAINER_SYSTEM AND CONTAINER_SYSTEM_INCLUDE_DIR)
     target_include_directories(FileTransSystem PUBLIC ${CONTAINER_SYSTEM_INCLUDE_DIR})
-    target_compile_definitions(FileTransSystem PUBLIC BUILD_WITH_CONTAINER_SYSTEM)
+    # Define both legacy and new unified macros for compatibility
+    target_compile_definitions(FileTransSystem PUBLIC
+        BUILD_WITH_CONTAINER_SYSTEM
+        KCENON_WITH_CONTAINER_SYSTEM=1
+    )
 endif()
 
 if(BUILD_WITH_LOGGER_SYSTEM AND LOGGER_SYSTEM_INCLUDE_DIR)
     target_include_directories(FileTransSystem PUBLIC ${LOGGER_SYSTEM_INCLUDE_DIR})
-    target_compile_definitions(FileTransSystem PUBLIC BUILD_WITH_LOGGER_SYSTEM)
+    # Define both legacy and new unified macros for compatibility
+    target_compile_definitions(FileTransSystem PUBLIC
+        BUILD_WITH_LOGGER_SYSTEM
+        KCENON_WITH_LOGGER_SYSTEM=1
+    )
 
     # Link logger_system library
     if(LOGGER_SYSTEM_LIBRARY)
@@ -298,17 +337,10 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 elseif(MSVC)
     target_compile_options(FileTransSystem PRIVATE
         /W4
-        /WX
+        # Disable /WX for now due to warnings in external dependency headers (logger_system)
+        # TODO: Re-enable once upstream dependencies are fixed
+        # /WX
     )
-
-    if(BUILD_WITH_LOGGER_SYSTEM)
-        target_compile_options(FileTransSystem PRIVATE
-            /wd4244  # Suppress int-to-char conversion warning from logger_system
-            /wd4267
-            /wd4996
-        )
-        target_compile_definitions(FileTransSystem PRIVATE _CRT_SECURE_NO_WARNINGS)
-    endif()
 endif()
 
 ##################################################

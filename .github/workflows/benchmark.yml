@@ -25,12 +25,11 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-    - name: Checkout code
+    - name: Checkout file_trans_system
       uses: actions/checkout@v4
       with:
         submodules: recursive
         path: file_trans_system
-        ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
     - name: Checkout common_system
       uses: actions/checkout@v4
@@ -50,6 +49,12 @@ jobs:
         repository: kcenon/thread_system
         path: thread_system
 
+    - name: Checkout logger_system
+      uses: actions/checkout@v4
+      with:
+        repository: kcenon/logger_system
+        path: logger_system
+
     - name: Checkout network_system
       uses: actions/checkout@v4
       with:
@@ -59,29 +64,20 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y cmake ninja-build g++ liblz4-dev
+        sudo apt-get install -y cmake ninja-build g++ liblz4-dev libfmt-dev
 
-    - name: Build dependency libraries
+    - name: Build dependencies
       run: |
-        # Build common_system (library only, no tests/examples)
-        cmake -S common_system -B common_system/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-          -DCOMMON_BUILD_TESTS=OFF -DCOMMON_BUILD_INTEGRATION_TESTS=OFF -DCOMMON_BUILD_EXAMPLES=OFF
-        cmake --build common_system/build --config Release
-
-        # Build container_system (library only, no tests/samples)
-        cmake -S container_system -B container_system/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-          -DBUILD_TESTS=OFF -DBUILD_CONTAINER_SAMPLES=OFF -DCONTAINER_BUILD_INTEGRATION_TESTS=OFF
-        cmake --build container_system/build --config Release
-
-        # Build thread_system (library only, no tests)
-        cmake -S thread_system -B thread_system/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-          -DTHREAD_BUILD_INTEGRATION_TESTS=OFF
-        cmake --build thread_system/build --config Release
-
-        # Build network_system (library only, no tests/samples)
-        cmake -S network_system -B network_system/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-          -DBUILD_TESTS=OFF -DBUILD_SAMPLES=OFF -DNETWORK_BUILD_INTEGRATION_TESTS=OFF
-        cmake --build network_system/build --config Release
+        cmake -B common_system/build -S common_system -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=OFF
+        cmake --build common_system/build
+        cmake -B container_system/build -S container_system -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=OFF
+        cmake --build container_system/build
+        cmake -B thread_system/build -S thread_system -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=OFF
+        cmake --build thread_system/build
+        cmake -B logger_system/build -S logger_system -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=OFF
+        cmake --build logger_system/build
+        cmake -B network_system/build -S network_system -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=OFF -DBUILD_SAMPLES=OFF
+        cmake --build network_system/build
 
     - name: Configure CMake
       working-directory: file_trans_system
@@ -98,6 +94,7 @@ jobs:
       run: cmake --build build --config Release --parallel
 
     - name: Create results directory
+      working-directory: file_trans_system
       run: mkdir -p benchmark_results
 
     - name: Run throughput benchmarks
@@ -111,7 +108,7 @@ jobs:
         fi
         ./build/bin/throughput_benchmarks \
           --benchmark_format=json \
-          --benchmark_out=../benchmark_results/throughput.json \
+          --benchmark_out=benchmark_results/throughput.json \
           --benchmark_repetitions=3 \
           --benchmark_report_aggregates_only=true \
           $FILTER_ARG || true
@@ -127,7 +124,7 @@ jobs:
         fi
         ./build/bin/compression_benchmarks \
           --benchmark_format=json \
-          --benchmark_out=../benchmark_results/compression.json \
+          --benchmark_out=benchmark_results/compression.json \
           --benchmark_repetitions=3 \
           --benchmark_report_aggregates_only=true \
           $FILTER_ARG || true
@@ -137,6 +134,7 @@ jobs:
     # Run these benchmarks locally for accurate measurements.
 
     - name: Run latency benchmarks (skipped in CI)
+      working-directory: file_trans_system
       timeout-minutes: 5
       continue-on-error: true
       run: |
@@ -145,6 +143,7 @@ jobs:
         echo '{"benchmarks": []}' > benchmark_results/latency.json
 
     - name: Run memory benchmarks (skipped in CI)
+      working-directory: file_trans_system
       timeout-minutes: 5
       continue-on-error: true
       run: |
@@ -153,6 +152,7 @@ jobs:
         echo '{"benchmarks": []}' > benchmark_results/memory.json
 
     - name: Run scalability benchmarks (skipped in CI)
+      working-directory: file_trans_system
       timeout-minutes: 5
       continue-on-error: true
       run: |
@@ -161,6 +161,7 @@ jobs:
         echo '{"benchmarks": []}' > benchmark_results/scalability.json
 
     - name: Merge benchmark results
+      working-directory: file_trans_system
       run: |
         # Create a combined results file for regression detection
         echo '{"benchmarks": []}' > benchmark_results/combined.json
@@ -179,7 +180,7 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: benchmark-results-${{ github.sha }}
-        path: benchmark_results/
+        path: file_trans_system/benchmark_results/
         retention-days: 90
 
     - name: Store benchmark results (main branch)
@@ -188,7 +189,7 @@ jobs:
       with:
         name: 'File Transfer System Benchmarks'
         tool: 'googlecpp'
-        output-file-path: benchmark_results/combined.json
+        output-file-path: file_trans_system/benchmark_results/combined.json
         github-token: ${{ secrets.GITHUB_TOKEN }}
         auto-push: true
         alert-threshold: '150%'
@@ -199,6 +200,7 @@ jobs:
     - name: Check if gh-pages branch exists
       if: github.event_name == 'pull_request'
       id: check-gh-pages
+      working-directory: file_trans_system
       run: |
         if git ls-remote --heads origin gh-pages | grep -q gh-pages; then
           echo "exists=true" >> $GITHUB_OUTPUT
@@ -214,7 +216,7 @@ jobs:
       with:
         name: 'File Transfer System Benchmarks'
         tool: 'googlecpp'
-        output-file-path: benchmark_results/combined.json
+        output-file-path: file_trans_system/benchmark_results/combined.json
         github-token: ${{ secrets.GITHUB_TOKEN }}
         auto-push: false
         alert-threshold: '150%'
@@ -223,6 +225,7 @@ jobs:
 
     - name: Generate benchmark summary
       if: always()
+      working-directory: file_trans_system
       run: |
         echo "## Benchmark Results Summary" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY

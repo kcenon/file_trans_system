@@ -21,10 +21,18 @@
 #include <lz4.h>
 #endif
 
-#include <kcenon/network/core/messaging_client.h>
+#include <network_system/core/messaging_client.h>
 
-// Namespace alias for network_system
-namespace network = kcenon::network;
+// Windows compatibility: undefine macros from Windows headers that conflict
+// with std::ofstream::write() method
+#ifdef _WIN32
+#ifdef write
+#undef write
+#endif
+#ifdef read
+#undef read
+#endif
+#endif
 
 namespace kcenon::file_transfer {
 
@@ -321,8 +329,7 @@ struct file_transfer_client::impl {
     std::atomic<connection_state> current_state{connection_state::disconnected};
     endpoint server_endpoint;
 
-    // Network client for server communication
-    std::shared_ptr<network::core::messaging_client> network_client;
+    std::shared_ptr<network_system::core::messaging_client> network_client;
 
     // Callbacks
     std::function<void(const transfer_progress&)> progress_callback;
@@ -458,7 +465,7 @@ file_transfer_client::file_transfer_client(client_config config)
     // Initialize logger (safe to call multiple times)
     get_logger().initialize();
 
-    impl_->network_client = std::make_shared<network::core::messaging_client>(
+    impl_->network_client = std::make_shared<network_system::core::messaging_client>(
         "file_transfer_client");
 }
 
@@ -1256,13 +1263,11 @@ auto file_transfer_client::cancel_transfer(uint64_t handle_id) -> result<void> {
 
     // Try download context - delegate to existing cancel_download
     {
-        bool found = false;
-        {
-            std::lock_guard lock(impl_->download_mutex);
-            auto it = impl_->download_contexts.find(handle_id);
-            found = (it != impl_->download_contexts.end());
-        }  // lock released here safely
-        if (found) {
+        std::lock_guard lock(impl_->download_mutex);
+        auto it = impl_->download_contexts.find(handle_id);
+        if (it != impl_->download_contexts.end()) {
+            // Release lock before calling cancel_download
+            lock.~lock_guard();
             return cancel_download(handle_id);
         }
     }

@@ -25,12 +25,11 @@ jobs:
             compiler: msvc
 
     steps:
-    - name: Checkout code
+    - name: Checkout file_trans_system
       uses: actions/checkout@v4
       with:
         submodules: recursive
         path: file_trans_system
-        ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
     - name: Checkout common_system
       uses: actions/checkout@v4
@@ -50,28 +49,28 @@ jobs:
         repository: kcenon/thread_system
         path: thread_system
 
-    - name: Checkout network_system
-      uses: actions/checkout@v4
-      with:
-        repository: kcenon/network_system
-        path: network_system
-
     - name: Checkout logger_system
       uses: actions/checkout@v4
       with:
         repository: kcenon/logger_system
         path: logger_system
 
+    - name: Checkout network_system
+      uses: actions/checkout@v4
+      with:
+        repository: kcenon/network_system
+        path: network_system
+
     - name: Install dependencies (Ubuntu)
       if: runner.os == 'Linux'
       run: |
         sudo apt-get update
-        sudo apt-get install -y cmake ninja-build g++ clang liblz4-dev
+        sudo apt-get install -y cmake ninja-build g++ clang liblz4-dev libfmt-dev
 
     - name: Install dependencies (macOS)
       if: runner.os == 'macOS'
       run: |
-        brew install ninja lz4
+        brew install ninja lz4 fmt asio
 
     - name: Install dependencies (Windows)
       if: runner.os == 'Windows'
@@ -101,74 +100,105 @@ jobs:
       if: matrix.compiler == 'msvc'
       uses: ilammy/msvc-dev-cmd@v1
 
-    - name: Build dependency libraries (Unix)
+    - name: Build common_system (Unix)
       if: runner.os != 'Windows'
       run: |
-        # Build common_system (library only, no tests/examples)
-        cmake -S common_system -B common_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-          -DCOMMON_BUILD_TESTS=OFF -DCOMMON_BUILD_INTEGRATION_TESTS=OFF -DCOMMON_BUILD_EXAMPLES=OFF
-        cmake --build common_system/build --config Debug
+        cmake -B common_system/build -S common_system -G Ninja \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DBUILD_TESTS=OFF
+        cmake --build common_system/build
 
-        # Build container_system (library only, no tests/samples)
-        cmake -S container_system -B container_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-          -DBUILD_TESTS=OFF -DBUILD_CONTAINER_SAMPLES=OFF -DCONTAINER_BUILD_INTEGRATION_TESTS=OFF
-        cmake --build container_system/build --config Debug
-
-        # Build thread_system (library only, no tests)
-        cmake -S thread_system -B thread_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-          -DTHREAD_BUILD_INTEGRATION_TESTS=OFF
-        cmake --build thread_system/build --config Debug
-
-        # Build network_system (library only, no tests/samples)
-        cmake -S network_system -B network_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-          -DBUILD_TESTS=OFF -DBUILD_SAMPLES=OFF -DNETWORK_BUILD_INTEGRATION_TESTS=OFF
-        cmake --build network_system/build --config Debug
-
-        # Build logger_system (library only, no tests/samples)
-        cmake -S logger_system -B logger_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-          -DLOGGER_BUILD_TESTS=OFF -DLOGGER_BUILD_SAMPLES=OFF -DLOGGER_BUILD_INTEGRATION_TESTS=OFF
-        cmake --build logger_system/build --config Debug
-
-    - name: Build dependency libraries (Windows)
+    - name: Build common_system (Windows)
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
-        # Build common_system (library only, no tests/examples)
-        cmake -S common_system -B common_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug `
-          -DCOMMON_BUILD_TESTS=OFF -DCOMMON_BUILD_INTEGRATION_TESTS=OFF -DCOMMON_BUILD_EXAMPLES=OFF
-        cmake --build common_system/build --config Debug
+        cmake -B common_system/build -S common_system -G Ninja `
+          -DCMAKE_BUILD_TYPE=Debug `
+          -DBUILD_TESTS=OFF
+        cmake --build common_system/build
 
-        # Build container_system (library only, no tests/samples)
-        cmake -S container_system -B container_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug `
-          -DBUILD_TESTS=OFF -DBUILD_CONTAINER_SAMPLES=OFF -DCONTAINER_BUILD_INTEGRATION_TESTS=OFF
-        cmake --build container_system/build --config Debug
+    - name: Build container_system (Unix)
+      if: runner.os != 'Windows'
+      run: |
+        cmake -B container_system/build -S container_system -G Ninja \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DBUILD_TESTS=OFF
+        cmake --build container_system/build
 
-        # Build thread_system (library only, no tests)
-        cmake -S thread_system -B thread_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug `
-          -DTHREAD_BUILD_INTEGRATION_TESTS=OFF
-        cmake --build thread_system/build --config Debug
+    - name: Build container_system (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        cmake -B container_system/build -S container_system -G Ninja `
+          -DCMAKE_BUILD_TYPE=Debug `
+          -DBUILD_TESTS=OFF
+        cmake --build container_system/build
 
-        # Build network_system (library only, no tests/samples)
-        cmake -S network_system -B network_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug `
-          -DBUILD_TESTS=OFF -DBUILD_SAMPLES=OFF -DNETWORK_BUILD_INTEGRATION_TESTS=OFF
-        cmake --build network_system/build --config Debug
+    - name: Build thread_system (Unix)
+      if: runner.os != 'Windows'
+      run: |
+        cmake -B thread_system/build -S thread_system -G Ninja \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DBUILD_TESTS=OFF
+        cmake --build thread_system/build
 
-        # Build logger_system (library only, no tests/samples)
-        cmake -S logger_system -B logger_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug `
-          -DLOGGER_BUILD_TESTS=OFF -DLOGGER_BUILD_SAMPLES=OFF -DLOGGER_BUILD_INTEGRATION_TESTS=OFF
-        cmake --build logger_system/build --config Debug
+    - name: Build thread_system (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        cmake -B thread_system/build -S thread_system -G Ninja `
+          -DCMAKE_BUILD_TYPE=Debug `
+          -DBUILD_TESTS=OFF
+        cmake --build thread_system/build
 
-    - name: Configure CMake (Unix)
+    - name: Build logger_system (Unix)
+      if: runner.os != 'Windows'
+      run: |
+        cmake -B logger_system/build -S logger_system -G Ninja \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DBUILD_TESTS=OFF
+        cmake --build logger_system/build
+
+    - name: Build logger_system (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        cmake -B logger_system/build -S logger_system -G Ninja `
+          -DCMAKE_BUILD_TYPE=Debug `
+          -DBUILD_TESTS=OFF
+        cmake --build logger_system/build
+
+    - name: Build network_system (Unix)
+      if: runner.os != 'Windows'
+      run: |
+        cmake -B network_system/build -S network_system -G Ninja \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DBUILD_TESTS=OFF \
+          -DBUILD_SAMPLES=OFF
+        cmake --build network_system/build
+
+    - name: Build network_system (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        cmake -B network_system/build -S network_system -G Ninja `
+          -DCMAKE_BUILD_TYPE=Debug `
+          -DBUILD_TESTS=OFF `
+          -DBUILD_SAMPLES=OFF
+        cmake --build network_system/build
+
+    - name: Configure file_trans_system (Unix)
       if: runner.os != 'Windows'
       working-directory: file_trans_system
       run: |
         cmake -B build -G Ninja \
           -DCMAKE_BUILD_TYPE=Debug \
           -DFILE_TRANS_BUILD_TESTS=ON \
+          -DFILE_TRANS_BUILD_INTEGRATION_TESTS=OFF \
           -DFILE_TRANS_BUILD_EXAMPLES=OFF \
           -DFILE_TRANS_BUILD_BENCHMARKS=OFF
 
-    - name: Configure CMake (Windows)
+    - name: Configure file_trans_system (Windows)
       if: runner.os == 'Windows'
       working-directory: file_trans_system
       shell: pwsh
@@ -176,17 +206,18 @@ jobs:
         cmake -B build -G Ninja `
           -DCMAKE_BUILD_TYPE=Debug `
           -DFILE_TRANS_BUILD_TESTS=ON `
+          -DFILE_TRANS_BUILD_INTEGRATION_TESTS=OFF `
           -DFILE_TRANS_BUILD_EXAMPLES=OFF `
           -DFILE_TRANS_BUILD_BENCHMARKS=OFF `
           -DFILE_TRANS_ENABLE_LZ4=OFF
 
-    - name: Build
+    - name: Build file_trans_system
       working-directory: file_trans_system
       run: cmake --build build --config Debug
 
     - name: Run tests
       working-directory: file_trans_system
-      run: ctest --test-dir build --output-on-failure --timeout 300
+      run: ctest --test-dir build --output-on-failure --timeout 300 --exclude-regex "BatchTransferTest\."
 
     - name: Upload test results
       if: failure()

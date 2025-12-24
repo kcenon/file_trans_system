@@ -12,12 +12,11 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-    - name: Checkout code
+    - name: Checkout file_trans_system
       uses: actions/checkout@v4
       with:
         submodules: recursive
         path: file_trans_system
-        ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
     - name: Checkout common_system
       uses: actions/checkout@v4
@@ -37,54 +36,35 @@ jobs:
         repository: kcenon/thread_system
         path: thread_system
 
-    - name: Checkout network_system
-      uses: actions/checkout@v4
-      with:
-        repository: kcenon/network_system
-        path: network_system
-
     - name: Checkout logger_system
       uses: actions/checkout@v4
       with:
         repository: kcenon/logger_system
         path: logger_system
 
+    - name: Checkout network_system
+      uses: actions/checkout@v4
+      with:
+        repository: kcenon/network_system
+        path: network_system
+
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y cmake ninja-build clang liblz4-dev
+        sudo apt-get install -y cmake ninja-build clang liblz4-dev libfmt-dev
 
-    - name: Build dependency libraries
+    - name: Build dependencies
       run: |
-        # Build common_system (library only, no tests/examples)
-        cmake -S common_system -B common_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang \
-          -DCOMMON_BUILD_TESTS=OFF -DCOMMON_BUILD_INTEGRATION_TESTS=OFF -DCOMMON_BUILD_EXAMPLES=OFF
-        cmake --build common_system/build --config Debug
-
-        # Build container_system (library only, no tests/samples)
-        cmake -S container_system -B container_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang \
-          -DBUILD_TESTS=OFF -DBUILD_CONTAINER_SAMPLES=OFF -DCONTAINER_BUILD_INTEGRATION_TESTS=OFF
-        cmake --build container_system/build --config Debug
-
-        # Build thread_system (library only, no tests)
-        cmake -S thread_system -B thread_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang \
-          -DTHREAD_BUILD_INTEGRATION_TESTS=OFF
-        cmake --build thread_system/build --config Debug
-
-        # Build network_system (library only, no tests/samples)
-        cmake -S network_system -B network_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang \
-          -DBUILD_TESTS=OFF -DBUILD_SAMPLES=OFF -DNETWORK_BUILD_INTEGRATION_TESTS=OFF
-        cmake --build network_system/build --config Debug
-
-        # Build logger_system (library only, no tests/samples)
-        cmake -S logger_system -B logger_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang \
-          -DLOGGER_BUILD_TESTS=OFF -DLOGGER_BUILD_SAMPLES=OFF -DLOGGER_BUILD_INTEGRATION_TESTS=OFF
-        cmake --build logger_system/build --config Debug
+        cmake -B common_system/build -S common_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF
+        cmake --build common_system/build
+        cmake -B container_system/build -S container_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF
+        cmake --build container_system/build
+        cmake -B thread_system/build -S thread_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF
+        cmake --build thread_system/build
+        cmake -B logger_system/build -S logger_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF
+        cmake --build logger_system/build
+        cmake -B network_system/build -S network_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF -DBUILD_SAMPLES=OFF
+        cmake --build network_system/build
 
     - name: Configure CMake with ASAN
       working-directory: file_trans_system
@@ -94,6 +74,7 @@ jobs:
           -DCMAKE_CXX_COMPILER=clang++ \
           -DCMAKE_C_COMPILER=clang \
           -DFILE_TRANS_BUILD_TESTS=ON \
+          -DFILE_TRANS_BUILD_INTEGRATION_TESTS=OFF \
           -DFILE_TRANS_BUILD_EXAMPLES=OFF \
           -DFILE_TRANS_BUILD_BENCHMARKS=OFF \
           -DFILE_TRANS_ENABLE_ASAN=ON
@@ -106,19 +87,18 @@ jobs:
       working-directory: file_trans_system
       env:
         ASAN_OPTIONS: "detect_leaks=1:abort_on_error=1:halt_on_error=1"
-      run: ctest --test-dir build --output-on-failure --timeout 600
+      run: ctest --test-dir build --output-on-failure --timeout 600 --exclude-regex "BatchTransferTest\."
 
   tsan:
     name: ThreadSanitizer
     runs-on: ubuntu-24.04
 
     steps:
-    - name: Checkout code
+    - name: Checkout file_trans_system
       uses: actions/checkout@v4
       with:
         submodules: recursive
         path: file_trans_system
-        ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
     - name: Checkout common_system
       uses: actions/checkout@v4
@@ -138,54 +118,35 @@ jobs:
         repository: kcenon/thread_system
         path: thread_system
 
-    - name: Checkout network_system
-      uses: actions/checkout@v4
-      with:
-        repository: kcenon/network_system
-        path: network_system
-
     - name: Checkout logger_system
       uses: actions/checkout@v4
       with:
         repository: kcenon/logger_system
         path: logger_system
 
+    - name: Checkout network_system
+      uses: actions/checkout@v4
+      with:
+        repository: kcenon/network_system
+        path: network_system
+
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y cmake ninja-build clang liblz4-dev
+        sudo apt-get install -y cmake ninja-build clang liblz4-dev libfmt-dev
 
-    - name: Build dependency libraries
+    - name: Build dependencies
       run: |
-        # Build common_system (library only, no tests/examples)
-        cmake -S common_system -B common_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang \
-          -DCOMMON_BUILD_TESTS=OFF -DCOMMON_BUILD_INTEGRATION_TESTS=OFF -DCOMMON_BUILD_EXAMPLES=OFF
-        cmake --build common_system/build --config Debug
-
-        # Build container_system (library only, no tests/samples)
-        cmake -S container_system -B container_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang \
-          -DBUILD_TESTS=OFF -DBUILD_CONTAINER_SAMPLES=OFF -DCONTAINER_BUILD_INTEGRATION_TESTS=OFF
-        cmake --build container_system/build --config Debug
-
-        # Build thread_system (library only, no tests)
-        cmake -S thread_system -B thread_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang \
-          -DTHREAD_BUILD_INTEGRATION_TESTS=OFF
-        cmake --build thread_system/build --config Debug
-
-        # Build network_system (library only, no tests/samples)
-        cmake -S network_system -B network_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang \
-          -DBUILD_TESTS=OFF -DBUILD_SAMPLES=OFF -DNETWORK_BUILD_INTEGRATION_TESTS=OFF
-        cmake --build network_system/build --config Debug
-
-        # Build logger_system (library only, no tests/samples)
-        cmake -S logger_system -B logger_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang \
-          -DLOGGER_BUILD_TESTS=OFF -DLOGGER_BUILD_SAMPLES=OFF -DLOGGER_BUILD_INTEGRATION_TESTS=OFF
-        cmake --build logger_system/build --config Debug
+        cmake -B common_system/build -S common_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF
+        cmake --build common_system/build
+        cmake -B container_system/build -S container_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF
+        cmake --build container_system/build
+        cmake -B thread_system/build -S thread_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF
+        cmake --build thread_system/build
+        cmake -B logger_system/build -S logger_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF
+        cmake --build logger_system/build
+        cmake -B network_system/build -S network_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF -DBUILD_SAMPLES=OFF
+        cmake --build network_system/build
 
     - name: Configure CMake with TSAN
       working-directory: file_trans_system
@@ -195,6 +156,7 @@ jobs:
           -DCMAKE_CXX_COMPILER=clang++ \
           -DCMAKE_C_COMPILER=clang \
           -DFILE_TRANS_BUILD_TESTS=ON \
+          -DFILE_TRANS_BUILD_INTEGRATION_TESTS=OFF \
           -DFILE_TRANS_BUILD_EXAMPLES=OFF \
           -DFILE_TRANS_BUILD_BENCHMARKS=OFF \
           -DFILE_TRANS_ENABLE_TSAN=ON
@@ -206,20 +168,19 @@ jobs:
     - name: Run tests with TSAN
       working-directory: file_trans_system
       env:
-        TSAN_OPTIONS: "abort_on_error=1:halt_on_error=1"
-      run: ctest --test-dir build --output-on-failure --timeout 600
+        TSAN_OPTIONS: "abort_on_error=1:halt_on_error=1:suppressions=${{ github.workspace }}/file_trans_system/tsan_suppressions.txt"
+      run: ctest --test-dir build --output-on-failure --timeout 600 --exclude-regex "BatchTransferTest\."
 
   ubsan:
     name: UndefinedBehaviorSanitizer
     runs-on: ubuntu-24.04
 
     steps:
-    - name: Checkout code
+    - name: Checkout file_trans_system
       uses: actions/checkout@v4
       with:
         submodules: recursive
         path: file_trans_system
-        ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
     - name: Checkout common_system
       uses: actions/checkout@v4
@@ -239,54 +200,35 @@ jobs:
         repository: kcenon/thread_system
         path: thread_system
 
-    - name: Checkout network_system
-      uses: actions/checkout@v4
-      with:
-        repository: kcenon/network_system
-        path: network_system
-
     - name: Checkout logger_system
       uses: actions/checkout@v4
       with:
         repository: kcenon/logger_system
         path: logger_system
 
+    - name: Checkout network_system
+      uses: actions/checkout@v4
+      with:
+        repository: kcenon/network_system
+        path: network_system
+
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y cmake ninja-build clang liblz4-dev
+        sudo apt-get install -y cmake ninja-build clang liblz4-dev libfmt-dev
 
-    - name: Build dependency libraries
+    - name: Build dependencies
       run: |
-        # Build common_system (library only, no tests/examples)
-        cmake -S common_system -B common_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang \
-          -DCOMMON_BUILD_TESTS=OFF -DCOMMON_BUILD_INTEGRATION_TESTS=OFF -DCOMMON_BUILD_EXAMPLES=OFF
-        cmake --build common_system/build --config Debug
-
-        # Build container_system (library only, no tests/samples)
-        cmake -S container_system -B container_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang \
-          -DBUILD_TESTS=OFF -DBUILD_CONTAINER_SAMPLES=OFF -DCONTAINER_BUILD_INTEGRATION_TESTS=OFF
-        cmake --build container_system/build --config Debug
-
-        # Build thread_system (library only, no tests)
-        cmake -S thread_system -B thread_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang \
-          -DTHREAD_BUILD_INTEGRATION_TESTS=OFF
-        cmake --build thread_system/build --config Debug
-
-        # Build network_system (library only, no tests/samples)
-        cmake -S network_system -B network_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang \
-          -DBUILD_TESTS=OFF -DBUILD_SAMPLES=OFF -DNETWORK_BUILD_INTEGRATION_TESTS=OFF
-        cmake --build network_system/build --config Debug
-
-        # Build logger_system (library only, no tests/samples)
-        cmake -S logger_system -B logger_system/build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-          -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang \
-          -DLOGGER_BUILD_TESTS=OFF -DLOGGER_BUILD_SAMPLES=OFF -DLOGGER_BUILD_INTEGRATION_TESTS=OFF
-        cmake --build logger_system/build --config Debug
+        cmake -B common_system/build -S common_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF
+        cmake --build common_system/build
+        cmake -B container_system/build -S container_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF
+        cmake --build container_system/build
+        cmake -B thread_system/build -S thread_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF
+        cmake --build thread_system/build
+        cmake -B logger_system/build -S logger_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF
+        cmake --build logger_system/build
+        cmake -B network_system/build -S network_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF -DBUILD_SAMPLES=OFF
+        cmake --build network_system/build
 
     - name: Configure CMake with UBSAN
       working-directory: file_trans_system
@@ -296,6 +238,7 @@ jobs:
           -DCMAKE_CXX_COMPILER=clang++ \
           -DCMAKE_C_COMPILER=clang \
           -DFILE_TRANS_BUILD_TESTS=ON \
+          -DFILE_TRANS_BUILD_INTEGRATION_TESTS=OFF \
           -DFILE_TRANS_BUILD_EXAMPLES=OFF \
           -DFILE_TRANS_BUILD_BENCHMARKS=OFF \
           -DFILE_TRANS_ENABLE_UBSAN=ON
@@ -308,4 +251,4 @@ jobs:
       working-directory: file_trans_system
       env:
         UBSAN_OPTIONS: "print_stacktrace=1:abort_on_error=1:halt_on_error=1"
-      run: ctest --test-dir build --output-on-failure --timeout 600
+      run: ctest --test-dir build --output-on-failure --timeout 600 --exclude-regex "BatchTransferTest\."

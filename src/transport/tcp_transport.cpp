@@ -10,10 +10,7 @@
 #include <queue>
 #include <thread>
 
-#include <kcenon/network/core/messaging_client.h>
-
-// Namespace alias for network_system
-namespace network = kcenon::network;
+#include <network_system/core/messaging_client.h>
 
 namespace kcenon::file_transfer {
 
@@ -38,11 +35,10 @@ struct tcp_transport::impl {
     std::condition_variable receive_cv;
     std::queue<std::vector<std::byte>> receive_queue;
 
-    // Network client for TCP communication
-    std::shared_ptr<network::core::messaging_client> network_client;
+    std::shared_ptr<network_system::core::messaging_client> network_client;
 
     explicit impl(tcp_transport_config cfg) : config(std::move(cfg)) {
-        network_client = std::make_shared<network::core::messaging_client>(
+        network_client = std::make_shared<network_system::core::messaging_client>(
             "tcp_transport");
     }
 
@@ -140,7 +136,7 @@ auto tcp_transport::connect(
 
     // Apply configuration
     // Note: Additional socket options would be configured here
-    (void)timeout;  // timeout is handled by network_client internally
+    (void)timeout;  // timeout handling to be implemented
 
     auto result = impl_->network_client->start_client(remote.host, remote.port);
     if (result.is_err()) {
@@ -205,10 +201,6 @@ auto tcp_transport::disconnect() -> result<void> {
 
     FT_LOG_INFO(log_category::transfer, "TCP transport disconnecting");
     impl_->set_state(transport_state::disconnecting);
-
-    // Clear receive callback before stopping to prevent accessing impl_ after destruction
-    // This prevents heap corruption when callbacks try to access destroyed memory
-    impl_->network_client->set_receive_callback(nullptr);
 
     auto result = impl_->network_client->stop_client();
     if (result.is_err()) {

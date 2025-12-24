@@ -392,6 +392,15 @@ ctest --output-on-failure
 | **Integration Tests - Advanced** | Error handling, large files, compression, stress tests | `test_error_advanced_scenarios.cpp` |
 | **Integration Tests - Concurrency** | Multi-client connections, 100-connection load test, concurrent transfers | `test_concurrency.cpp` |
 
+#### Disabling Integration Tests
+
+Integration tests require actual network connections and may be unstable in CI environments due to timing issues. To build without integration tests:
+
+```bash
+cmake -B build -DFILE_TRANS_BUILD_INTEGRATION_TESTS=OFF
+cmake --build build
+```
+
 ### Sanitizer Testing
 
 Build with sanitizers to detect memory issues and undefined behavior:
