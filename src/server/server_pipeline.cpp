@@ -48,8 +48,9 @@ struct server_pipeline::impl {
 
         // Create pipeline context
         context = std::make_shared<pipeline_context>();
+        context->thread_pool = thread_pool;
 
-        // Create bounded job queues for each stage
+        // Create bounded job queues for each stage (used for backpressure tracking)
         context->decompress_queue = std::make_shared<thread::bounded_job_queue>(
             config.queue_size, 0.8);
         context->verify_queue = std::make_shared<thread::bounded_job_queue>(
