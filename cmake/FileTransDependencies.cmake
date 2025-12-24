@@ -149,54 +149,62 @@ function(find_file_trans_dependencies)
         endif()
     endif()
 
-    # network_system (TCP/TLS transport layer)
-    if(BUILD_WITH_NETWORK_SYSTEM)
-        if(NOT NETWORK_SYSTEM_INCLUDE_DIR)
-            set(_network_paths
-                "${CMAKE_CURRENT_SOURCE_DIR}/../network_system/include"
-                "${CMAKE_SOURCE_DIR}/../network_system/include"
-            )
+    # network_system (TCP/TLS transport layer) - MANDATORY DEPENDENCY
+    # network_system is required for file_trans_system to function.
+    # The BUILD_WITH_NETWORK_SYSTEM option is always ON and cannot be disabled.
+    if(NOT NETWORK_SYSTEM_INCLUDE_DIR)
+        set(_network_paths
+            "${CMAKE_CURRENT_SOURCE_DIR}/../network_system/include"
+            "${CMAKE_SOURCE_DIR}/../network_system/include"
+        )
 
-            foreach(_path ${_network_paths})
-                if(EXISTS "${_path}/network_system")
-                    get_filename_component(NETWORK_SYSTEM_INCLUDE_DIR "${_path}" ABSOLUTE)
-                    break()
-                endif()
-            endforeach()
+        foreach(_path ${_network_paths})
+            if(EXISTS "${_path}/network_system")
+                get_filename_component(NETWORK_SYSTEM_INCLUDE_DIR "${_path}" ABSOLUTE)
+                break()
+            endif()
+        endforeach()
+    endif()
+
+    if(NETWORK_SYSTEM_INCLUDE_DIR)
+        message(STATUS "Found network_system: ${NETWORK_SYSTEM_INCLUDE_DIR}")
+        set(NETWORK_SYSTEM_INCLUDE_DIR ${NETWORK_SYSTEM_INCLUDE_DIR} PARENT_SCOPE)
+
+        # Find network_system library
+        set(_network_lib_paths
+            "${CMAKE_CURRENT_SOURCE_DIR}/../network_system/build/lib"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../network_system/build"
+            "${CMAKE_SOURCE_DIR}/../network_system/build/lib"
+            "${CMAKE_SOURCE_DIR}/../network_system/build"
+        )
+
+        find_library(NETWORK_SYSTEM_LIBRARY
+            NAMES NetworkSystem network_system
+            PATHS ${_network_lib_paths}
+            NO_DEFAULT_PATH
+        )
+
+        if(NETWORK_SYSTEM_LIBRARY)
+            message(STATUS "Found network_system library: ${NETWORK_SYSTEM_LIBRARY}")
+            set(NETWORK_SYSTEM_LIBRARY ${NETWORK_SYSTEM_LIBRARY} PARENT_SCOPE)
+        else()
+            if(FILE_TRANS_ALLOW_MISSING_DEPS)
+                message(WARNING "network_system library not found - CI mode enabled, continuing anyway")
+            else()
+                message(FATAL_ERROR "network_system library not found - network_system is a mandatory dependency")
+            endif()
         endif()
 
-        if(NETWORK_SYSTEM_INCLUDE_DIR)
-            message(STATUS "Found network_system: ${NETWORK_SYSTEM_INCLUDE_DIR}")
-            set(NETWORK_SYSTEM_INCLUDE_DIR ${NETWORK_SYSTEM_INCLUDE_DIR} PARENT_SCOPE)
-
-            # Find network_system library
-            set(_network_lib_paths
-                "${CMAKE_CURRENT_SOURCE_DIR}/../network_system/build/lib"
-                "${CMAKE_CURRENT_SOURCE_DIR}/../network_system/build"
-                "${CMAKE_SOURCE_DIR}/../network_system/build/lib"
-                "${CMAKE_SOURCE_DIR}/../network_system/build"
-            )
-
-            find_library(NETWORK_SYSTEM_LIBRARY
-                NAMES NetworkSystem network_system
-                PATHS ${_network_lib_paths}
-                NO_DEFAULT_PATH
-            )
-
-            if(NETWORK_SYSTEM_LIBRARY)
-                message(STATUS "Found network_system library: ${NETWORK_SYSTEM_LIBRARY}")
-                set(NETWORK_SYSTEM_LIBRARY ${NETWORK_SYSTEM_LIBRARY} PARENT_SCOPE)
-            else()
-                message(WARNING "network_system library not found - linking may fail")
-            endif()
-
-            # ASIO is required when using network_system (network_system headers include asio.hpp)
-            find_asio_library()
-            set(ASIO_FOUND ${ASIO_FOUND} PARENT_SCOPE)
-            set(ASIO_INCLUDE_DIR ${ASIO_INCLUDE_DIR} PARENT_SCOPE)
-            set(ASIO_TARGET ${ASIO_TARGET} PARENT_SCOPE)
+        # ASIO is required when using network_system (network_system headers include asio.hpp)
+        find_asio_library()
+        set(ASIO_FOUND ${ASIO_FOUND} PARENT_SCOPE)
+        set(ASIO_INCLUDE_DIR ${ASIO_INCLUDE_DIR} PARENT_SCOPE)
+        set(ASIO_TARGET ${ASIO_TARGET} PARENT_SCOPE)
+    else()
+        if(FILE_TRANS_ALLOW_MISSING_DEPS)
+            message(WARNING "network_system not found - CI mode enabled, continuing anyway")
         else()
-            message(WARNING "network_system not found - some features will be unavailable")
+            message(FATAL_ERROR "network_system not found - network_system is a mandatory dependency for file_trans_system")
         endif()
     endif()
 

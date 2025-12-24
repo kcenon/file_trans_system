@@ -82,11 +82,17 @@ message(STATUS "Unit tests enabled")
 
 ##################################################
 # Integration Tests (conditional)
+#
+# Integration tests require actual network connections and may be
+# unstable in CI environments due to timing issues. Use
+# FILE_TRANS_BUILD_INTEGRATION_TESTS=OFF to disable them.
 ##################################################
 
-if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/integration/CMakeLists.txt)
+if(FILE_TRANS_BUILD_INTEGRATION_TESTS AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/integration/CMakeLists.txt)
     add_subdirectory(integration)
     message(STATUS "Integration tests enabled")
+else()
+    message(STATUS "Integration tests disabled (FILE_TRANS_BUILD_INTEGRATION_TESTS=${FILE_TRANS_BUILD_INTEGRATION_TESTS})")
 endif()
 
 ##################################################

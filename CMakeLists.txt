@@ -28,6 +28,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(BUILD_SHARED_LIBS "Build using shared libraries" OFF)
 option(FILE_TRANS_BUILD_TESTS "Build tests" ON)
+option(FILE_TRANS_BUILD_INTEGRATION_TESTS "Build integration tests (requires network)" ON)
 option(FILE_TRANS_BUILD_EXAMPLES "Build examples" ON)
 option(FILE_TRANS_BUILD_BENCHMARKS "Build benchmarks" OFF)
 option(FILE_TRANS_ENABLE_LZ4 "Enable LZ4 compression" ON)
@@ -45,17 +46,24 @@ option(FILE_TRANS_ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
 #   Required:
 #     - common_system (Result<T>, error handling)
 #     - thread_system (typed_thread_pool for pipeline)
-#     - network_system (TCP/TLS transport layer)
+#     - network_system (TCP/TLS transport layer) - MANDATORY
 #     - container_system (bounded_queue for backpressure)
 #   Optional:
 #     - LZ4 (compression)
+#
+# Note: network_system is a mandatory dependency as of v0.3.0.
+# The BUILD_WITH_NETWORK_SYSTEM option has been removed.
 ##################################################
 
 option(BUILD_WITH_COMMON_SYSTEM "Build with common_system integration (REQUIRED)" ON)
 option(BUILD_WITH_THREAD_SYSTEM "Build with thread_system integration (REQUIRED)" ON)
-option(BUILD_WITH_NETWORK_SYSTEM "Build with network_system integration (REQUIRED)" ON)
 option(BUILD_WITH_CONTAINER_SYSTEM "Build with container_system integration (REQUIRED)" ON)
 option(BUILD_WITH_LOGGER_SYSTEM "Build with logger_system integration (structured logging)" ON)
+
+# network_system is now mandatory - always enabled
+# Use FILE_TRANS_ALLOW_MISSING_DEPS=ON in CI environments where deps are unavailable
+option(FILE_TRANS_ALLOW_MISSING_DEPS "Allow missing dependencies (CI mode)" OFF)
+set(BUILD_WITH_NETWORK_SYSTEM ON CACHE INTERNAL "network_system is mandatory" FORCE)
 
 ##################################################
 # Dependency Validation
@@ -69,9 +77,7 @@ if(NOT BUILD_WITH_THREAD_SYSTEM)
     message(WARNING "thread_system is disabled - some features may be unavailable")
 endif()
 
-if(NOT BUILD_WITH_NETWORK_SYSTEM)
-    message(WARNING "network_system is disabled - some features may be unavailable")
-endif()
+# network_system is mandatory - validation happens in FileTransDependencies.cmake
 
 if(NOT BUILD_WITH_CONTAINER_SYSTEM)
     message(WARNING "container_system is disabled - some features may be unavailable")
@@ -244,10 +250,11 @@ endif()
 # Ecosystem dependencies
 if(BUILD_WITH_COMMON_SYSTEM AND COMMON_SYSTEM_INCLUDE_DIR)
     target_include_directories(FileTransSystem PUBLIC ${COMMON_SYSTEM_INCLUDE_DIR})
-    # Define both legacy and new unified macros for compatibility
+    # Define legacy macro for compatibility
+    # Note: KCENON_WITH_COMMON_SYSTEM is intentionally NOT defined to maintain
+    # ABI compatibility with network_system which uses its local Result type
     target_compile_definitions(FileTransSystem PUBLIC
         BUILD_WITH_COMMON_SYSTEM
-        KCENON_WITH_COMMON_SYSTEM=1
     )
 endif()
 
@@ -276,6 +283,11 @@ if(BUILD_WITH_NETWORK_SYSTEM AND NETWORK_SYSTEM_INCLUDE_DIR)
     # Link network_system library
     if(NETWORK_SYSTEM_LIBRARY)
         target_link_libraries(FileTransSystem PUBLIC ${NETWORK_SYSTEM_LIBRARY})
+        # NetworkSystem may depend on ThreadSystem internally, so link ThreadSystem
+        # again to ensure proper symbol resolution on Unix linkers
+        if(THREAD_SYSTEM_LIBRARY)
+            target_link_libraries(FileTransSystem PUBLIC ${THREAD_SYSTEM_LIBRARY})
+        endif()
     endif()
 
     # ASIO is required for network_system headers (they include <asio.hpp>)
@@ -325,7 +337,9 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 elseif(MSVC)
     target_compile_options(FileTransSystem PRIVATE
         /W4
-        /WX
+        # Disable /WX for now due to warnings in external dependency headers (logger_system)
+        # TODO: Re-enable once upstream dependencies are fixed
+        # /WX
     )
 endif()
 
