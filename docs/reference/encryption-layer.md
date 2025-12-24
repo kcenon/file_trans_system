@@ -416,6 +416,207 @@ if (!result.has_value()) {
 }
 ```
 
+## Key Management System
+
+The key management system provides secure key lifecycle management including generation, derivation, storage, and rotation.
+
+### Architecture
+
+```
+┌─────────────────────────────────────────┐
+│            key_manager                  │
+├─────────────────────────────────────────┤
+│  - generate_key()                       │
+│  - derive_key_from_password()           │
+│  - store_key() / get_key()              │
+│  - rotate_key()                         │
+│  - record_usage()                       │
+└─────────────────┬───────────────────────┘
+                  │
+┌─────────────────▼───────────────────────┐
+│       key_storage_interface             │
+├─────────────────────────────────────────┤
+│  - store() / retrieve() / remove()      │
+│  - exists() / list_keys()               │
+└─────────────────┬───────────────────────┘
+                  │
+       ┌──────────┼──────────┐
+       │          │          │
+┌──────▼──────┐ ┌─▼────────┐ ┌▼─────────────┐
+│memory_key_  │ │file_key_ │ │hsm_key_      │
+│storage      │ │storage   │ │storage       │
+│(in-memory)  │ │(future)  │ │(future)      │
+└─────────────┘ └──────────┘ └──────────────┘
+```
+
+### Key Generation
+
+```cpp
+#include "kcenon/file_transfer/encryption/key_manager.h"
+
+// Create key manager with in-memory storage
+auto manager = key_manager::create();
+
+// Generate random 256-bit key
+auto result = manager->generate_key("my-encryption-key");
+if (result.has_value()) {
+    auto& key = result.value();
+    // key.key contains the raw key bytes
+    // key.metadata contains tracking information
+}
+
+// Generate random bytes (CSPRNG)
+auto random = manager->generate_random_bytes(32);
+```
+
+### Password-based Key Derivation
+
+```cpp
+// Derive key using Argon2id (recommended)
+auto key = manager->derive_key_from_password(
+    "password-key",
+    "user-secure-password",
+    argon2_config{
+        .memory_kb = 65536,    // 64 MB
+        .time_cost = 3,
+        .parallelism = 4
+    }
+);
+
+// Derive key using PBKDF2 (compatible)
+auto key = manager->derive_key_pbkdf2(
+    "pbkdf2-key",
+    "user-password",
+    pbkdf2_config{
+        .iterations = 600000  // OWASP 2023 recommendation
+    }
+);
+
+// Re-derive key with stored parameters
+auto rederived = manager->rederive_key("password-key", "user-secure-password");
+```
+
+### Key Rotation
+
+```cpp
+// Set rotation policy
+key_rotation_policy policy;
+policy.auto_rotate = true;
+policy.max_uses = 1000000;        // Rotate after 1M uses
+policy.max_age = std::chrono::hours{24 * 30};  // 30 days
+policy.keep_versions = 3;          // Keep last 3 versions
+
+manager->set_rotation_policy(policy);
+
+// Manual rotation
+auto new_key = manager->rotate_key("my-key");
+
+// Check if rotation needed
+if (manager->needs_rotation("my-key")) {
+    manager->rotate_key("my-key");
+}
+
+// Access old versions for decryption
+auto old_versions = manager->get_key_versions("my-key");
+```
+
+### Key Metadata
+
+```cpp
+struct key_metadata {
+    std::string key_id;
+    std::string description;
+    std::optional<key_derivation_params> derivation_params;
+    std::chrono::system_clock::time_point created_at;
+    std::chrono::system_clock::time_point last_used_at;
+    std::optional<std::chrono::system_clock::time_point> expires_at;
+    uint64_t usage_count;
+    bool is_active;
+    uint32_t version;
+};
+```
+
+### Usage Tracking
+
+```cpp
+// Record key usage
+manager->record_usage("my-key");
+
+// Get usage statistics
+auto stats = manager->get_usage_stats("my-key");
+if (stats.has_value()) {
+    std::cout << "Key used " << stats.value().usage_count << " times\n";
+    std::cout << "Last used: " << /* format time */ << "\n";
+}
+```
+
+### Secure Memory Operations
+
+```cpp
+// Securely zero sensitive data
+std::vector<std::byte> sensitive_data = /* ... */;
+key_manager::secure_zero(sensitive_data);
+
+// Constant-time comparison (prevent timing attacks)
+bool equal = key_manager::constant_time_compare(key1, key2);
+```
+
+### Key Derivation Classes
+
+```cpp
+// PBKDF2 key derivation
+auto pbkdf2 = pbkdf2_key_derivation::create(pbkdf2_config{
+    .iterations = 600000,
+    .key_length = 32
+});
+
+auto derived = pbkdf2->derive_key("password");
+// derived.value().key contains the 32-byte key
+// derived.value().params contains salt and iteration count
+
+// Argon2id key derivation (recommended)
+auto argon2 = argon2_key_derivation::create(argon2_config{
+    .memory_kb = 65536,
+    .time_cost = 3,
+    .parallelism = 4,
+    .key_length = 32
+});
+
+// Check if native Argon2 is available
+if (argon2_key_derivation::is_available()) {
+    // Using native Argon2id
+} else {
+    // Falls back to PBKDF2
+}
+```
+
+### Integration with Encryption
+
+```cpp
+// Complete encryption workflow
+auto manager = key_manager::create();
+
+// Generate or derive key
+auto key_result = manager->derive_key_from_password("file-key", "password");
+auto& managed_key = key_result.value();
+
+// Create encryptor
+auto encryptor = aes_gcm_engine::create();
+encryptor->set_key(managed_key.key);
+
+// Encrypt data
+auto encrypted = encryptor->encrypt(plaintext);
+
+// Track key usage
+manager->record_usage("file-key");
+
+// Check for rotation
+if (manager->needs_rotation("file-key")) {
+    auto new_key = manager->rotate_key("file-key");
+    // Update encryption key
+}
+```
+
 ## Related Documents
 
 - [Transport Layer](transport-layer.md)
