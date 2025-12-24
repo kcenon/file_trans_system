@@ -303,6 +303,7 @@ elseif(MSVC)
 
     if(BUILD_WITH_LOGGER_SYSTEM)
         target_compile_options(FileTransSystem PRIVATE
+            /wd4244  # Suppress int-to-char conversion warning from logger_system
             /wd4267
             /wd4996
         )
