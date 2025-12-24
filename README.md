@@ -320,6 +320,7 @@ file_trans_system is built on top of the kcenon ecosystem libraries:
 | **network_system** | Yes | **TCP/TLS 1.3 transport layer (Phase 1), QUIC transport (Phase 2)** |
 | container_system | Yes | Bounded queues for backpressure |
 | LZ4 | Yes | Compression library (v1.9.0+) |
+| **OpenSSL** | Yes | TLS encryption and QUIC transport support (v3.0+) |
 | logger_system | Optional | Structured logging |
 | monitoring_system | Optional | Metrics export |
 
@@ -359,6 +360,7 @@ file_trans_system is built on top of the kcenon ecosystem libraries:
   - MSVC 19.29+
 - CMake 3.20+
 - LZ4 library (v1.9.0+)
+- OpenSSL (v3.0+) for TLS and QUIC transport support
 
 ### Ecosystem Dependencies
 
@@ -597,7 +599,7 @@ Contributions are welcome! Please read our contributing guidelines before submit
 ## Roadmap
 
 - [x] **Phase 1**: Client-Server architecture with TCP transfer and LZ4 compression
-- [ ] **Phase 2**: QUIC transport support
+- [x] **Phase 2**: QUIC transport support
 - [ ] **Phase 3**: Encryption layer (AES-256-GCM)
 - [ ] **Phase 4**: Cloud storage integration
 
