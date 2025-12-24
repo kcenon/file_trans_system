@@ -170,12 +170,15 @@ find_file_trans_dependencies()
 ##################################################
 
 if(FILE_TRANS_ENABLE_ENCRYPTION)
-    find_package(OpenSSL REQUIRED)
+    find_package(OpenSSL QUIET)
     if(OpenSSL_FOUND)
         message(STATUS "OpenSSL encryption enabled")
         message(STATUS "  OpenSSL version: ${OPENSSL_VERSION}")
         message(STATUS "  OpenSSL include: ${OPENSSL_INCLUDE_DIR}")
         message(STATUS "  OpenSSL libraries: ${OPENSSL_LIBRARIES}")
+    else()
+        message(STATUS "OpenSSL not found - encryption will be disabled")
+        set(FILE_TRANS_ENABLE_ENCRYPTION OFF)
     endif()
 endif()
 
