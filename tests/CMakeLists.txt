@@ -88,11 +88,8 @@ target_link_libraries(file_trans_unit_tests PRIVATE
     Threads::Threads
 )
 
-# QUIC transport requires OpenSSL for TLS functionality
-find_package(OpenSSL QUIET)
-if(OpenSSL_FOUND)
-    target_link_libraries(file_trans_unit_tests PRIVATE OpenSSL::SSL OpenSSL::Crypto)
-endif()
+# Note: OpenSSL linking is handled by FileTransSystem (PUBLIC) after network_system
+# to ensure proper symbol resolution order on Unix linkers
 
 # On Windows MSVC, static library transitive dependencies are not automatically
 # propagated to executables, and the linker may not include unreferenced symbols
@@ -104,11 +101,6 @@ if(MSVC AND NETWORK_SYSTEM_LIBRARY)
     target_link_options(file_trans_unit_tests PRIVATE
         "/WHOLEARCHIVE:${NETWORK_SYSTEM_LIBRARY}"
     )
-    # network_system depends on OpenSSL for TLS support
-    find_package(OpenSSL QUIET)
-    if(OpenSSL_FOUND)
-        target_link_libraries(file_trans_unit_tests PRIVATE OpenSSL::SSL OpenSSL::Crypto)
-    endif()
 endif()
 
 # Set properties
