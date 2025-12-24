@@ -311,23 +311,168 @@ if (!result.has_value()) {
 - Statistics access is protected by mutex
 - State changes are atomic
 
-## Future: QUIC Transport
+## QUIC Transport
 
-QUIC transport will provide:
-- 0-RTT connection resumption
+The QUIC transport provides advanced features over TCP:
+- 0-RTT connection resumption for reduced latency
 - Multiplexed streams without head-of-line blocking
-- Connection migration
+- Connection migration support
 - Built-in TLS 1.3 encryption
 
+### Basic QUIC Usage
+
 ```cpp
-// Future API
+#include "kcenon/file_transfer/transport/quic_transport.h"
+
+// Create QUIC transport with configuration
 auto config = transport_config_builder::quic()
     .with_0rtt(true)
-    .with_tls_config("cert.pem", "key.pem")
+    .with_max_idle_timeout(std::chrono::seconds{60})
+    .with_tls_config("cert.pem", "key.pem", "ca.pem")
     .build_quic();
 
 auto transport = quic_transport::create(config);
+
+// Connect (session tickets are automatically used if available)
+auto result = transport->connect(endpoint{"example.com", 443});
+if (result.has_value()) {
+    // Check if 0-RTT was used
+    if (transport->used_0rtt()) {
+        std::cout << "Connected with 0-RTT\n";
+    }
+}
 ```
+
+### 0-RTT Session Resumption
+
+0-RTT allows clients to send data immediately upon reconnection without
+waiting for a full handshake. This significantly reduces latency for
+repeat connections.
+
+#### Session Resumption Manager
+
+```cpp
+#include "kcenon/file_transfer/transport/session_resumption.h"
+
+// Create session manager with persistent storage
+session_resumption_config config;
+config.enable_0rtt = true;
+config.store_config.storage_path = "/path/to/sessions.dat";
+config.store_config.max_tickets = 1000;
+config.store_config.default_lifetime = std::chrono::hours{24 * 7};
+
+// Optional callbacks for monitoring
+config.on_0rtt_accepted = [](const std::string& server) {
+    std::cout << "0-RTT accepted: " << server << "\n";
+};
+config.on_0rtt_rejected = [](const std::string& server) {
+    std::cout << "0-RTT rejected: " << server << "\n";
+};
+
+auto manager = session_resumption_manager::create(config);
+
+// Attach to transport
+transport->set_session_manager(manager);
+```
+
+#### Connect with Early Data (0-RTT)
+
+```cpp
+// Prepare early data to send during 0-RTT handshake
+std::vector<std::byte> early_data = /* request data */;
+
+// Connect with 0-RTT - data is sent immediately if possible
+auto result = transport->connect_with_0rtt(
+    endpoint{"example.com", 443},
+    early_data);
+
+if (result.has_value()) {
+    if (transport->is_0rtt_accepted()) {
+        // Early data was accepted by server
+    } else {
+        // 0-RTT was rejected, data will be resent automatically
+    }
+}
+```
+
+#### Session Ticket Storage
+
+Session tickets can be stored in memory or persisted to disk:
+
+```cpp
+// In-memory storage (default)
+auto memory_store = memory_session_store::create();
+
+// File-based storage for persistence across restarts
+session_store_config config;
+config.storage_path = "sessions.dat";
+config.max_tickets = 1000;
+auto file_store = file_session_store::create(config);
+
+// Store a ticket manually
+session_ticket ticket;
+ticket.server_id = "example.com:443";
+ticket.ticket_data = received_ticket_data;
+ticket.expires_at = std::chrono::system_clock::now() + std::chrono::hours{24};
+ticket.max_early_data_size = 16384;
+store->store(ticket);
+
+// Retrieve a ticket
+if (auto ticket = store->retrieve("example.com:443")) {
+    // Use ticket for 0-RTT connection
+}
+```
+
+### 0-RTT Security Considerations
+
+0-RTT data has replay attack vulnerabilities:
+- Only send idempotent requests as early data
+- Server may reject 0-RTT at any time
+- Rejected early data is automatically resent after full handshake
+- Session tickets have limited lifetime
+
+### QUIC-Specific Methods
+
+```cpp
+// Create streams for multiplexing
+auto stream_id = transport->create_stream();
+if (stream_id.has_value()) {
+    transport->send_on_stream(*stream_id, data);
+    transport->close_stream(*stream_id);
+}
+
+// Create unidirectional stream
+auto uni_stream = transport->create_unidirectional_stream();
+
+// Check handshake status
+if (transport->is_handshake_complete()) {
+    auto alpn = transport->alpn_protocol();  // e.g., "file-transfer/1"
+}
+
+// Check 0-RTT status
+bool can_0rtt = transport->is_0rtt_available();
+bool used = transport->used_0rtt();
+bool accepted = transport->is_0rtt_accepted();
+```
+
+### QUIC Configuration Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `enable_0rtt` | bool | true | Enable 0-RTT resumption |
+| `session.storage_path` | string | "" | Path to session ticket file |
+| `session.max_tickets` | size_t | 1000 | Max stored tickets |
+| `session.default_lifetime` | seconds | 7 days | Default ticket lifetime |
+| `max_idle_timeout` | seconds | 30 | Maximum idle timeout |
+| `max_bidi_streams` | uint64_t | 100 | Max bidirectional streams |
+| `max_uni_streams` | uint64_t | 100 | Max unidirectional streams |
+| `initial_max_data` | uint64_t | 10MB | Initial max data |
+| `initial_max_stream_data` | uint64_t | 1MB | Initial max stream data |
+| `alpn` | string | "file-transfer/1" | ALPN protocol identifier |
+| `cert_path` | string | - | TLS certificate path |
+| `key_path` | string | - | TLS private key path |
+| `ca_path` | string | - | CA certificate path |
+| `skip_cert_verify` | bool | false | Skip cert verification (testing only) |
 
 ## Related Documents
 

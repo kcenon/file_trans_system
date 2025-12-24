@@ -99,7 +99,27 @@ struct tcp_transport_config : transport_config {
 };
 
 /**
- * @brief QUIC-specific transport configuration (for future use)
+ * @brief Session resumption configuration for 0-RTT
+ */
+struct session_config {
+    /// Path to session ticket storage file (empty = in-memory only)
+    std::optional<std::string> storage_path;
+
+    /// Maximum number of session tickets to store
+    std::size_t max_tickets = 1000;
+
+    /// Default session ticket lifetime
+    std::chrono::seconds default_lifetime{7 * 24 * 3600};  // 7 days
+
+    /// Minimum remaining lifetime to use a ticket
+    std::chrono::seconds min_remaining_lifetime{60};  // 1 minute
+
+    /// Enable automatic cleanup of expired tickets
+    bool auto_cleanup = true;
+};
+
+/**
+ * @brief QUIC-specific transport configuration
  */
 struct quic_transport_config : transport_config {
     quic_transport_config() {
@@ -108,6 +128,9 @@ struct quic_transport_config : transport_config {
 
     /// Enable 0-RTT connection resumption
     bool enable_0rtt = true;
+
+    /// Session resumption configuration for 0-RTT
+    session_config session;
 
     /// Maximum idle timeout
     std::chrono::seconds max_idle_timeout{30};
@@ -274,6 +297,20 @@ public:
             quic_config_->cert_path = cert_path;
             quic_config_->key_path = key_path;
             quic_config_->ca_path = ca_path;
+        }
+        return *this;
+    }
+
+    auto with_session_storage(const std::string& path) -> transport_config_builder& {
+        if (quic_config_.has_value()) {
+            quic_config_->session.storage_path = path;
+        }
+        return *this;
+    }
+
+    auto with_session_config(const session_config& config) -> transport_config_builder& {
+        if (quic_config_.has_value()) {
+            quic_config_->session = config;
         }
         return *this;
     }
