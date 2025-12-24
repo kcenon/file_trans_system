@@ -531,6 +531,22 @@ cmake
 
 > **경고**: 이 시스템들의 다른 메이저 버전을 혼합하는 것은 **지원되지 않으며** 정의되지 않은 동작을 초래합니다.
 
+### C++20 기능 감지
+
+**thread_system**은 C++20 기능 가용성에 따라 조건부 컴파일을 사용합니다:
+
+| 기능 | 매크로 | 영향 |
+|------|--------|------|
+| `std::jthread` | `USE_STD_JTHREAD` | `thread_base` 클래스 레이아웃 변경 |
+
+**중요**: `file_trans_system` CMakeLists.txt는 `thread_system`과의 ABI 호환성을 보장하기 위해 동일한 기능 감지를 포함합니다. `file_trans_system`을 수동으로 빌드하거나 더 큰 프로젝트의 일부로 빌드하는 경우:
+
+1. 두 프로젝트가 동일한 로직으로 C++20 기능을 감지하는지 확인
+2. 동일한 컴파일러와 플래그로 두 프로젝트를 빌드
+3. 다른 기능 감지 결과를 가진 빌드를 혼합하지 말 것
+
+`thread_worker` 생성자에서 `heap-buffer-overflow`가 발생하면, `thread_system`과 `file_trans_system` 간의 `USE_STD_JTHREAD` 설정 불일치로 인한 ABI 불일치를 나타냅니다.
+
 ---
 
 ## 문제 해결
