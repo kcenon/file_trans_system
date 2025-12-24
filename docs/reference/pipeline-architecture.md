@@ -396,15 +396,37 @@ The server pipeline uses specialized job classes that inherit from `kcenon::thre
 
 ### Shared Pipeline Context
 
-All jobs share a `pipeline_context` for accessing callbacks and statistics:
+All jobs share a `pipeline_context` for accessing thread pool, queues, callbacks, and statistics:
 
 ```cpp
 struct pipeline_context {
-    stage_callback on_stage_complete;      // Called when stage completes
-    error_callback on_error;               // Called on errors
-    completion_callback on_upload_complete; // Called when upload chunk is written
-    std::function<void(const pipeline_chunk&)> on_download_ready; // Called when download chunk is ready
-    pipeline_stats* stats;                 // Pointer to shared statistics
+    // Thread pool for job execution
+    std::shared_ptr<thread::thread_pool> thread_pool;
+
+    // Bounded job queues for each stage (used for backpressure tracking)
+    std::shared_ptr<thread::bounded_job_queue> decompress_queue;
+    std::shared_ptr<thread::bounded_job_queue> verify_queue;
+    std::shared_ptr<thread::bounded_job_queue> write_queue;
+    std::shared_ptr<thread::bounded_job_queue> read_queue;
+    std::shared_ptr<thread::bounded_job_queue> compress_queue;
+    std::shared_ptr<thread::bounded_job_queue> send_queue;
+
+    // Compression engines for workers (round-robin selection by worker_id)
+    std::vector<std::unique_ptr<compression_engine>> compression_engines;
+
+    // Callbacks
+    stage_callback on_stage_complete_cb;      // Called when stage completes
+    error_callback on_error_cb;               // Called on errors
+    completion_callback on_upload_complete_cb; // Called when upload chunk is written
+    std::function<void(const pipeline_chunk&)> on_download_ready_cb;
+
+    // Statistics and state
+    pipeline_stats* statistics;               // Pointer to shared statistics
+    std::atomic<bool>* running;               // Pipeline running state
+
+    // Bandwidth limiters
+    bandwidth_limiter* send_limiter;
+    bandwidth_limiter* recv_limiter;
 };
 ```
 
@@ -417,11 +439,12 @@ Jobs inherit from `pipeline_job_base` which provides:
 
 ```cpp
 // Example: decompress_job implementation
+// Jobs use worker_id to select compression engine via round-robin
 class decompress_job : public pipeline_job_base {
 public:
-    decompress_job(pipeline_chunk chunk,
-                   std::shared_ptr<compression_engine> engine,
-                   std::shared_ptr<pipeline_context> context);
+    decompress_job(std::shared_ptr<pipeline_context> context,
+                   pipeline_chunk chunk,
+                   std::size_t worker_id);
 
     [[nodiscard]] auto do_work() -> common::VoidResult override {
         if (is_cancelled()) {
@@ -429,8 +452,16 @@ public:
                 thread::error_code::operation_canceled, "Decompress job cancelled");
         }
 
+        if (!context_->is_running()) {
+            return common::ok();  // Early exit if pipeline stopped
+        }
+
         if (chunk_.is_compressed) {
-            auto result = engine_->decompress(
+            // Select engine via round-robin based on worker_id
+            auto& engine = context_->compression_engines[
+                worker_id_ % context_->compression_engines.size()];
+
+            auto result = engine->decompress(
                 std::span<const std::byte>(chunk_.data),
                 chunk_.original_size);
 
@@ -449,20 +480,30 @@ public:
 
 private:
     pipeline_chunk chunk_;
-    std::shared_ptr<compression_engine> engine_;
+    std::size_t worker_id_;
 };
 
 // Example: read_job for download pipeline
 class read_job : public pipeline_job_base {
 public:
-    read_job(download_request request, std::shared_ptr<pipeline_context> context);
+    read_job(std::shared_ptr<pipeline_context> context,
+             const transfer_id& id,
+             uint64_t chunk_index,
+             std::filesystem::path file_path,
+             uint64_t offset,
+             std::size_t size);
 
     [[nodiscard]] auto do_work() -> common::VoidResult override {
         // Read file at offset, calculate CRC32, report stage complete
+        // Then submit compress_job to thread pool for next stage
     }
 
 private:
-    download_request request_;
+    transfer_id id_;
+    uint64_t chunk_index_;
+    std::filesystem::path file_path_;
+    uint64_t offset_;
+    std::size_t size_;
     pipeline_chunk chunk_;
 };
 ```
