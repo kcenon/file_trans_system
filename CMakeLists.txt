@@ -224,6 +224,7 @@ set(FILE_TRANS_SOURCES
     src/core/statistics_collector.cpp
     src/server/file_transfer_server.cpp
     src/server/server_pipeline.cpp
+    src/server/pipeline_jobs.cpp
     src/server/quota_manager.cpp
     src/client/file_transfer_client.cpp
     src/transport/tcp_transport.cpp
