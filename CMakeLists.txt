@@ -279,6 +279,7 @@ set(FILE_TRANS_SOURCES
 if(FILE_TRANS_ENABLE_ENCRYPTION AND OpenSSL_FOUND)
     list(APPEND FILE_TRANS_SOURCES
         src/encryption/aes_gcm_engine.cpp
+        src/encryption/key_manager.cpp
     )
 endif()
 

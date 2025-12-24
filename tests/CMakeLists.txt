@@ -76,6 +76,7 @@ set(UNIT_TEST_SOURCES
 if(FILE_TRANS_ENABLE_ENCRYPTION AND OpenSSL_FOUND)
     list(APPEND UNIT_TEST_SOURCES
         unit/encryption/test_aes_gcm_engine.cpp
+        unit/encryption/test_key_manager.cpp
     )
 endif()
 
