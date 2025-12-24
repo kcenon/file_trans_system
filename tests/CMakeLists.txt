@@ -67,6 +67,7 @@ set(UNIT_TEST_SOURCES
     unit/client/test_transfer_control.cpp
     unit/client/test_batch_transfer.cpp
     unit/transport/test_transport_interface.cpp
+    unit/transport/quic_transport_test.cpp
     unit/encryption/test_encryption_interface.cpp
     unit/cloud/test_cloud_interface.cpp
 )
@@ -87,6 +88,9 @@ target_link_libraries(file_trans_unit_tests PRIVATE
     Threads::Threads
 )
 
+# Note: OpenSSL linking is handled by FileTransSystem (PUBLIC) after network_system
+# to ensure proper symbol resolution order on Unix linkers
+
 # On Windows MSVC, static library transitive dependencies are not automatically
 # propagated to executables, and the linker may not include unreferenced symbols
 # from static libraries. We use /WHOLEARCHIVE to force inclusion of all symbols
@@ -97,11 +101,6 @@ if(MSVC AND NETWORK_SYSTEM_LIBRARY)
     target_link_options(file_trans_unit_tests PRIVATE
         "/WHOLEARCHIVE:${NETWORK_SYSTEM_LIBRARY}"
     )
-    # network_system depends on OpenSSL for TLS support
-    find_package(OpenSSL QUIET)
-    if(OpenSSL_FOUND)
-        target_link_libraries(file_trans_unit_tests PRIVATE OpenSSL::SSL OpenSSL::Crypto)
-    endif()
 endif()
 
 # Set properties

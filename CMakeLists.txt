@@ -272,6 +272,7 @@ set(FILE_TRANS_SOURCES
     src/server/quota_manager.cpp
     src/client/file_transfer_client.cpp
     src/transport/tcp_transport.cpp
+    src/transport/quic_transport.cpp
 )
 
 # Add encryption sources if enabled
@@ -319,11 +320,12 @@ if(FILE_TRANS_ENABLE_LZ4 AND LZ4_FOUND)
     endif()
 endif()
 
-# OpenSSL encryption
+# OpenSSL encryption support (compile definitions and includes only)
+# Note: Actual library linking is done after network_system to ensure
+# proper symbol resolution order on Unix linkers (GCC's ld)
 if(FILE_TRANS_ENABLE_ENCRYPTION AND OpenSSL_FOUND)
     target_compile_definitions(FileTransSystem PUBLIC FILE_TRANS_ENABLE_ENCRYPTION)
     target_include_directories(FileTransSystem PRIVATE ${OPENSSL_INCLUDE_DIR})
-    target_link_libraries(FileTransSystem PRIVATE OpenSSL::Crypto)
 endif()
 
 # Ecosystem dependencies
@@ -379,6 +381,14 @@ if(BUILD_WITH_NETWORK_SYSTEM AND NETWORK_SYSTEM_INCLUDE_DIR)
             $<BUILD_INTERFACE:${ASIO_INCLUDE_DIR}>
         )
         target_compile_definitions(FileTransSystem PUBLIC ASIO_STANDALONE ASIO_NO_DEPRECATED)
+    endif()
+
+    # OpenSSL TLS/Crypto libraries must be linked AFTER network_system
+    # network_system's QUIC transport uses OpenSSL for TLS 1.3
+    # Unix linkers (GCC's ld) require libraries to be specified after
+    # the objects that reference them for proper symbol resolution
+    if(FILE_TRANS_ENABLE_ENCRYPTION AND OpenSSL_FOUND)
+        target_link_libraries(FileTransSystem PUBLIC OpenSSL::SSL OpenSSL::Crypto)
     endif()
 endif()
 
