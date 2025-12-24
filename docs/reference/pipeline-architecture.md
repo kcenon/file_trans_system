@@ -704,7 +704,10 @@ void download_write_job::execute() {
 
 Graceful shutdown ensures all in-flight data is processed.
 
-> **Note:** The pipeline destructor always clears all job queues to prevent memory leaks from circular references. Jobs hold `shared_ptr<pipeline_context>`, which holds `shared_ptr<thread_pool>`. Clearing queues before thread pool shutdown breaks this reference cycle.
+> **Note:** The pipeline destructor always clears all job queues and explicitly breaks circular references to prevent memory leaks. The reference cycle is: jobs hold `shared_ptr<pipeline_context>`, which holds `shared_ptr<thread_pool>`, which holds the job queue containing those jobs. The destructor:
+> 1. Clears the thread pool's job queue to remove pending jobs
+> 2. Resets `context->thread_pool` to break the reference cycle
+> 3. Then shuts down the thread pool safely
 
 ```cpp
 // Client shutdown
