@@ -103,8 +103,23 @@ struct server_pipeline::impl {
         running = false;
         stop_queues();
         clear_queues();  // Break circular references by clearing pending jobs
+
         if (thread_pool) {
+            // Clear the thread_pool's job queue to break circular references
+            // This is necessary even if stop() was already called and returns early,
+            // because pending jobs hold shared_ptr<pipeline_context> which holds
+            // shared_ptr<thread_pool>, creating a reference cycle
+            auto queue = thread_pool->get_job_queue();
+            if (queue) {
+                queue->stop();
+                queue->clear();
+            }
             thread_pool->stop(true);
+        }
+
+        // Explicitly break circular reference by clearing context's thread_pool pointer
+        if (context) {
+            context->thread_pool.reset();
         }
     }
 
