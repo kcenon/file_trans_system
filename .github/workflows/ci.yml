@@ -174,8 +174,7 @@ jobs:
         cmake -B network_system/build -S network_system -G Ninja \
           -DCMAKE_BUILD_TYPE=Debug \
           -DBUILD_TESTS=OFF \
-          -DBUILD_SAMPLES=OFF \
-          -DCMAKE_CXX_FLAGS="-DKCENON_WITH_COMMON_SYSTEM=1"
+          -DBUILD_SAMPLES=OFF
         cmake --build network_system/build
 
     - name: Build network_system (Windows)
@@ -185,8 +184,7 @@ jobs:
         cmake -B network_system/build -S network_system -G Ninja `
           -DCMAKE_BUILD_TYPE=Debug `
           -DBUILD_TESTS=OFF `
-          -DBUILD_SAMPLES=OFF `
-          -DCMAKE_CXX_FLAGS="/DKCENON_WITH_COMMON_SYSTEM=1"
+          -DBUILD_SAMPLES=OFF
         cmake --build network_system/build
 
     - name: Configure file_trans_system (Unix)
@@ -197,8 +195,7 @@ jobs:
           -DCMAKE_BUILD_TYPE=Debug \
           -DFILE_TRANS_BUILD_TESTS=ON \
           -DFILE_TRANS_BUILD_EXAMPLES=OFF \
-          -DFILE_TRANS_BUILD_BENCHMARKS=OFF \
-          -DCMAKE_CXX_FLAGS="-DKCENON_WITH_COMMON_SYSTEM=1"
+          -DFILE_TRANS_BUILD_BENCHMARKS=OFF
 
     - name: Configure file_trans_system (Windows)
       if: runner.os == 'Windows'
@@ -210,8 +207,7 @@ jobs:
           -DFILE_TRANS_BUILD_TESTS=ON `
           -DFILE_TRANS_BUILD_EXAMPLES=OFF `
           -DFILE_TRANS_BUILD_BENCHMARKS=OFF `
-          -DFILE_TRANS_ENABLE_LZ4=OFF `
-          -DCMAKE_CXX_FLAGS="/DKCENON_WITH_COMMON_SYSTEM=1"
+          -DFILE_TRANS_ENABLE_LZ4=OFF
 
     - name: Build file_trans_system
       working-directory: file_trans_system

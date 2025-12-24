@@ -63,7 +63,7 @@ jobs:
         cmake --build thread_system/build
         cmake -B logger_system/build -S logger_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF
         cmake --build logger_system/build
-        cmake -B network_system/build -S network_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF -DBUILD_SAMPLES=OFF -DCMAKE_CXX_FLAGS="-DKCENON_WITH_COMMON_SYSTEM=1"
+        cmake -B network_system/build -S network_system -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF -DBUILD_SAMPLES=OFF
         cmake --build network_system/build
 
     - name: Configure CMake with coverage
@@ -75,8 +75,7 @@ jobs:
           -DFILE_TRANS_BUILD_TESTS=ON \
           -DFILE_TRANS_BUILD_EXAMPLES=OFF \
           -DFILE_TRANS_BUILD_BENCHMARKS=OFF \
-          -DFILE_TRANS_ENABLE_COVERAGE=ON \
-          -DCMAKE_CXX_FLAGS="-DKCENON_WITH_COMMON_SYSTEM=1"
+          -DFILE_TRANS_ENABLE_COVERAGE=ON
 
     - name: Build
       working-directory: file_trans_system

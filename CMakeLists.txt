@@ -249,10 +249,11 @@ endif()
 # Ecosystem dependencies
 if(BUILD_WITH_COMMON_SYSTEM AND COMMON_SYSTEM_INCLUDE_DIR)
     target_include_directories(FileTransSystem PUBLIC ${COMMON_SYSTEM_INCLUDE_DIR})
-    # Define both legacy and new unified macros for compatibility
+    # Define legacy macro for compatibility
+    # Note: KCENON_WITH_COMMON_SYSTEM is intentionally NOT defined to maintain
+    # ABI compatibility with network_system which uses its local Result type
     target_compile_definitions(FileTransSystem PUBLIC
         BUILD_WITH_COMMON_SYSTEM
-        KCENON_WITH_COMMON_SYSTEM=1
     )
 endif()
 
