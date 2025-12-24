@@ -702,7 +702,9 @@ void download_write_job::execute() {
 
 ### Pipeline Shutdown
 
-Graceful shutdown ensures all in-flight data is processed:
+Graceful shutdown ensures all in-flight data is processed.
+
+> **Note:** The pipeline destructor always clears all job queues to prevent memory leaks from circular references. Jobs hold `shared_ptr<pipeline_context>`, which holds `shared_ptr<thread_pool>`. Clearing queues before thread pool shutdown breaks this reference cycle.
 
 ```cpp
 // Client shutdown
