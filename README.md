@@ -19,6 +19,7 @@ A high-performance, production-ready C++20 library for reliable file transfer wi
 - **Integrity Verification**: CRC32 per-chunk + SHA-256 per-file verification
 - **Concurrent Transfers**: Support for ≥100 simultaneous client connections
 - **Low Memory Footprint**: Bounded memory usage (~32MB per direction)
+- **Transport Abstraction**: Pluggable transport layer with TCP and QUIC support
 
 ## Quick Start
 
@@ -256,6 +257,36 @@ pipeline_config config{
 // Or use auto-detection
 auto config = pipeline_config::auto_detect();
 ```
+
+### Transport Layer
+
+The library supports pluggable transport layers through the `transport_interface`:
+
+**TCP Transport (Default)**
+```cpp
+auto config = transport_config_builder::tcp()
+    .with_connect_timeout(std::chrono::seconds{10})
+    .with_keep_alive(true)
+    .build_tcp();
+
+auto transport = tcp_transport::create(config);
+```
+
+**QUIC Transport**
+```cpp
+auto config = transport_config_builder::quic()
+    .with_connect_timeout(std::chrono::seconds{10})
+    .with_0rtt(true)  // Enable 0-RTT for faster connection establishment
+    .with_max_idle_timeout(std::chrono::seconds{60})
+    .build_quic();
+
+auto transport = quic_transport::create(config);
+```
+
+| Transport | Advantages | Use Case |
+|-----------|------------|----------|
+| TCP | Mature, widely supported | Default choice, compatibility |
+| QUIC | 0-RTT, multiplexed streams, built-in TLS 1.3 | High-latency networks, mobile clients |
 
 ## Protocol
 

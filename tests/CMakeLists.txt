@@ -67,6 +67,7 @@ set(UNIT_TEST_SOURCES
     unit/client/test_transfer_control.cpp
     unit/client/test_batch_transfer.cpp
     unit/transport/test_transport_interface.cpp
+    unit/transport/quic_transport_test.cpp
     unit/encryption/test_encryption_interface.cpp
     unit/cloud/test_cloud_interface.cpp
 )
@@ -86,6 +87,12 @@ target_link_libraries(file_trans_unit_tests PRIVATE
     GTest::gtest_main
     Threads::Threads
 )
+
+# QUIC transport requires OpenSSL for TLS functionality
+find_package(OpenSSL QUIET)
+if(OpenSSL_FOUND)
+    target_link_libraries(file_trans_unit_tests PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+endif()
 
 # On Windows MSVC, static library transitive dependencies are not automatically
 # propagated to executables, and the linker may not include unreferenced symbols

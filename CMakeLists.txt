@@ -272,6 +272,7 @@ set(FILE_TRANS_SOURCES
     src/server/quota_manager.cpp
     src/client/file_transfer_client.cpp
     src/transport/tcp_transport.cpp
+    src/transport/quic_transport.cpp
 )
 
 # Add encryption sources if enabled
