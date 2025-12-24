@@ -21,16 +21,21 @@
 #include "kcenon/file_transfer/server/server_pipeline.h"
 
 #include <kcenon/thread/core/job.h>
+#include <kcenon/thread/core/bounded_job_queue.h>
+#include <kcenon/thread/core/thread_pool.h>
 #include <kcenon/common/patterns/result.h>
 
+#include <atomic>
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <vector>
 
 namespace kcenon::file_transfer {
 
 // Forward declarations
 class compression_engine;
+class bandwidth_limiter;
 
 /**
  * @brief Shared context for pipeline jobs
@@ -40,20 +45,41 @@ class compression_engine;
  * functionality without tight coupling.
  */
 struct pipeline_context {
+    /// Thread pool for job execution
+    std::shared_ptr<thread::thread_pool> thread_pool;
+
+    /// Bounded job queues for each stage
+    std::shared_ptr<thread::bounded_job_queue> decompress_queue;
+    std::shared_ptr<thread::bounded_job_queue> verify_queue;
+    std::shared_ptr<thread::bounded_job_queue> write_queue;
+    std::shared_ptr<thread::bounded_job_queue> read_queue;
+    std::shared_ptr<thread::bounded_job_queue> compress_queue;
+    std::shared_ptr<thread::bounded_job_queue> send_queue;
+
+    /// Compression engines for workers
+    std::vector<std::unique_ptr<compression_engine>> compression_engines;
+
     /// Stage completion callback
-    stage_callback on_stage_complete;
+    stage_callback on_stage_complete_cb;
 
     /// Error callback
-    error_callback on_error;
+    error_callback on_error_cb;
 
     /// Upload completion callback
-    completion_callback on_upload_complete;
+    completion_callback on_upload_complete_cb;
 
     /// Download ready callback
-    std::function<void(const pipeline_chunk&)> on_download_ready;
+    std::function<void(const pipeline_chunk&)> on_download_ready_cb;
 
     /// Statistics reference
-    pipeline_stats* stats = nullptr;
+    pipeline_stats* statistics = nullptr;
+
+    /// Running flag
+    std::atomic<bool>* running = nullptr;
+
+    /// Bandwidth limiters
+    bandwidth_limiter* send_limiter = nullptr;
+    bandwidth_limiter* recv_limiter = nullptr;
 
     /**
      * @brief Report an error through the error callback
@@ -61,8 +87,8 @@ struct pipeline_context {
      * @param message Error message
      */
     auto report_error(pipeline_stage stage, const std::string& message) const -> void {
-        if (on_error) {
-            on_error(stage, message);
+        if (on_error_cb) {
+            on_error_cb(stage, message);
         }
     }
 
@@ -72,9 +98,16 @@ struct pipeline_context {
      * @param chunk The processed chunk
      */
     auto report_stage_complete(pipeline_stage stage, const pipeline_chunk& chunk) const -> void {
-        if (on_stage_complete) {
-            on_stage_complete(stage, chunk);
+        if (on_stage_complete_cb) {
+            on_stage_complete_cb(stage, chunk);
         }
+    }
+
+    /**
+     * @brief Check if pipeline is still running
+     */
+    [[nodiscard]] auto is_running() const -> bool {
+        return running != nullptr && running->load();
     }
 };
 
@@ -117,20 +150,20 @@ protected:
 /**
  * @brief Job for LZ4 decompression of chunks
  *
- * Decompresses compressed chunks using the provided compression engine.
- * On success, passes the decompressed chunk to the next stage (verify).
+ * Decompresses compressed chunks using the compression engine selected
+ * by worker_id. On success, passes the decompressed chunk to the verify stage.
  */
 class decompress_job : public pipeline_job_base {
 public:
     /**
      * @brief Construct a decompress job
-     * @param chunk Chunk to decompress
-     * @param engine Compression engine for decompression
      * @param context Shared pipeline context
+     * @param chunk Chunk to decompress
+     * @param worker_id Worker ID for selecting compression engine
      */
-    decompress_job(pipeline_chunk chunk,
-                   std::shared_ptr<compression_engine> engine,
-                   std::shared_ptr<pipeline_context> context);
+    decompress_job(std::shared_ptr<pipeline_context> context,
+                   pipeline_chunk chunk,
+                   std::size_t worker_id);
 
     /**
      * @brief Execute the decompression work
@@ -146,7 +179,7 @@ public:
 
 private:
     pipeline_chunk chunk_;
-    std::shared_ptr<compression_engine> engine_;
+    std::size_t worker_id_;
 };
 
 /**
@@ -211,30 +244,28 @@ private:
 };
 
 /**
- * @brief Download request structure for read jobs
- */
-struct download_request {
-    transfer_id id;
-    uint64_t chunk_index;
-    std::filesystem::path file_path;
-    uint64_t offset;
-    std::size_t size;
-};
-
-/**
  * @brief Job for file read operations
  *
  * Reads chunk data from disk. This is the first stage of the download pipeline.
- * On success, passes the read chunk to the next stage (compress).
+ * On success, passes the read chunk to the compress stage.
  */
 class read_job : public pipeline_job_base {
 public:
     /**
      * @brief Construct a read job
-     * @param request Download request with file details
      * @param context Shared pipeline context
+     * @param id Transfer identifier
+     * @param chunk_index Index of chunk to read
+     * @param file_path Path to source file
+     * @param offset Byte offset in file
+     * @param size Number of bytes to read
      */
-    read_job(download_request request, std::shared_ptr<pipeline_context> context);
+    read_job(std::shared_ptr<pipeline_context> context,
+             const transfer_id& id,
+             uint64_t chunk_index,
+             std::filesystem::path file_path,
+             uint64_t offset,
+             std::size_t size);
 
     /**
      * @brief Execute the read work
@@ -249,28 +280,32 @@ public:
     [[nodiscard]] auto get_chunk() const -> const pipeline_chunk&;
 
 private:
-    download_request request_;
+    transfer_id id_;
+    uint64_t chunk_index_;
+    std::filesystem::path file_path_;
+    uint64_t offset_;
+    std::size_t size_;
     pipeline_chunk chunk_;
 };
 
 /**
  * @brief Job for LZ4 compression of chunks
  *
- * Compresses chunks using the provided compression engine when beneficial.
+ * Compresses chunks using the compression engine selected by worker_id.
  * Uses adaptive compression to skip incompressible data.
- * On success, passes the (possibly compressed) chunk to the next stage (send).
+ * On success, passes the (possibly compressed) chunk to the send stage.
  */
 class compress_job : public pipeline_job_base {
 public:
     /**
      * @brief Construct a compress job
-     * @param chunk Chunk to compress
-     * @param engine Compression engine for compression
      * @param context Shared pipeline context
+     * @param chunk Chunk to compress
+     * @param worker_id Worker ID for selecting compression engine
      */
-    compress_job(pipeline_chunk chunk,
-                 std::shared_ptr<compression_engine> engine,
-                 std::shared_ptr<pipeline_context> context);
+    compress_job(std::shared_ptr<pipeline_context> context,
+                 pipeline_chunk chunk,
+                 std::size_t worker_id);
 
     /**
      * @brief Execute the compression work
@@ -286,7 +321,7 @@ public:
 
 private:
     pipeline_chunk chunk_;
-    std::shared_ptr<compression_engine> engine_;
+    std::size_t worker_id_;
 };
 
 /**

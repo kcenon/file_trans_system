@@ -5,6 +5,7 @@
 
 #include "kcenon/file_transfer/server/pipeline_jobs.h"
 
+#include "kcenon/file_transfer/core/bandwidth_limiter.h"
 #include "kcenon/file_transfer/core/checksum.h"
 #include "kcenon/file_transfer/core/compression_engine.h"
 #include "kcenon/file_transfer/core/logging.h"
@@ -36,12 +37,12 @@ auto pipeline_job_base::context() const -> const pipeline_context& {
 // decompress_job implementation
 // ----------------------------------------------------------------------------
 
-decompress_job::decompress_job(pipeline_chunk chunk,
-                               std::shared_ptr<compression_engine> engine,
-                               std::shared_ptr<pipeline_context> context)
+decompress_job::decompress_job(std::shared_ptr<pipeline_context> context,
+                               pipeline_chunk chunk,
+                               std::size_t worker_id)
     : pipeline_job_base("decompress_job", std::move(context))
     , chunk_(std::move(chunk))
-    , engine_(std::move(engine)) {}
+    , worker_id_(worker_id) {}
 
 auto decompress_job::do_work() -> common::VoidResult {
     if (is_cancelled()) {
@@ -50,20 +51,27 @@ auto decompress_job::do_work() -> common::VoidResult {
             "Decompress job cancelled");
     }
 
+    if (!context_->is_running()) {
+        return common::ok();
+    }
+
     FT_LOG_TRACE(log_category::pipeline,
                  "Processing chunk " + std::to_string(chunk_.chunk_index) +
                      " in decompress stage");
 
     if (chunk_.is_compressed) {
-        auto result = engine_->decompress(std::span<const std::byte>(chunk_.data),
-                                          chunk_.original_size);
+        auto& engine = context_->compression_engines[
+            worker_id_ % context_->compression_engines.size()];
+
+        auto result = engine->decompress(std::span<const std::byte>(chunk_.data),
+                                         chunk_.original_size);
 
         if (result.has_value()) {
             chunk_.data = std::move(result.value());
             chunk_.is_compressed = false;
 
-            if (context_->stats) {
-                context_->stats->compression_saved_bytes +=
+            if (context_->statistics) {
+                context_->statistics->compression_saved_bytes +=
                     chunk_.original_size - chunk_.data.size();
             }
 
@@ -83,6 +91,18 @@ auto decompress_job::do_work() -> common::VoidResult {
     }
 
     context_->report_stage_complete(pipeline_stage::decompress, chunk_);
+
+    // Submit to next stage (verify queue)
+    if (context_->verify_queue) {
+        auto verify = std::make_unique<verify_job>(std::move(chunk_), context_);
+        auto enqueue_result = context_->thread_pool->enqueue(std::move(verify));
+        if (!enqueue_result.is_ok()) {
+            return thread::make_error_result(
+                thread::error_code::queue_full,
+                "Failed to enqueue verify job");
+        }
+    }
+
     return common::ok();
 }
 
@@ -104,6 +124,10 @@ auto verify_job::do_work() -> common::VoidResult {
             "Verify job cancelled");
     }
 
+    if (!context_->is_running()) {
+        return common::ok();
+    }
+
     FT_LOG_TRACE(log_category::pipeline,
                  "Verifying chunk " + std::to_string(chunk_.chunk_index));
 
@@ -122,15 +146,27 @@ auto verify_job::do_work() -> common::VoidResult {
             error_msg);
     }
 
-    if (context_->stats) {
-        context_->stats->chunks_processed++;
-        context_->stats->bytes_processed += chunk_.data.size();
+    if (context_->statistics) {
+        context_->statistics->chunks_processed++;
+        context_->statistics->bytes_processed += chunk_.data.size();
     }
 
     FT_LOG_TRACE(log_category::pipeline,
                  "Chunk " + std::to_string(chunk_.chunk_index) + " verified successfully");
 
     context_->report_stage_complete(pipeline_stage::chunk_verify, chunk_);
+
+    // Submit to next stage (write queue)
+    if (context_->write_queue) {
+        auto write = std::make_unique<write_job>(std::move(chunk_), context_);
+        auto enqueue_result = context_->thread_pool->enqueue(std::move(write));
+        if (!enqueue_result.is_ok()) {
+            return thread::make_error_result(
+                thread::error_code::queue_full,
+                "Failed to enqueue write job");
+        }
+    }
+
     return common::ok();
 }
 
@@ -152,6 +188,10 @@ auto write_job::do_work() -> common::VoidResult {
             "Write job cancelled");
     }
 
+    if (!context_->is_running()) {
+        return common::ok();
+    }
+
     FT_LOG_TRACE(log_category::pipeline,
                  "Writing chunk " + std::to_string(chunk_.chunk_index) + " (" +
                      std::to_string(chunk_.data.size()) + " bytes)");
@@ -160,8 +200,8 @@ auto write_job::do_work() -> common::VoidResult {
     // This job prepares the chunk and notifies completion
     context_->report_stage_complete(pipeline_stage::file_write, chunk_);
 
-    if (context_->on_upload_complete) {
-        context_->on_upload_complete(chunk_.id, chunk_.data.size());
+    if (context_->on_upload_complete_cb) {
+        context_->on_upload_complete_cb(chunk_.id, chunk_.data.size());
     }
 
     return common::ok();
@@ -175,8 +215,18 @@ auto write_job::get_chunk() const -> const pipeline_chunk& {
 // read_job implementation
 // ----------------------------------------------------------------------------
 
-read_job::read_job(download_request request, std::shared_ptr<pipeline_context> context)
-    : pipeline_job_base("read_job", std::move(context)), request_(std::move(request)) {}
+read_job::read_job(std::shared_ptr<pipeline_context> context,
+                   const transfer_id& id,
+                   uint64_t chunk_index,
+                   std::filesystem::path file_path,
+                   uint64_t offset,
+                   std::size_t size)
+    : pipeline_job_base("read_job", std::move(context))
+    , id_(id)
+    , chunk_index_(chunk_index)
+    , file_path_(std::move(file_path))
+    , offset_(offset)
+    , size_(size) {}
 
 auto read_job::do_work() -> common::VoidResult {
     if (is_cancelled()) {
@@ -185,13 +235,17 @@ auto read_job::do_work() -> common::VoidResult {
             "Read job cancelled");
     }
 
+    if (!context_->is_running()) {
+        return common::ok();
+    }
+
     FT_LOG_TRACE(log_category::pipeline,
-                 "Reading chunk " + std::to_string(request_.chunk_index) + " from " +
-                     request_.file_path.filename().string());
+                 "Reading chunk " + std::to_string(chunk_index_) + " from " +
+                     file_path_.filename().string());
 
-    std::ifstream file(request_.file_path, std::ios::binary);
+    std::ifstream file(file_path_, std::ios::binary);
     if (!file) {
-        auto error_msg = "Failed to open file: " + request_.file_path.string();
+        auto error_msg = "Failed to open file: " + file_path_.string();
         FT_LOG_ERROR(log_category::pipeline, error_msg);
         context_->report_error(pipeline_stage::file_read, error_msg);
 
@@ -200,9 +254,9 @@ auto read_job::do_work() -> common::VoidResult {
             error_msg);
     }
 
-    file.seekg(static_cast<std::streamoff>(request_.offset));
+    file.seekg(static_cast<std::streamoff>(offset_));
     if (!file) {
-        auto error_msg = "Failed to seek in file: " + request_.file_path.string();
+        auto error_msg = "Failed to seek in file: " + file_path_.string();
         FT_LOG_ERROR(log_category::pipeline, error_msg);
         context_->report_error(pipeline_stage::file_read, error_msg);
 
@@ -211,17 +265,17 @@ auto read_job::do_work() -> common::VoidResult {
             error_msg);
     }
 
-    chunk_.id = request_.id;
-    chunk_.chunk_index = request_.chunk_index;
-    chunk_.data.resize(request_.size);
+    chunk_.id = id_;
+    chunk_.chunk_index = chunk_index_;
+    chunk_.data.resize(size_);
     chunk_.is_compressed = false;
-    chunk_.original_size = request_.size;
+    chunk_.original_size = size_;
 
     file.read(reinterpret_cast<char*>(chunk_.data.data()),
-              static_cast<std::streamsize>(request_.size));
+              static_cast<std::streamsize>(size_));
 
     auto bytes_read = static_cast<std::size_t>(file.gcount());
-    if (bytes_read < request_.size) {
+    if (bytes_read < size_) {
         chunk_.data.resize(bytes_read);
         chunk_.original_size = bytes_read;
     }
@@ -229,10 +283,24 @@ auto read_job::do_work() -> common::VoidResult {
     chunk_.checksum = checksum::crc32(std::span<const std::byte>(chunk_.data));
 
     FT_LOG_TRACE(log_category::pipeline,
-                 "Chunk " + std::to_string(request_.chunk_index) + " read (" +
+                 "Chunk " + std::to_string(chunk_index_) + " read (" +
                      std::to_string(bytes_read) + " bytes)");
 
     context_->report_stage_complete(pipeline_stage::file_read, chunk_);
+
+    // Submit to next stage (compress queue)
+    if (context_->compress_queue) {
+        // Use chunk_index as worker_id for round-robin assignment
+        auto compress = std::make_unique<compress_job>(
+            context_, std::move(chunk_), static_cast<std::size_t>(chunk_index_));
+        auto enqueue_result = context_->thread_pool->enqueue(std::move(compress));
+        if (!enqueue_result.is_ok()) {
+            return thread::make_error_result(
+                thread::error_code::queue_full,
+                "Failed to enqueue compress job");
+        }
+    }
+
     return common::ok();
 }
 
@@ -244,12 +312,12 @@ auto read_job::get_chunk() const -> const pipeline_chunk& {
 // compress_job implementation
 // ----------------------------------------------------------------------------
 
-compress_job::compress_job(pipeline_chunk chunk,
-                           std::shared_ptr<compression_engine> engine,
-                           std::shared_ptr<pipeline_context> context)
+compress_job::compress_job(std::shared_ptr<pipeline_context> context,
+                           pipeline_chunk chunk,
+                           std::size_t worker_id)
     : pipeline_job_base("compress_job", std::move(context))
     , chunk_(std::move(chunk))
-    , engine_(std::move(engine)) {}
+    , worker_id_(worker_id) {}
 
 auto compress_job::do_work() -> common::VoidResult {
     if (is_cancelled()) {
@@ -258,20 +326,27 @@ auto compress_job::do_work() -> common::VoidResult {
             "Compress job cancelled");
     }
 
+    if (!context_->is_running()) {
+        return common::ok();
+    }
+
     FT_LOG_TRACE(log_category::pipeline,
                  "Compressing chunk " + std::to_string(chunk_.chunk_index));
 
+    auto& engine = context_->compression_engines[
+        worker_id_ % context_->compression_engines.size()];
+
     // Check if compression would be beneficial
-    if (engine_->is_compressible(std::span<const std::byte>(chunk_.data))) {
-        auto result = engine_->compress(std::span<const std::byte>(chunk_.data));
+    if (engine->is_compressible(std::span<const std::byte>(chunk_.data))) {
+        auto result = engine->compress(std::span<const std::byte>(chunk_.data));
         if (result.has_value() && result.value().size() < chunk_.data.size()) {
             auto original = chunk_.data.size();
             chunk_.original_size = chunk_.data.size();
             chunk_.data = std::move(result.value());
             chunk_.is_compressed = true;
 
-            if (context_->stats) {
-                context_->stats->compression_saved_bytes +=
+            if (context_->statistics) {
+                context_->statistics->compression_saved_bytes +=
                     chunk_.original_size - chunk_.data.size();
             }
 
@@ -287,6 +362,18 @@ auto compress_job::do_work() -> common::VoidResult {
     }
 
     context_->report_stage_complete(pipeline_stage::compress, chunk_);
+
+    // Submit to next stage (send queue)
+    if (context_->send_queue) {
+        auto send = std::make_unique<send_job>(std::move(chunk_), context_);
+        auto enqueue_result = context_->thread_pool->enqueue(std::move(send));
+        if (!enqueue_result.is_ok()) {
+            return thread::make_error_result(
+                thread::error_code::queue_full,
+                "Failed to enqueue send job");
+        }
+    }
+
     return common::ok();
 }
 
@@ -308,22 +395,28 @@ auto send_job::do_work() -> common::VoidResult {
             "Send job cancelled");
     }
 
+    if (!context_->is_running()) {
+        return common::ok();
+    }
+
     FT_LOG_TRACE(log_category::pipeline,
                  "Sending chunk " + std::to_string(chunk_.chunk_index) + " (" +
                      std::to_string(chunk_.data.size()) + " bytes)");
 
-    // Note: Bandwidth limiting is handled externally
-    // This job prepares the chunk and notifies it's ready for sending
+    // Apply send bandwidth limit if configured
+    if (context_->send_limiter) {
+        context_->send_limiter->acquire(chunk_.data.size());
+    }
 
-    if (context_->stats) {
-        context_->stats->chunks_processed++;
-        context_->stats->bytes_processed += chunk_.data.size();
+    if (context_->statistics) {
+        context_->statistics->chunks_processed++;
+        context_->statistics->bytes_processed += chunk_.data.size();
     }
 
     context_->report_stage_complete(pipeline_stage::network_send, chunk_);
 
-    if (context_->on_download_ready) {
-        context_->on_download_ready(chunk_);
+    if (context_->on_download_ready_cb) {
+        context_->on_download_ready_cb(chunk_);
     }
 
     return common::ok();
