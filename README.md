@@ -329,6 +329,32 @@ file_trans_system is built on top of the kcenon ecosystem libraries:
 - CMake 3.20+
 - LZ4 library (v1.9.0+)
 
+### Ecosystem Dependencies
+
+file_trans_system requires the following sibling repositories to be present:
+
+```
+parent_directory/
+├── file_trans_system/     # This repository
+├── common_system/         # Required: Core utilities
+├── thread_system/         # Required: Thread pool
+├── network_system/        # Required: Network transport
+└── container_system/      # Required: Data containers
+```
+
+Clone all required repositories:
+
+```bash
+# Clone into sibling directories
+git clone https://github.com/kcenon/common_system.git
+git clone https://github.com/kcenon/thread_system.git
+git clone https://github.com/kcenon/network_system.git
+git clone https://github.com/kcenon/container_system.git
+git clone https://github.com/kcenon/file_trans_system.git
+```
+
+> **Note**: The CMake configuration will automatically find these dependencies in sibling directories.
+
 ### Build Commands
 
 ```bash

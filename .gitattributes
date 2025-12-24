@@ -1,0 +1,12 @@
+# Ensure consistent line endings
+* text=auto
+
+# Force LF for patch files (required for git apply)
+*.patch text eol=lf
+
+# Force LF for shell scripts
+*.sh text eol=lf
+
+# Force CRLF for Windows batch files
+*.bat text eol=crlf
+*.cmd text eol=crlf
