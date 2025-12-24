@@ -176,9 +176,13 @@ if (!derived.has_value()) {
     return;
 }
 
-// Create encryptor
-auto encryptor = aes_gcm_encryption::create(aes_gcm_config{});
+// Create encryptor (requires FILE_TRANS_ENABLE_ENCRYPTION)
+#ifdef FILE_TRANS_ENABLE_ENCRYPTION
+#include "kcenon/file_transfer/encryption/aes_gcm_engine.h"
+
+auto encryptor = aes_gcm_engine::create(aes_gcm_config{});
 encryptor->set_key(derived.value());
+#endif
 
 // Encrypt data
 std::vector<std::byte> plaintext = /* ... */;
@@ -213,7 +217,7 @@ if (decrypted.has_value()) {
 ### Streaming Encryption for Large Files
 
 ```cpp
-auto encryptor = aes_gcm_encryption::create(aes_gcm_config{});
+auto encryptor = aes_gcm_engine::create(aes_gcm_config{});
 encryptor->set_key(key);
 
 // Create streaming context
@@ -241,7 +245,7 @@ auto metadata = stream->get_metadata();
 ### Chunk-based Encryption for Transfer
 
 ```cpp
-auto encryptor = aes_gcm_encryption::create(aes_gcm_config{});
+auto encryptor = aes_gcm_engine::create(aes_gcm_config{});
 encryptor->set_key(key);
 
 // Encrypt each file chunk
