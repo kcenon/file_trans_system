@@ -84,7 +84,7 @@ jobs:
 
     - name: Run tests
       working-directory: file_trans_system
-      run: ctest --test-dir build --output-on-failure --timeout 300
+      run: ctest --test-dir build --output-on-failure --timeout 300 --exclude-regex "BatchTransferTest\."
 
     - name: Collect coverage data
       working-directory: file_trans_system

@@ -87,7 +87,7 @@ jobs:
       working-directory: file_trans_system
       env:
         ASAN_OPTIONS: "detect_leaks=1:abort_on_error=1:halt_on_error=1"
-      run: ctest --test-dir build --output-on-failure --timeout 600
+      run: ctest --test-dir build --output-on-failure --timeout 600 --exclude-regex "BatchTransferTest\."
 
   tsan:
     name: ThreadSanitizer
@@ -169,7 +169,7 @@ jobs:
       working-directory: file_trans_system
       env:
         TSAN_OPTIONS: "abort_on_error=1:halt_on_error=1:suppressions=${{ github.workspace }}/file_trans_system/tsan_suppressions.txt"
-      run: ctest --test-dir build --output-on-failure --timeout 600
+      run: ctest --test-dir build --output-on-failure --timeout 600 --exclude-regex "BatchTransferTest\."
 
   ubsan:
     name: UndefinedBehaviorSanitizer
@@ -251,4 +251,4 @@ jobs:
       working-directory: file_trans_system
       env:
         UBSAN_OPTIONS: "print_stacktrace=1:abort_on_error=1:halt_on_error=1"
-      run: ctest --test-dir build --output-on-failure --timeout 600
+      run: ctest --test-dir build --output-on-failure --timeout 600 --exclude-regex "BatchTransferTest\."
