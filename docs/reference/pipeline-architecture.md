@@ -381,57 +381,102 @@ pool->add_workers(pipeline_stage::network, config.network_workers);
 pool->add_workers(pipeline_stage::io_write, config.io_write_workers);
 ```
 
-### Job Implementation
+### Pipeline Job Types
+
+The server pipeline uses specialized job classes that inherit from `kcenon::thread::job` for integration with thread_system's thread_pool:
+
+| Job Type | Stage | Purpose |
+|----------|-------|---------|
+| `decompress_job` | decompress | LZ4 decompression of compressed chunks |
+| `verify_job` | chunk_verify | CRC32 checksum verification |
+| `write_job` | file_write | Write chunk data to disk |
+| `read_job` | file_read | Read chunk data from disk |
+| `compress_job` | compress | LZ4 compression (adaptive) |
+| `send_job` | network_send | Prepare chunks for network transmission |
+
+### Shared Pipeline Context
+
+All jobs share a `pipeline_context` for accessing callbacks and statistics:
 
 ```cpp
-template<pipeline_stage Stage>
-class pipeline_job : public thread::typed_job_t<pipeline_stage> {
-public:
-    explicit pipeline_job(const std::string& name)
-        : typed_job_t<pipeline_stage>(Stage, name) {}
-
-    virtual void execute() = 0;
+struct pipeline_context {
+    stage_callback on_stage_complete;      // Called when stage completes
+    error_callback on_error;               // Called on errors
+    completion_callback on_upload_complete; // Called when upload chunk is written
+    std::function<void(const pipeline_chunk&)> on_download_ready; // Called when download chunk is ready
+    pipeline_stats* stats;                 // Pointer to shared statistics
 };
+```
 
-// Upload compression job (client side)
-class upload_compress_job : public pipeline_job<pipeline_stage::compression> {
+### Job Implementation
+
+Jobs inherit from `pipeline_job_base` which provides:
+- Access to shared `pipeline_context`
+- Cancellation token handling via `cancellation_token_`
+- Common `is_cancelled()` check
+
+```cpp
+// Example: decompress_job implementation
+class decompress_job : public pipeline_job_base {
 public:
-    upload_compress_job(chunk c, bounded_queue<chunk>& output_queue, transfer_id tid)
-        : pipeline_job("upload_compress_job")
-        , chunk_(std::move(c))
-        , output_queue_(output_queue)
-        , transfer_id_(tid)
-    {}
+    decompress_job(pipeline_chunk chunk,
+                   std::shared_ptr<compression_engine> engine,
+                   std::shared_ptr<pipeline_context> context);
 
-    void execute() override {
-        auto compressed = compressor_.compress(chunk_);
-        output_queue_.push(std::move(compressed));
+    [[nodiscard]] auto do_work() -> common::VoidResult override {
+        if (is_cancelled()) {
+            return thread::make_error_result(
+                thread::error_code::operation_canceled, "Decompress job cancelled");
+        }
+
+        if (chunk_.is_compressed) {
+            auto result = engine_->decompress(
+                std::span<const std::byte>(chunk_.data),
+                chunk_.original_size);
+
+            if (result.has_value()) {
+                chunk_.data = std::move(result.value());
+                chunk_.is_compressed = false;
+            } else {
+                context_->report_error(pipeline_stage::decompress, result.error().message);
+                return thread::make_error_result(thread::error_code::job_execution_failed, ...);
+            }
+        }
+
+        context_->report_stage_complete(pipeline_stage::decompress, chunk_);
+        return common::ok();
     }
 
 private:
-    chunk chunk_;
-    bounded_queue<chunk>& output_queue_;
-    transfer_id transfer_id_;
+    pipeline_chunk chunk_;
+    std::shared_ptr<compression_engine> engine_;
 };
 
-// Download write job (client side)
-class download_write_job : public pipeline_job<pipeline_stage::io_write> {
+// Example: read_job for download pipeline
+class read_job : public pipeline_job_base {
 public:
-    download_write_job(chunk c, std::filesystem::path output_path, file_writer& writer)
-        : pipeline_job("download_write_job")
-        , chunk_(std::move(c))
-        , output_path_(std::move(output_path))
-        , writer_(writer)
-    {}
+    read_job(download_request request, std::shared_ptr<pipeline_context> context);
 
-    void execute() override {
-        writer_.write_at(chunk_.header.offset, chunk_.data);
+    [[nodiscard]] auto do_work() -> common::VoidResult override {
+        // Read file at offset, calculate CRC32, report stage complete
     }
 
 private:
-    chunk chunk_;
-    std::filesystem::path output_path_;
-    file_writer& writer_;
+    download_request request_;
+    pipeline_chunk chunk_;
+};
+```
+
+### Job Chaining
+
+Jobs can be chained together by submitting the next job when the current one completes:
+
+```cpp
+// In pipeline orchestration:
+auto on_decompress_complete = [this](pipeline_stage, const pipeline_chunk& chunk) {
+    // Submit next stage job
+    auto verify = std::make_shared<verify_job>(chunk, context_);
+    thread_pool_->submit(std::move(verify));
 };
 ```
 
@@ -765,5 +810,5 @@ config.compression_workers *= 2;
 
 ---
 
-*Version: 0.2.0*
-*Last updated: 2025-12-11*
+*Version: 0.2.1*
+*Last updated: 2025-12-25*
