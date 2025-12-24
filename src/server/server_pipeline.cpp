@@ -97,9 +97,14 @@ struct server_pipeline::impl {
     }
 
     ~impl() {
-        if (running) {
-            running = false;
-            stop_queues();
+        // Always cleanup regardless of running state to prevent memory leaks
+        // from circular references (jobs hold shared_ptr<pipeline_context>,
+        // which holds shared_ptr<thread_pool>)
+        running = false;
+        stop_queues();
+        clear_queues();  // Break circular references by clearing pending jobs
+        if (thread_pool) {
+            thread_pool->stop(true);
         }
     }
 
