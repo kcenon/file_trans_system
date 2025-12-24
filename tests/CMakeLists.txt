@@ -49,7 +49,7 @@ message(STATUS "Google Test ${googletest_VERSION} configured via FetchContent")
 # Unit Tests
 ##################################################
 
-add_executable(file_trans_unit_tests
+set(UNIT_TEST_SOURCES
     unit/test_version.cpp
     unit/core/test_checksum.cpp
     unit/core/test_chunk_splitter.cpp
@@ -68,6 +68,15 @@ add_executable(file_trans_unit_tests
     unit/transport/test_transport_interface.cpp
     unit/encryption/test_encryption_interface.cpp
 )
+
+# Add encryption tests if enabled
+if(FILE_TRANS_ENABLE_ENCRYPTION AND OpenSSL_FOUND)
+    list(APPEND UNIT_TEST_SOURCES
+        unit/encryption/test_aes_gcm_engine.cpp
+    )
+endif()
+
+add_executable(file_trans_unit_tests ${UNIT_TEST_SOURCES})
 
 target_link_libraries(file_trans_unit_tests PRIVATE
     FileTransSystem
