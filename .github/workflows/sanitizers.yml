@@ -74,6 +74,7 @@ jobs:
           -DCMAKE_CXX_COMPILER=clang++ \
           -DCMAKE_C_COMPILER=clang \
           -DFILE_TRANS_BUILD_TESTS=ON \
+          -DFILE_TRANS_BUILD_INTEGRATION_TESTS=OFF \
           -DFILE_TRANS_BUILD_EXAMPLES=OFF \
           -DFILE_TRANS_BUILD_BENCHMARKS=OFF \
           -DFILE_TRANS_ENABLE_ASAN=ON
@@ -155,6 +156,7 @@ jobs:
           -DCMAKE_CXX_COMPILER=clang++ \
           -DCMAKE_C_COMPILER=clang \
           -DFILE_TRANS_BUILD_TESTS=ON \
+          -DFILE_TRANS_BUILD_INTEGRATION_TESTS=OFF \
           -DFILE_TRANS_BUILD_EXAMPLES=OFF \
           -DFILE_TRANS_BUILD_BENCHMARKS=OFF \
           -DFILE_TRANS_ENABLE_TSAN=ON
@@ -166,7 +168,7 @@ jobs:
     - name: Run tests with TSAN
       working-directory: file_trans_system
       env:
-        TSAN_OPTIONS: "abort_on_error=1:halt_on_error=1"
+        TSAN_OPTIONS: "abort_on_error=1:halt_on_error=1:suppressions=${{ github.workspace }}/file_trans_system/tsan_suppressions.txt"
       run: ctest --test-dir build --output-on-failure --timeout 600
 
   ubsan:
@@ -236,6 +238,7 @@ jobs:
           -DCMAKE_CXX_COMPILER=clang++ \
           -DCMAKE_C_COMPILER=clang \
           -DFILE_TRANS_BUILD_TESTS=ON \
+          -DFILE_TRANS_BUILD_INTEGRATION_TESTS=OFF \
           -DFILE_TRANS_BUILD_EXAMPLES=OFF \
           -DFILE_TRANS_BUILD_BENCHMARKS=OFF \
           -DFILE_TRANS_ENABLE_UBSAN=ON

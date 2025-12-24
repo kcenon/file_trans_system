@@ -194,6 +194,7 @@ jobs:
         cmake -B build -G Ninja \
           -DCMAKE_BUILD_TYPE=Debug \
           -DFILE_TRANS_BUILD_TESTS=ON \
+          -DFILE_TRANS_BUILD_INTEGRATION_TESTS=OFF \
           -DFILE_TRANS_BUILD_EXAMPLES=OFF \
           -DFILE_TRANS_BUILD_BENCHMARKS=OFF
 
@@ -205,6 +206,7 @@ jobs:
         cmake -B build -G Ninja `
           -DCMAKE_BUILD_TYPE=Debug `
           -DFILE_TRANS_BUILD_TESTS=ON `
+          -DFILE_TRANS_BUILD_INTEGRATION_TESTS=OFF `
           -DFILE_TRANS_BUILD_EXAMPLES=OFF `
           -DFILE_TRANS_BUILD_BENCHMARKS=OFF `
           -DFILE_TRANS_ENABLE_LZ4=OFF
