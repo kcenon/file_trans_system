@@ -283,10 +283,45 @@ auto config = transport_config_builder::quic()
 auto transport = quic_transport::create(config);
 ```
 
+**QUIC Connection Migration**
+
+QUIC transport supports seamless connection migration when network conditions change (e.g., WiFi to cellular):
+
+```cpp
+// Enable automatic network monitoring
+auto result = transport->start_network_monitoring();
+
+// Set migration event callback
+transport->on_migration_event([](const migration_event_data& event) {
+    std::cout << "Migration event: " << to_string(event.event) << "\n";
+    if (event.event == migration_event::migration_completed) {
+        std::cout << "Migrated to: " << event.new_path->to_string() << "\n";
+    }
+});
+
+// Manual migration to specific network path
+network_path new_path;
+new_path.local_address = "192.168.1.100";
+new_path.remote_address = "10.0.0.1";
+new_path.remote_port = 443;
+
+auto migration_result = transport->migrate_to(new_path);
+if (migration_result && migration_result->success) {
+    std::cout << "Migration completed in "
+              << migration_result->duration.count() << "ms\n";
+}
+
+// Get migration statistics
+auto stats = transport->get_migration_statistics();
+std::cout << "Total migrations: " << stats.total_migrations
+          << ", Success rate: "
+          << (stats.successful_migrations * 100 / stats.total_migrations) << "%\n";
+```
+
 | Transport | Advantages | Use Case |
 |-----------|------------|----------|
 | TCP | Mature, widely supported | Default choice, compatibility |
-| QUIC | 0-RTT, multiplexed streams, built-in TLS 1.3 | High-latency networks, mobile clients |
+| QUIC | 0-RTT, multiplexed streams, built-in TLS 1.3, connection migration | High-latency networks, mobile clients |
 
 ## Protocol
 
