@@ -192,12 +192,72 @@ multipart_config multipart;
 multipart.enabled = true;
 multipart.threshold = 100 * 1024 * 1024;     // 100MB
 multipart.part_size = 10 * 1024 * 1024;       // 10MB
-multipart.max_concurrent_parts = 8;
+multipart.max_concurrent_parts = 8;           // Parallel upload threads
+multipart.part_timeout = std::chrono::milliseconds{300000};  // 5 minutes
+multipart.max_part_retries = 3;               // Retry failed parts
 
 auto config = cloud_config_builder::s3()
     .with_bucket("my-bucket")
     .with_multipart(multipart)
     .build_s3();
+```
+
+#### Features
+
+- **Automatic Part Management**: Files are automatically split into parts based on `part_size`
+- **Concurrent Uploads**: Multiple parts are uploaded simultaneously based on `max_concurrent_parts`
+- **Retry with Exponential Backoff**: Failed part uploads are retried with exponential backoff and jitter
+- **Abort on Failure**: If any part fails after all retries, the multipart upload is automatically aborted
+- **Progress Tracking**: Per-part progress is tracked and aggregated for overall progress reporting
+
+#### S3 Multipart Upload Workflow
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                   create_upload_stream()                 │
+└─────────────────────────┬───────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────┐
+│           POST /{bucket}/{key}?uploads                   │
+│           (Initiate Multipart Upload)                    │
+│           Returns: UploadId                              │
+└─────────────────────────┬───────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────┐
+│                    write() loop                          │
+│  ┌────────────────────────────────────────────────────┐ │
+│  │   PUT /{bucket}/{key}?partNumber=N&uploadId=X      │ │
+│  │   (Upload Part - concurrent)                       │ │
+│  │   Returns: ETag                                    │ │
+│  └────────────────────────────────────────────────────┘ │
+└─────────────────────────┬───────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────┐
+│                    finalize()                            │
+│           POST /{bucket}/{key}?uploadId=X               │
+│           (Complete Multipart Upload)                    │
+│           Body: <Part><PartNumber>N</PartNumber>        │
+│                 <ETag>etag</ETag></Part>                │
+└─────────────────────────────────────────────────────────┘
+```
+
+#### Error Handling
+
+```cpp
+// Abort on failure (automatic)
+auto stream = storage->create_upload_stream("large-file.bin");
+for (const auto& chunk : chunks) {
+    auto result = stream->write(chunk);
+    if (!result.has_value()) {
+        // Abort is called automatically on destruction
+        // or explicitly:
+        stream->abort();
+        break;
+    }
+}
 ```
 
 ## Error Handling
