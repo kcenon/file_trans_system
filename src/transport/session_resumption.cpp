@@ -156,53 +156,53 @@ constexpr uint32_t MAGIC = 0x51534553;  // "SESQ" in little endian
 constexpr uint32_t VERSION = 1;
 
 template <typename T>
-void write_value(std::ostream& os, const T& value) {
+void serialize_value(std::ostream& os, const T& value) {
     os.write(reinterpret_cast<const char*>(&value), sizeof(T));
 }
 
 template <typename T>
-auto read_value(std::istream& is) -> T {
+auto deserialize_value(std::istream& is) -> T {
     T value{};
     is.read(reinterpret_cast<char*>(&value), sizeof(T));
     return value;
 }
 
-void write_string(std::ostream& os, const std::string& str) {
+void serialize_string(std::ostream& os, const std::string& str) {
     auto len = static_cast<uint32_t>(str.size());
-    write_value(os, len);
+    serialize_value(os, len);
     os.write(str.data(), static_cast<std::streamsize>(len));
 }
 
-auto read_string(std::istream& is) -> std::string {
-    auto len = read_value<uint32_t>(is);
+auto deserialize_string(std::istream& is) -> std::string {
+    auto len = deserialize_value<uint32_t>(is);
     std::string str(len, '\0');
     is.read(str.data(), static_cast<std::streamsize>(len));
     return str;
 }
 
-void write_bytes(std::ostream& os, const std::vector<uint8_t>& data) {
+void serialize_bytes(std::ostream& os, const std::vector<uint8_t>& data) {
     auto len = static_cast<uint32_t>(data.size());
-    write_value(os, len);
+    serialize_value(os, len);
     os.write(reinterpret_cast<const char*>(data.data()),
              static_cast<std::streamsize>(len));
 }
 
-auto read_bytes(std::istream& is) -> std::vector<uint8_t> {
-    auto len = read_value<uint32_t>(is);
+auto deserialize_bytes(std::istream& is) -> std::vector<uint8_t> {
+    auto len = deserialize_value<uint32_t>(is);
     std::vector<uint8_t> data(len);
     is.read(reinterpret_cast<char*>(data.data()),
             static_cast<std::streamsize>(len));
     return data;
 }
 
-void write_timepoint(std::ostream& os, std::chrono::system_clock::time_point tp) {
+void serialize_timepoint(std::ostream& os, std::chrono::system_clock::time_point tp) {
     auto duration = tp.time_since_epoch();
     auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
-    write_value(os, millis);
+    serialize_value(os, millis);
 }
 
-auto read_timepoint(std::istream& is) -> std::chrono::system_clock::time_point {
-    auto millis = read_value<int64_t>(is);
+auto deserialize_timepoint(std::istream& is) -> std::chrono::system_clock::time_point {
+    auto millis = deserialize_value<int64_t>(is);
     return std::chrono::system_clock::time_point{std::chrono::milliseconds{millis}};
 }
 
@@ -372,18 +372,18 @@ auto file_session_store::save_internal() -> result<void> {
                 "Failed to open session file for writing"}};
         }
 
-        write_value(file, MAGIC);
-        write_value(file, VERSION);
-        write_value(file, static_cast<uint32_t>(tickets_.size()));
+        serialize_value(file, MAGIC);
+        serialize_value(file, VERSION);
+        serialize_value(file, static_cast<uint32_t>(tickets_.size()));
 
         for (const auto& [server_id, ticket] : tickets_) {
-            write_string(file, ticket.server_id);
-            write_bytes(file, ticket.ticket_data);
-            write_timepoint(file, ticket.issued_at);
-            write_timepoint(file, ticket.expires_at);
-            write_value(file, ticket.max_early_data_size);
-            write_string(file, ticket.alpn_protocol);
-            write_string(file, ticket.server_name);
+            serialize_string(file, ticket.server_id);
+            serialize_bytes(file, ticket.ticket_data);
+            serialize_timepoint(file, ticket.issued_at);
+            serialize_timepoint(file, ticket.expires_at);
+            serialize_value(file, ticket.max_early_data_size);
+            serialize_string(file, ticket.alpn_protocol);
+            serialize_string(file, ticket.server_name);
         }
 
         dirty_ = false;
@@ -410,13 +410,13 @@ auto file_session_store::load_internal() -> result<void> {
                 "Failed to open session file for reading"}};
         }
 
-        auto magic = read_value<uint32_t>(file);
+        auto magic = deserialize_value<uint32_t>(file);
         if (magic != MAGIC) {
             return unexpected{error{error_code::invalid_configuration,
                 "Invalid session file format"}};
         }
 
-        auto version = read_value<uint32_t>(file);
+        auto version = deserialize_value<uint32_t>(file);
         if (version != VERSION) {
             FT_LOG_WARN(log_category::transfer,
                 "Session file version mismatch, clearing tickets");
@@ -424,18 +424,18 @@ auto file_session_store::load_internal() -> result<void> {
             return {};
         }
 
-        auto count = read_value<uint32_t>(file);
+        auto count = deserialize_value<uint32_t>(file);
         tickets_.clear();
 
         for (uint32_t i = 0; i < count && file.good(); ++i) {
             session_ticket ticket;
-            ticket.server_id = read_string(file);
-            ticket.ticket_data = read_bytes(file);
-            ticket.issued_at = read_timepoint(file);
-            ticket.expires_at = read_timepoint(file);
-            ticket.max_early_data_size = read_value<uint32_t>(file);
-            ticket.alpn_protocol = read_string(file);
-            ticket.server_name = read_string(file);
+            ticket.server_id = deserialize_string(file);
+            ticket.ticket_data = deserialize_bytes(file);
+            ticket.issued_at = deserialize_timepoint(file);
+            ticket.expires_at = deserialize_timepoint(file);
+            ticket.max_early_data_size = deserialize_value<uint32_t>(file);
+            ticket.alpn_protocol = deserialize_string(file);
+            ticket.server_name = deserialize_string(file);
 
             if (ticket.is_valid()) {
                 tickets_[ticket.server_id] = std::move(ticket);

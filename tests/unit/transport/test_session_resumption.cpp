@@ -214,7 +214,8 @@ TEST_F(SessionResumptionManagerTest, StoreAndRetrieveTicket) {
 
 TEST_F(SessionResumptionManagerTest, RemoveTicket) {
     std::vector<uint8_t> ticket_data = {0x01, 0x02};
-    manager_->store_ticket("example.com", 443, ticket_data);
+    manager_->store_ticket("example.com", 443, ticket_data,
+        std::chrono::hours{24}, 16384);
 
     EXPECT_TRUE(manager_->can_use_0rtt("example.com", 443));
     manager_->remove_ticket("example.com", 443);
