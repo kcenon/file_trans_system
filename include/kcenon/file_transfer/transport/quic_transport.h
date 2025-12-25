@@ -259,7 +259,8 @@ public:
      * @brief Get current migration state
      * @return Current migration state
      */
-    [[nodiscard]] auto get_migration_state() const -> enum migration_state;
+    [[nodiscard]] auto get_migration_state() const
+        -> ::kcenon::file_transfer::migration_state;
 
     /**
      * @brief Get migration statistics
