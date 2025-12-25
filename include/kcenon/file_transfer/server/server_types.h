@@ -10,11 +10,17 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
 namespace kcenon::file_transfer {
+
+// Forward declarations
+class storage_backend;
+class cloud_storage_interface;
+class credential_provider;
 
 /**
  * @brief Server state enumeration
@@ -76,6 +82,56 @@ struct client_info {
 };
 
 /**
+ * @brief Storage mode for server
+ */
+enum class storage_mode {
+    local_only,      ///< Use only local filesystem storage
+    cloud_only,      ///< Use only cloud storage (no local caching)
+    hybrid           ///< Use both local and cloud storage
+};
+
+/**
+ * @brief Convert storage_mode to string
+ */
+[[nodiscard]] constexpr auto to_string(storage_mode mode) -> const char* {
+    switch (mode) {
+        case storage_mode::local_only: return "local_only";
+        case storage_mode::cloud_only: return "cloud_only";
+        case storage_mode::hybrid: return "hybrid";
+        default: return "unknown";
+    }
+}
+
+/**
+ * @brief Cloud storage configuration for server
+ */
+struct cloud_storage_server_config {
+    /// Cloud storage instance (S3, Azure, GCS)
+    std::shared_ptr<cloud_storage_interface> cloud_storage;
+
+    /// Credential provider for cloud storage
+    std::shared_ptr<credential_provider> credentials;
+
+    /// Key prefix for all objects (e.g., "uploads/")
+    std::string key_prefix;
+
+    /// Enable write replication to cloud
+    bool replicate_writes = true;
+
+    /// Enable read fallback from cloud
+    bool fallback_reads = true;
+
+    /// Enable local caching for cloud objects
+    bool enable_cache = true;
+
+    /// Maximum cache size in bytes (default: 1GB)
+    uint64_t max_cache_size = 1ULL * 1024 * 1024 * 1024;
+
+    /// Cache directory (if empty, uses temp directory)
+    std::filesystem::path cache_directory;
+};
+
+/**
  * @brief Server configuration
  */
 struct server_config {
@@ -91,8 +147,24 @@ struct server_config {
     std::string encryption_password;       ///< Password for key derivation
     std::vector<std::byte> encryption_key; ///< Raw encryption key
 
+    // Cloud storage settings
+    storage_mode storage = storage_mode::local_only;  ///< Storage mode
+    std::optional<cloud_storage_server_config> cloud_config;  ///< Cloud configuration
+
     [[nodiscard]] auto is_valid() const -> bool {
-        return !storage_directory.empty() && max_connections > 0;
+        if (max_connections == 0) return false;
+
+        switch (storage) {
+            case storage_mode::local_only:
+                return !storage_directory.empty();
+            case storage_mode::cloud_only:
+                return cloud_config.has_value() && cloud_config->cloud_storage != nullptr;
+            case storage_mode::hybrid:
+                return !storage_directory.empty() &&
+                       cloud_config.has_value() &&
+                       cloud_config->cloud_storage != nullptr;
+        }
+        return false;
     }
 };
 

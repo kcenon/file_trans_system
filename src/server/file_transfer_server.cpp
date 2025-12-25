@@ -122,19 +122,118 @@ auto file_transfer_server::builder::with_chunk_size(std::size_t size) -> builder
     return *this;
 }
 
+auto file_transfer_server::builder::with_storage_mode(storage_mode mode) -> builder& {
+    config_.storage = mode;
+    return *this;
+}
+
+auto file_transfer_server::builder::with_cloud_storage(
+    std::shared_ptr<cloud_storage_interface> cloud_storage) -> builder& {
+    if (!config_.cloud_config) {
+        config_.cloud_config = cloud_storage_server_config{};
+    }
+    config_.cloud_config->cloud_storage = std::move(cloud_storage);
+    return *this;
+}
+
+auto file_transfer_server::builder::with_cloud_credentials(
+    std::shared_ptr<credential_provider> credentials) -> builder& {
+    if (!config_.cloud_config) {
+        config_.cloud_config = cloud_storage_server_config{};
+    }
+    config_.cloud_config->credentials = std::move(credentials);
+    return *this;
+}
+
+auto file_transfer_server::builder::with_cloud_key_prefix(std::string prefix) -> builder& {
+    if (!config_.cloud_config) {
+        config_.cloud_config = cloud_storage_server_config{};
+    }
+    config_.cloud_config->key_prefix = std::move(prefix);
+    return *this;
+}
+
+auto file_transfer_server::builder::with_cloud_replication(bool enable) -> builder& {
+    if (!config_.cloud_config) {
+        config_.cloud_config = cloud_storage_server_config{};
+    }
+    config_.cloud_config->replicate_writes = enable;
+    return *this;
+}
+
+auto file_transfer_server::builder::with_cloud_fallback(bool enable) -> builder& {
+    if (!config_.cloud_config) {
+        config_.cloud_config = cloud_storage_server_config{};
+    }
+    config_.cloud_config->fallback_reads = enable;
+    return *this;
+}
+
+auto file_transfer_server::builder::with_cloud_cache(bool enable, uint64_t max_size) -> builder& {
+    if (!config_.cloud_config) {
+        config_.cloud_config = cloud_storage_server_config{};
+    }
+    config_.cloud_config->enable_cache = enable;
+    config_.cloud_config->max_cache_size = max_size;
+    return *this;
+}
+
+auto file_transfer_server::builder::with_cloud_cache_directory(
+    const std::filesystem::path& dir) -> builder& {
+    if (!config_.cloud_config) {
+        config_.cloud_config = cloud_storage_server_config{};
+    }
+    config_.cloud_config->cache_directory = dir;
+    return *this;
+}
+
 auto file_transfer_server::builder::build() -> result<file_transfer_server> {
-    if (config_.storage_directory.empty()) {
-        return unexpected{error{error_code::invalid_configuration,
-                               "storage_directory is required"}};
+    // Validate configuration based on storage mode
+    if (!config_.is_valid()) {
+        switch (config_.storage) {
+            case storage_mode::local_only:
+                return unexpected{error{error_code::invalid_configuration,
+                                       "storage_directory is required for local storage"}};
+            case storage_mode::cloud_only:
+                return unexpected{error{error_code::invalid_configuration,
+                                       "cloud_storage is required for cloud-only mode"}};
+            case storage_mode::hybrid:
+                return unexpected{error{error_code::invalid_configuration,
+                                       "both storage_directory and cloud_storage are required for hybrid mode"}};
+        }
     }
 
-    // Create storage directory if it doesn't exist
-    std::error_code ec;
-    if (!std::filesystem::exists(config_.storage_directory)) {
-        std::filesystem::create_directories(config_.storage_directory, ec);
-        if (ec) {
-            return unexpected{error{error_code::file_access_denied,
-                                   "Failed to create storage directory: " + ec.message()}};
+    // Create storage directory if needed (for local or hybrid modes)
+    if (config_.storage != storage_mode::cloud_only &&
+        !config_.storage_directory.empty()) {
+        std::error_code ec;
+        if (!std::filesystem::exists(config_.storage_directory)) {
+            std::filesystem::create_directories(config_.storage_directory, ec);
+            if (ec) {
+                return unexpected{error{error_code::file_access_denied,
+                                       "Failed to create storage directory: " + ec.message()}};
+            }
+        }
+    }
+
+    // Create cache directory for cloud storage if needed
+    if ((config_.storage == storage_mode::cloud_only ||
+         config_.storage == storage_mode::hybrid) &&
+        config_.cloud_config && config_.cloud_config->enable_cache) {
+
+        auto cache_dir = config_.cloud_config->cache_directory;
+        if (cache_dir.empty()) {
+            cache_dir = std::filesystem::temp_directory_path() / "file_trans_cache";
+            config_.cloud_config->cache_directory = cache_dir;
+        }
+
+        std::error_code ec;
+        if (!std::filesystem::exists(cache_dir)) {
+            std::filesystem::create_directories(cache_dir, ec);
+            if (ec) {
+                return unexpected{error{error_code::file_access_denied,
+                                       "Failed to create cache directory: " + ec.message()}};
+            }
         }
     }
 
