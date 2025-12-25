@@ -325,9 +325,9 @@ TEST_F(GcsStorageOperationTest, UploadData) {
     EXPECT_TRUE(result.has_value());
 
     if (result.has_value()) {
-        EXPECT_EQ(result->key, "test/hello.txt");
-        EXPECT_EQ(result->bytes_uploaded, data.size());
-        EXPECT_FALSE(result->etag.empty());
+        EXPECT_EQ(result.value().key, "test/hello.txt");
+        EXPECT_EQ(result.value().bytes_uploaded, data.size());
+        EXPECT_FALSE(result.value().etag.empty());
     }
 }
 
@@ -348,7 +348,7 @@ TEST_F(GcsStorageOperationTest, UploadDataWithOptions) {
 TEST_F(GcsStorageOperationTest, OperationsRequireConnection) {
     ASSERT_NE(storage_, nullptr);
 
-    storage_->disconnect();
+    (void)storage_->disconnect();
     EXPECT_FALSE(storage_->is_connected());
 
     std::vector<std::byte> data = {std::byte{0x00}};
@@ -374,8 +374,8 @@ TEST_F(GcsStorageOperationTest, GetMetadata) {
     EXPECT_TRUE(result.has_value());
 
     if (result.has_value()) {
-        EXPECT_EQ(result->key, "test/file.txt");
-        EXPECT_EQ(result->content_type, "text/plain");
+        EXPECT_EQ(result.value().key, "test/file.txt");
+        EXPECT_EQ(result.value().content_type, "text/plain");
     }
 }
 
@@ -387,7 +387,7 @@ TEST_F(GcsStorageOperationTest, DeleteObject) {
     EXPECT_TRUE(result.has_value());
 
     if (result.has_value()) {
-        EXPECT_EQ(result->key, "test/to_delete.txt");
+        EXPECT_EQ(result.value().key, "test/to_delete.txt");
     }
 }
 
@@ -401,7 +401,7 @@ TEST_F(GcsStorageOperationTest, DeleteMultipleObjects) {
     EXPECT_TRUE(result.has_value());
 
     if (result.has_value()) {
-        EXPECT_EQ(result->size(), keys.size());
+        EXPECT_EQ(result.value().size(), keys.size());
     }
 }
 
@@ -425,7 +425,7 @@ TEST_F(GcsStorageOperationTest, CopyObject) {
     EXPECT_TRUE(result.has_value());
 
     if (result.has_value()) {
-        EXPECT_EQ(result->key, "dest/file.txt");
+        EXPECT_EQ(result.value().key, "dest/file.txt");
     }
 }
 
@@ -600,8 +600,8 @@ TEST_F(GcsStorageStreamTest, FinalizeUploadStream) {
     EXPECT_TRUE(result.has_value());
 
     if (result.has_value()) {
-        EXPECT_EQ(result->key, "test/streamed.txt");
-        EXPECT_EQ(result->bytes_uploaded, 500);
+        EXPECT_EQ(result.value().key, "test/streamed.txt");
+        EXPECT_EQ(result.value().bytes_uploaded, 500);
     }
 }
 
@@ -693,7 +693,7 @@ TEST_F(GcsSpecificFeatureTest, ComposeObjects) {
     EXPECT_TRUE(result.has_value());
 
     if (result.has_value()) {
-        EXPECT_EQ(result->key, "composed.txt");
+        EXPECT_EQ(result.value().key, "composed.txt");
     }
 }
 
@@ -733,9 +733,9 @@ TEST_F(GcsSpecificFeatureTest, GenerateSignedUrl) {
     EXPECT_TRUE(result.has_value());
 
     if (result.has_value()) {
-        EXPECT_TRUE(result->find("https://") != std::string::npos ||
-                    result->find("http://") != std::string::npos);
-        EXPECT_TRUE(result->find("my-bucket") != std::string::npos);
+        EXPECT_TRUE(result.value().find("https://") != std::string::npos ||
+                    result.value().find("http://") != std::string::npos);
+        EXPECT_TRUE(result.value().find("my-bucket") != std::string::npos);
     }
 }
 #endif
