@@ -552,5 +552,141 @@ TEST_F(ServerPipelineTest, PipelineChunkFromCompressedChunk) {
     EXPECT_EQ(pc.original_size, 200);
 }
 
+// Encryption pipeline tests
+
+TEST_F(ServerPipelineTest, PipelineStageToStringWithEncryption) {
+    EXPECT_STREQ(to_string(pipeline_stage::decrypt), "decrypt");
+    EXPECT_STREQ(to_string(pipeline_stage::encrypt), "encrypt");
+}
+
+TEST_F(ServerPipelineTest, EncryptionConfigDefaults) {
+    pipeline_config config;
+    EXPECT_FALSE(config.enable_encryption);
+    EXPECT_EQ(config.encryption_workers, 2);
+}
+
+TEST_F(ServerPipelineTest, CreateWithEncryptionEnabled) {
+    pipeline_config config;
+    config.io_workers = 1;
+    config.compression_workers = 1;
+    config.network_workers = 1;
+    config.encryption_workers = 1;
+    config.enable_encryption = true;
+    config.queue_size = 16;
+
+    auto result = server_pipeline::create(config);
+    EXPECT_TRUE(result.has_value());
+
+    auto& pipeline = result.value();
+    EXPECT_TRUE(pipeline.config().enable_encryption);
+    EXPECT_EQ(pipeline.config().encryption_workers, 1);
+}
+
+TEST_F(ServerPipelineTest, EncryptionStatsInitialState) {
+    pipeline_config config;
+    config.enable_encryption = true;
+
+    auto pipeline_result = server_pipeline::create(config);
+    ASSERT_TRUE(pipeline_result.has_value());
+    auto& pipeline = pipeline_result.value();
+
+    auto& stats = pipeline.stats();
+    EXPECT_EQ(stats.chunks_encrypted, 0);
+    EXPECT_EQ(stats.chunks_decrypted, 0);
+    EXPECT_EQ(stats.encryption_bytes, 0);
+}
+
+TEST_F(ServerPipelineTest, EncryptionStatsReset) {
+    pipeline_config config;
+    config.enable_encryption = true;
+
+    auto pipeline_result = server_pipeline::create(config);
+    ASSERT_TRUE(pipeline_result.has_value());
+    auto& pipeline = pipeline_result.value();
+
+    // Manually set stats
+    const_cast<pipeline_stats&>(pipeline.stats()).chunks_encrypted = 10;
+    const_cast<pipeline_stats&>(pipeline.stats()).chunks_decrypted = 5;
+    const_cast<pipeline_stats&>(pipeline.stats()).encryption_bytes = 1000;
+
+    pipeline.reset_stats();
+
+    EXPECT_EQ(pipeline.stats().chunks_encrypted, 0);
+    EXPECT_EQ(pipeline.stats().chunks_decrypted, 0);
+    EXPECT_EQ(pipeline.stats().encryption_bytes, 0);
+}
+
+TEST_F(ServerPipelineTest, QueueSizesIncludeEncryption) {
+    pipeline_config config;
+    config.enable_encryption = true;
+
+    auto pipeline_result = server_pipeline::create(config);
+    ASSERT_TRUE(pipeline_result.has_value());
+    auto& pipeline = pipeline_result.value();
+
+    auto sizes = pipeline.queue_sizes();
+
+    // Should include decrypt and encrypt queues
+    bool has_decrypt = false;
+    bool has_encrypt = false;
+    for (const auto& [stage, size] : sizes) {
+        if (stage == pipeline_stage::decrypt) has_decrypt = true;
+        if (stage == pipeline_stage::encrypt) has_encrypt = true;
+    }
+
+    EXPECT_TRUE(has_decrypt);
+    EXPECT_TRUE(has_encrypt);
+}
+
+TEST_F(ServerPipelineTest, PipelineChunkEncryptionFields) {
+    pipeline_chunk chunk;
+    chunk.id = transfer_id::generate();
+    chunk.chunk_index = 0;
+    chunk.data = std::vector<std::byte>(100, std::byte{0x42});
+
+    // Default values
+    EXPECT_FALSE(chunk.is_encrypted);
+    EXPECT_EQ(chunk.enc_metadata, nullptr);
+
+    // Set encryption
+    chunk.is_encrypted = true;
+    EXPECT_TRUE(chunk.is_encrypted);
+}
+
+TEST_F(ServerPipelineTest, PipelineChunkCopyWithEncryption) {
+    pipeline_chunk original;
+    original.id = transfer_id::generate();
+    original.chunk_index = 42;
+    original.data = std::vector<std::byte>(100, std::byte{0x42});
+    original.checksum = 0x12345678;
+    original.is_compressed = false;
+    original.original_size = 100;
+    original.is_encrypted = true;
+
+    // Copy constructor
+    pipeline_chunk copy(original);
+
+    EXPECT_EQ(copy.id, original.id);
+    EXPECT_EQ(copy.chunk_index, original.chunk_index);
+    EXPECT_EQ(copy.data.size(), original.data.size());
+    EXPECT_EQ(copy.checksum, original.checksum);
+    EXPECT_EQ(copy.is_encrypted, original.is_encrypted);
+}
+
+TEST_F(ServerPipelineTest, PipelineChunkMoveConstruction) {
+    pipeline_chunk original;
+    original.id = transfer_id::generate();
+    original.chunk_index = 42;
+    original.data = std::vector<std::byte>(100, std::byte{0x42});
+    original.is_encrypted = true;
+
+    auto orig_id = original.id;
+    pipeline_chunk moved(std::move(original));
+
+    EXPECT_EQ(moved.id, orig_id);
+    EXPECT_EQ(moved.chunk_index, 42);
+    EXPECT_TRUE(moved.is_encrypted);
+}
+
 }  // namespace
 }  // namespace kcenon::file_transfer

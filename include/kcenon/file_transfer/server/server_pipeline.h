@@ -3,8 +3,10 @@
  * @brief Server-side upload/download pipeline implementation
  *
  * Implements multi-stage pipelines for efficient file transfer processing:
- * - Upload pipeline: network_recv -> decompress -> chunk_verify -> file_write
- * - Download pipeline: file_read -> compress -> network_send
+ * - Upload pipeline: network_recv -> decompress -> decrypt -> chunk_verify -> file_write
+ * - Download pipeline: file_read -> encrypt -> compress -> network_send
+ *
+ * Encryption stages are optional and can be enabled via pipeline_config.
  */
 
 #ifndef KCENON_FILE_TRANSFER_SERVER_SERVER_PIPELINE_H
@@ -20,6 +22,7 @@
 
 #include "kcenon/file_transfer/core/chunk_types.h"
 #include "kcenon/file_transfer/core/types.h"
+#include "kcenon/file_transfer/encryption/encryption_config.h"
 
 namespace kcenon::file_transfer {
 
@@ -29,10 +32,12 @@ namespace kcenon::file_transfer {
 enum class pipeline_stage {
     network_recv,   ///< Network receive stage
     decompress,     ///< LZ4 decompression stage
+    decrypt,        ///< Decryption stage (upload pipeline)
     chunk_verify,   ///< CRC32 verification stage
     file_write,     ///< Disk write stage
     network_send,   ///< Network send stage
     file_read,      ///< Disk read stage
+    encrypt,        ///< Encryption stage (download pipeline)
     compress        ///< LZ4 compression stage
 };
 
@@ -43,10 +48,12 @@ enum class pipeline_stage {
     switch (stage) {
         case pipeline_stage::network_recv: return "network_recv";
         case pipeline_stage::decompress: return "decompress";
+        case pipeline_stage::decrypt: return "decrypt";
         case pipeline_stage::chunk_verify: return "chunk_verify";
         case pipeline_stage::file_write: return "file_write";
         case pipeline_stage::network_send: return "network_send";
         case pipeline_stage::file_read: return "file_read";
+        case pipeline_stage::encrypt: return "encrypt";
         case pipeline_stage::compress: return "compress";
         default: return "unknown";
     }
@@ -59,12 +66,16 @@ struct pipeline_config {
     std::size_t io_workers = 2;            ///< Number of I/O worker threads
     std::size_t compression_workers = 4;   ///< Number of compression worker threads
     std::size_t network_workers = 2;       ///< Number of network worker threads
+    std::size_t encryption_workers = 2;    ///< Number of encryption worker threads
     std::size_t queue_size = 64;           ///< Maximum queue size per stage
     std::size_t max_memory_per_transfer = 32 * 1024 * 1024;  ///< ~32MB per transfer
 
     // Bandwidth limiting (0 = unlimited)
     std::size_t send_bandwidth_limit = 0;  ///< Max bytes/sec for network send (0 = unlimited)
     std::size_t recv_bandwidth_limit = 0;  ///< Max bytes/sec for network recv (0 = unlimited)
+
+    // Encryption settings
+    bool enable_encryption = false;        ///< Enable encryption for transfers
 
     /**
      * @brief Auto-detect optimal configuration based on hardware
@@ -89,6 +100,11 @@ struct pipeline_stats {
     std::atomic<uint64_t> stalls_detected{0};
     std::atomic<uint64_t> backpressure_events{0};
 
+    // Encryption statistics
+    std::atomic<uint64_t> chunks_encrypted{0};
+    std::atomic<uint64_t> chunks_decrypted{0};
+    std::atomic<uint64_t> encryption_bytes{0};
+
     /**
      * @brief Reset all statistics
      */
@@ -106,8 +122,20 @@ struct pipeline_chunk {
     bool is_compressed;
     std::size_t original_size;
 
+    // Encryption state
+    bool is_encrypted = false;
+    std::unique_ptr<encryption_metadata> enc_metadata;
+
     pipeline_chunk() = default;
     explicit pipeline_chunk(const chunk& c);
+
+    // Copy constructor (deep copy of metadata)
+    pipeline_chunk(const pipeline_chunk& other);
+    auto operator=(const pipeline_chunk& other) -> pipeline_chunk&;
+
+    // Move constructor and assignment
+    pipeline_chunk(pipeline_chunk&&) noexcept = default;
+    auto operator=(pipeline_chunk&&) noexcept -> pipeline_chunk& = default;
 };
 
 /**

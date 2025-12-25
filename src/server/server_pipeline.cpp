@@ -10,6 +10,11 @@
 #include "kcenon/file_transfer/core/checksum.h"
 #include "kcenon/file_transfer/core/compression_engine.h"
 #include "kcenon/file_transfer/core/logging.h"
+#include "kcenon/file_transfer/encryption/encryption_config.h"
+
+#ifdef FILE_TRANS_ENABLE_ENCRYPTION
+#include "kcenon/file_transfer/encryption/aes_gcm_engine.h"
+#endif
 
 #include <kcenon/thread/core/thread_pool.h>
 #include <kcenon/thread/core/bounded_job_queue.h>
@@ -70,6 +75,25 @@ struct server_pipeline::impl {
         for (std::size_t i = 0; i < total_compression_workers; ++i) {
             context->compression_engines.push_back(
                 std::make_unique<compression_engine>(compression_level::fast));
+        }
+
+        // Create encryption queues if encryption is enabled
+        if (config.enable_encryption) {
+            context->decrypt_queue = std::make_shared<thread::bounded_job_queue>(
+                config.queue_size, 0.8);
+            context->encrypt_queue = std::make_shared<thread::bounded_job_queue>(
+                config.queue_size, 0.8);
+            context->encryption_enabled = true;
+
+#ifdef FILE_TRANS_ENABLE_ENCRYPTION
+            // Create encryption engines for workers
+            auto total_encryption_workers = config.encryption_workers;
+            context->encryption_engines.reserve(total_encryption_workers);
+            for (std::size_t i = 0; i < total_encryption_workers; ++i) {
+                context->encryption_engines.push_back(
+                    aes_gcm_engine::create(aes_gcm_config{}));
+            }
+#endif
         }
 
         // Set statistics pointer in context
@@ -144,6 +168,12 @@ struct server_pipeline::impl {
         context->read_queue->stop();
         context->compress_queue->stop();
         context->send_queue->stop();
+        if (context->decrypt_queue) {
+            context->decrypt_queue->stop();
+        }
+        if (context->encrypt_queue) {
+            context->encrypt_queue->stop();
+        }
     }
 
     auto clear_queues() -> void {
@@ -153,6 +183,12 @@ struct server_pipeline::impl {
         context->read_queue->clear();
         context->compress_queue->clear();
         context->send_queue->clear();
+        if (context->decrypt_queue) {
+            context->decrypt_queue->clear();
+        }
+        if (context->encrypt_queue) {
+            context->encrypt_queue->clear();
+        }
     }
 
     auto get_worker_id() -> std::size_t {
@@ -195,6 +231,9 @@ auto pipeline_stats::reset() -> void {
     compression_saved_bytes = 0;
     stalls_detected = 0;
     backpressure_events = 0;
+    chunks_encrypted = 0;
+    chunks_decrypted = 0;
+    encryption_bytes = 0;
 }
 
 // pipeline_chunk implementation
@@ -204,7 +243,37 @@ pipeline_chunk::pipeline_chunk(const chunk& c)
     , data(c.data)
     , checksum(c.header.checksum)
     , is_compressed(c.is_compressed())
-    , original_size(c.header.original_size) {}
+    , original_size(c.header.original_size)
+    , is_encrypted(false)
+    , enc_metadata(nullptr) {}
+
+pipeline_chunk::pipeline_chunk(const pipeline_chunk& other)
+    : id(other.id)
+    , chunk_index(other.chunk_index)
+    , data(other.data)
+    , checksum(other.checksum)
+    , is_compressed(other.is_compressed)
+    , original_size(other.original_size)
+    , is_encrypted(other.is_encrypted)
+    , enc_metadata(other.enc_metadata
+        ? std::make_unique<encryption_metadata>(*other.enc_metadata)
+        : nullptr) {}
+
+auto pipeline_chunk::operator=(const pipeline_chunk& other) -> pipeline_chunk& {
+    if (this != &other) {
+        id = other.id;
+        chunk_index = other.chunk_index;
+        data = other.data;
+        checksum = other.checksum;
+        is_compressed = other.is_compressed;
+        original_size = other.original_size;
+        is_encrypted = other.is_encrypted;
+        enc_metadata = other.enc_metadata
+            ? std::make_unique<encryption_metadata>(*other.enc_metadata)
+            : nullptr;
+    }
+    return *this;
+}
 
 // stage_result implementation
 auto stage_result::ok(pipeline_chunk c) -> stage_result {
@@ -390,7 +459,7 @@ auto server_pipeline::reset_stats() -> void {
 
 auto server_pipeline::queue_sizes() const
     -> std::vector<std::pair<pipeline_stage, std::size_t>> {
-    return {
+    std::vector<std::pair<pipeline_stage, std::size_t>> sizes = {
         {pipeline_stage::decompress, impl_->context->decompress_queue->size()},
         {pipeline_stage::chunk_verify, impl_->context->verify_queue->size()},
         {pipeline_stage::file_write, impl_->context->write_queue->size()},
@@ -398,6 +467,16 @@ auto server_pipeline::queue_sizes() const
         {pipeline_stage::compress, impl_->context->compress_queue->size()},
         {pipeline_stage::network_send, impl_->context->send_queue->size()},
     };
+
+    // Add encryption queue sizes if enabled
+    if (impl_->context->decrypt_queue) {
+        sizes.push_back({pipeline_stage::decrypt, impl_->context->decrypt_queue->size()});
+    }
+    if (impl_->context->encrypt_queue) {
+        sizes.push_back({pipeline_stage::encrypt, impl_->context->encrypt_queue->size()});
+    }
+
+    return sizes;
 }
 
 auto server_pipeline::config() const -> const pipeline_config& {

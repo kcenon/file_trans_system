@@ -95,6 +95,11 @@ struct client_config {
     std::optional<std::size_t> download_bandwidth_limit;
     std::chrono::milliseconds connect_timeout{30000};
     progress_config progress;              ///< Progress callback configuration
+
+    // Encryption settings
+    bool enable_encryption = false;        ///< Enable encryption for transfers
+    std::string encryption_password;       ///< Password for key derivation (if set)
+    std::vector<std::byte> encryption_key; ///< Raw encryption key (32 bytes for AES-256)
 };
 
 /**
@@ -103,6 +108,7 @@ struct client_config {
 struct upload_options {
     std::optional<compression_mode> compression;
     bool overwrite = false;
+    std::optional<bool> encrypt;  ///< Override encryption setting for this transfer
 };
 
 /**
@@ -111,6 +117,7 @@ struct upload_options {
 struct download_options {
     bool overwrite = false;
     bool verify_hash = true;
+    std::optional<bool> encrypt;  ///< Override encryption setting for this transfer
 };
 
 /**

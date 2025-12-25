@@ -12,6 +12,7 @@ A high-performance, production-ready C++20 library for reliable file transfer wi
 - **Bidirectional Transfer**: Upload files to server, download files from server
 - **High Performance**: ≥500 MB/s LAN throughput with multi-stage pipeline processing
 - **LZ4 Compression**: Adaptive compression with ~400 MB/s speed and ~2.1:1 ratio
+- **AES-256-GCM Encryption**: End-to-end encryption with authenticated encryption
 - **Resume Support**: Automatic checkpoint-based transfer resume on interruption
 - **Auto-Reconnect**: Automatic reconnection with exponential backoff policy
 - **File Management**: List, upload, and download files from server storage
@@ -78,9 +79,11 @@ int main() {
 using namespace kcenon::file_transfer;
 
 int main() {
-    // Create client with auto-reconnect
+    // Create client with auto-reconnect and encryption
     auto client = file_transfer_client::builder()
         .with_compression(compression_mode::adaptive)
+        .with_encryption(true)  // Enable end-to-end encryption
+        .with_encryption_password("secure_password")  // Or use with_encryption_key()
         .with_auto_reconnect(true)
         .with_reconnect_policy(reconnect_policy{
             .initial_delay = std::chrono::seconds(1),
@@ -167,26 +170,29 @@ file_trans_system uses a **Client-Server architecture** with **multi-stage pipel
 Each transfer uses a multi-stage pipeline for maximum throughput:
 
 ```
-┌────────────────────────────────────────────────────────────────────────┐
-│                       UPLOAD PIPELINE (Client)                         │
-│                                                                        │
-│  File Read  ──▶  Chunk     ──▶   LZ4      ──▶  Network                │
-│   Stage         Assembly       Compress        Send                    │
-│  (io_read)   (chunk_process) (compression)   (network)                │
-│                                                                        │
-│  ┌──────────────────────────────────────────────────────────────────┐ │
-│  │              typed_thread_pool<pipeline_stage>                   │ │
-│  │   [IO Workers] [Compute Workers] [Network Workers]               │ │
-│  └──────────────────────────────────────────────────────────────────┘ │
-└────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                       UPLOAD PIPELINE (Server-side)                          │
+│                                                                              │
+│  Network   ──▶   LZ4       ──▶  AES-GCM   ──▶  Verify  ──▶  File Write     │
+│  Receive       Decompress      Decrypt*       CRC32         Stage           │
+│ (network)    (compression)   (encryption)   (verify)      (io_write)        │
+│                                                                              │
+│  * Decryption only when encryption is enabled                               │
+│  ┌────────────────────────────────────────────────────────────────────────┐ │
+│  │              typed_thread_pool<pipeline_stage>                         │ │
+│  │   [IO Workers] [Compute Workers] [Encryption Workers] [Network Workers]│ │
+│  └────────────────────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────────────────┘
 
-┌────────────────────────────────────────────────────────────────────────┐
-│                      DOWNLOAD PIPELINE (Client)                        │
-│                                                                        │
-│  Network   ──▶   LZ4       ──▶  Chunk     ──▶  File Write             │
-│  Receive       Decompress      Reassembly      Stage                  │
-│ (network)    (compression)  (chunk_process)  (io_write)               │
-└────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                       DOWNLOAD PIPELINE (Server-side)                        │
+│                                                                              │
+│  File Read  ──▶  AES-GCM   ──▶   LZ4      ──▶  Network Send                 │
+│   Stage          Encrypt*       Compress                                     │
+│  (io_read)    (encryption)   (compression)   (network)                       │
+│                                                                              │
+│  * Encryption only when encryption is enabled                               │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 Each stage runs independently with bounded queues providing backpressure, ensuring:
@@ -225,6 +231,9 @@ auto server = file_transfer_server::builder()
 auto client = file_transfer_client::builder()
     .with_compression(compression_mode::adaptive)   // Default
     .with_chunk_size(256 * 1024)                   // 256KB (default)
+    .with_encryption(true)                         // Enable AES-256-GCM encryption
+    .with_encryption_password("secure_password")   // Derive key from password
+    // .with_encryption_key(raw_key)               // Or use raw 32-byte key
     .with_auto_reconnect(true)                     // Enable auto-reconnect
     .with_reconnect_policy(reconnect_policy{
         .initial_delay = 1s,
@@ -235,6 +244,40 @@ auto client = file_transfer_client::builder()
     .with_pipeline_config(pipeline_config::auto_detect())
     .build();
 ```
+
+### Encryption Configuration
+
+The library supports AES-256-GCM authenticated encryption for end-to-end secure transfers:
+
+```cpp
+// Client with password-based key derivation
+auto client = file_transfer_client::builder()
+    .with_encryption(true)
+    .with_encryption_password("secure_password")  // Uses Argon2id for key derivation
+    .build();
+
+// Client with raw encryption key
+std::array<std::byte, 32> key;  // 256-bit key
+// ... populate key from secure source ...
+auto client = file_transfer_client::builder()
+    .with_encryption_key(key)
+    .build();
+
+// Server with encryption enabled
+server_config config;
+config.enable_encryption = true;           // Allow encrypted transfers
+config.require_encryption = true;          // Require encryption (reject unencrypted)
+config.encryption_password = "shared_key"; // Shared key with clients
+```
+
+| Feature | Description |
+|---------|-------------|
+| Algorithm | AES-256-GCM (authenticated encryption) |
+| Key Size | 256-bit |
+| IV Size | 96-bit (NIST recommended) |
+| Tag Size | 128-bit authentication tag |
+| Key Derivation | Argon2id (password) or raw key |
+| Per-chunk Encryption | Each chunk encrypted independently |
 
 ### Compression Modes
 
@@ -635,7 +678,7 @@ Contributions are welcome! Please read our contributing guidelines before submit
 
 - [x] **Phase 1**: Client-Server architecture with TCP transfer and LZ4 compression
 - [x] **Phase 2**: QUIC transport support
-- [ ] **Phase 3**: Encryption layer (AES-256-GCM)
+- [x] **Phase 3**: Encryption layer (AES-256-GCM)
 - [ ] **Phase 4**: Cloud storage integration
 
 ---

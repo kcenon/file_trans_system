@@ -450,6 +450,25 @@ auto file_transfer_client::builder::with_progress_config(
     return *this;
 }
 
+auto file_transfer_client::builder::with_encryption(bool enable) -> builder& {
+    config_.enable_encryption = enable;
+    return *this;
+}
+
+auto file_transfer_client::builder::with_encryption_password(
+    const std::string& password) -> builder& {
+    config_.encryption_password = password;
+    config_.enable_encryption = true;
+    return *this;
+}
+
+auto file_transfer_client::builder::with_encryption_key(
+    std::span<const std::byte> key) -> builder& {
+    config_.encryption_key.assign(key.begin(), key.end());
+    config_.enable_encryption = true;
+    return *this;
+}
+
 auto file_transfer_client::builder::build() -> result<file_transfer_client> {
     if (config_.chunk_size < 64 * 1024 || config_.chunk_size > 1024 * 1024) {
         return unexpected{error{error_code::invalid_chunk_size,

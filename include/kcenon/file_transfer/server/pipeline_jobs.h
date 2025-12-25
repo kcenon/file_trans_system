@@ -36,6 +36,7 @@ namespace kcenon::file_transfer {
 // Forward declarations
 class compression_engine;
 class bandwidth_limiter;
+class encryption_interface;
 
 /**
  * @brief Shared context for pipeline jobs
@@ -58,6 +59,18 @@ struct pipeline_context {
 
     /// Compression engines for workers
     std::vector<std::unique_ptr<compression_engine>> compression_engines;
+
+    /// Encryption engines for workers (one per encryption worker)
+    std::vector<std::shared_ptr<encryption_interface>> encryption_engines;
+
+    /// Decrypt queue (for upload pipeline: decompress -> decrypt -> verify)
+    std::shared_ptr<thread::bounded_job_queue> decrypt_queue;
+
+    /// Encrypt queue (for download pipeline: read -> encrypt -> compress)
+    std::shared_ptr<thread::bounded_job_queue> encrypt_queue;
+
+    /// Whether encryption is enabled for this pipeline
+    bool encryption_enabled = false;
 
     /// Stage completion callback
     stage_callback on_stage_complete_cb;
@@ -353,6 +366,76 @@ public:
 
 private:
     pipeline_chunk chunk_;
+};
+
+/**
+ * @brief Job for encrypting chunks
+ *
+ * Encrypts chunks using the configured encryption engine.
+ * Used in download pipeline: file_read -> encrypt -> compress -> network_send
+ */
+class encrypt_job : public pipeline_job_base {
+public:
+    /**
+     * @brief Construct an encrypt job
+     * @param context Shared pipeline context
+     * @param chunk Chunk to encrypt
+     * @param worker_id Worker ID for selecting encryption engine
+     */
+    encrypt_job(std::shared_ptr<pipeline_context> context,
+                pipeline_chunk chunk,
+                std::size_t worker_id);
+
+    /**
+     * @brief Execute the encryption work
+     * @return Success or error result
+     */
+    [[nodiscard]] auto do_work() -> kcenon::common::VoidResult override;
+
+    /**
+     * @brief Get the processed chunk after job completion
+     * @return The encrypted chunk
+     */
+    [[nodiscard]] auto get_chunk() const -> const pipeline_chunk&;
+
+private:
+    pipeline_chunk chunk_;
+    std::size_t worker_id_;
+};
+
+/**
+ * @brief Job for decrypting chunks
+ *
+ * Decrypts chunks using the configured encryption engine.
+ * Used in upload pipeline: network_recv -> decompress -> decrypt -> verify -> write
+ */
+class decrypt_job : public pipeline_job_base {
+public:
+    /**
+     * @brief Construct a decrypt job
+     * @param context Shared pipeline context
+     * @param chunk Chunk to decrypt
+     * @param worker_id Worker ID for selecting encryption engine
+     */
+    decrypt_job(std::shared_ptr<pipeline_context> context,
+                pipeline_chunk chunk,
+                std::size_t worker_id);
+
+    /**
+     * @brief Execute the decryption work
+     * @return Success or error result
+     */
+    [[nodiscard]] auto do_work() -> kcenon::common::VoidResult override;
+
+    /**
+     * @brief Get the processed chunk after job completion
+     * @return The decrypted chunk
+     */
+    [[nodiscard]] auto get_chunk() const -> const pipeline_chunk&;
+
+private:
+    pipeline_chunk chunk_;
+    std::size_t worker_id_;
 };
 
 }  // namespace kcenon::file_transfer
