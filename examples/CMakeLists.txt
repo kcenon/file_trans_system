@@ -224,7 +224,7 @@ set_target_properties(quota_management PROPERTIES
 )
 
 ##################################################
-# Cloud Storage Examples (require encryption for AWS Signature V4)
+# Cloud Storage Examples (require encryption for signing)
 ##################################################
 
 if(FILE_TRANS_ENABLE_ENCRYPTION AND OpenSSL_FOUND)
@@ -238,6 +238,20 @@ if(FILE_TRANS_ENABLE_ENCRYPTION AND OpenSSL_FOUND)
     )
 
     set_target_properties(s3_example PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+    )
+
+    add_executable(azure_blob_example
+        cloud/azure_blob_example.cpp
+    )
+
+    target_link_libraries(azure_blob_example
+        PRIVATE
+            kcenon::file_transfer
+    )
+
+    set_target_properties(azure_blob_example PROPERTIES
         CXX_STANDARD 20
         CXX_STANDARD_REQUIRED ON
     )
@@ -265,7 +279,7 @@ set(EXAMPLE_TARGETS
 )
 
 if(FILE_TRANS_ENABLE_ENCRYPTION AND OpenSSL_FOUND)
-    list(APPEND EXAMPLE_TARGETS s3_example)
+    list(APPEND EXAMPLE_TARGETS s3_example azure_blob_example)
 endif()
 
 install(TARGETS ${EXAMPLE_TARGETS}
