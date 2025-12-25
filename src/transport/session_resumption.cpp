@@ -11,6 +11,17 @@
 #include <fstream>
 #include <sstream>
 
+// Windows io.h defines 'write' as '_write' macro, which conflicts with
+// std::ostream::write() calls. Undefine to prevent macro expansion.
+#ifdef _WIN32
+#ifdef write
+#undef write
+#endif
+#ifdef read
+#undef read
+#endif
+#endif
+
 namespace kcenon::file_transfer {
 
 // ============================================================================
