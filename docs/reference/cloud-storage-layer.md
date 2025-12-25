@@ -374,10 +374,16 @@ if (url.has_value()) {
 
 ## Files
 
+### Core Interface
 - `include/kcenon/file_transfer/cloud/cloud_storage_interface.h` - Main interface
 - `include/kcenon/file_transfer/cloud/cloud_config.h` - Configuration structures
 - `include/kcenon/file_transfer/cloud/cloud_credentials.h` - Credential management
 - `include/kcenon/file_transfer/cloud/cloud_error.h` - Error codes
+
+### Provider Implementations
+- `include/kcenon/file_transfer/cloud/s3_storage.h` - AWS S3 implementation
+- `include/kcenon/file_transfer/cloud/azure_blob_storage.h` - Azure Blob Storage implementation
+- `include/kcenon/file_transfer/cloud/gcs_storage.h` - Google Cloud Storage implementation
 
 ## See Also
 

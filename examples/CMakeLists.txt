@@ -256,6 +256,20 @@ if(FILE_TRANS_ENABLE_ENCRYPTION AND OpenSSL_FOUND)
         CXX_STANDARD_REQUIRED ON
     )
 
+    add_executable(gcs_example
+        cloud/gcs_example.cpp
+    )
+
+    target_link_libraries(gcs_example
+        PRIVATE
+            kcenon::file_transfer
+    )
+
+    set_target_properties(gcs_example PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+    )
+
     message(STATUS "Building cloud storage examples")
 endif()
 
@@ -279,7 +293,7 @@ set(EXAMPLE_TARGETS
 )
 
 if(FILE_TRANS_ENABLE_ENCRYPTION AND OpenSSL_FOUND)
-    list(APPEND EXAMPLE_TARGETS s3_example azure_blob_example)
+    list(APPEND EXAMPLE_TARGETS s3_example azure_blob_example gcs_example)
 endif()
 
 install(TARGETS ${EXAMPLE_TARGETS}
