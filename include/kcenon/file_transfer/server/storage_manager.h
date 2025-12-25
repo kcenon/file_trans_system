@@ -481,6 +481,10 @@ public:
     [[nodiscard]] static auto create(
         const std::filesystem::path& base_path) -> std::unique_ptr<local_storage_backend>;
 
+    ~local_storage_backend();
+    local_storage_backend(local_storage_backend&&) noexcept;
+    auto operator=(local_storage_backend&&) noexcept -> local_storage_backend&;
+
     [[nodiscard]] auto type() const -> storage_backend_type override;
     [[nodiscard]] auto name() const -> std::string_view override;
     [[nodiscard]] auto is_available() const -> bool override;
@@ -569,6 +573,10 @@ public:
         std::unique_ptr<cloud_storage_interface> storage,
         storage_backend_type backend_type = storage_backend_type::cloud_s3)
         -> std::unique_ptr<cloud_storage_backend>;
+
+    ~cloud_storage_backend();
+    cloud_storage_backend(cloud_storage_backend&&) noexcept;
+    auto operator=(cloud_storage_backend&&) noexcept -> cloud_storage_backend&;
 
     [[nodiscard]] auto type() const -> storage_backend_type override;
     [[nodiscard]] auto name() const -> std::string_view override;

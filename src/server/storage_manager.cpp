@@ -41,6 +41,10 @@ struct local_storage_backend::impl {
 local_storage_backend::local_storage_backend(const std::filesystem::path& base_path)
     : impl_(std::make_unique<impl>(base_path)) {}
 
+local_storage_backend::~local_storage_backend() = default;
+local_storage_backend::local_storage_backend(local_storage_backend&&) noexcept = default;
+auto local_storage_backend::operator=(local_storage_backend&&) noexcept -> local_storage_backend& = default;
+
 auto local_storage_backend::create(const std::filesystem::path& base_path)
     -> std::unique_ptr<local_storage_backend> {
     return std::unique_ptr<local_storage_backend>(new local_storage_backend(base_path));
@@ -64,10 +68,10 @@ auto local_storage_backend::connect() -> result<void> {
 
     if (!std::filesystem::exists(impl_->base_path, ec)) {
         if (!std::filesystem::create_directories(impl_->base_path, ec) || ec) {
-            return result<void>(error{
-                error_code::storage_init_failed,
+            return unexpected{error{
+                error_code::invalid_configuration,
                 "Failed to create storage directory: " + impl_->base_path.string()
-            });
+            }};
         }
     }
 
@@ -91,10 +95,10 @@ auto local_storage_backend::store(
     // Check for existing file
     std::error_code ec;
     if (std::filesystem::exists(target_path, ec) && !options.overwrite) {
-        return result<store_result>(error{
+        return unexpected{error{
             error_code::file_already_exists,
             "File already exists: " + key
-        });
+        }};
     }
 
     // Create parent directories if needed
@@ -102,20 +106,20 @@ auto local_storage_backend::store(
     if (!parent_path.empty() && !std::filesystem::exists(parent_path, ec)) {
         std::filesystem::create_directories(parent_path, ec);
         if (ec) {
-            return result<store_result>(error{
-                error_code::storage_init_failed,
+            return unexpected{error{
+                error_code::invalid_configuration,
                 "Failed to create directory: " + parent_path.string()
-            });
+            }};
         }
     }
 
     // Write data
     std::ofstream file(target_path, std::ios::binary);
     if (!file) {
-        return result<store_result>(error{
-            error_code::file_open_failed,
+        return unexpected{error{
+            error_code::file_access_denied,
             "Failed to open file for writing: " + target_path.string()
-        });
+        }};
     }
 
     // Write in chunks and report progress
@@ -128,10 +132,10 @@ auto local_storage_backend::store(
         file.write(ptr + written, static_cast<std::streamsize>(to_write));
 
         if (!file) {
-            return result<store_result>(error{
-                error_code::file_write_failed,
+            return unexpected{error{
+                error_code::file_write_error,
                 "Failed to write data to file: " + target_path.string()
-            });
+            }};
         }
 
         written += to_write;
@@ -170,28 +174,28 @@ auto local_storage_backend::store_file(
     // Check source file
     std::error_code ec;
     if (!std::filesystem::exists(file_path, ec) || ec) {
-        return result<store_result>(error{
+        return unexpected{error{
             error_code::file_not_found,
             "Source file not found: " + file_path.string()
-        });
+        }};
     }
 
     auto file_size = std::filesystem::file_size(file_path, ec);
     if (ec) {
-        return result<store_result>(error{
-            error_code::file_read_failed,
+        return unexpected{error{
+            error_code::file_read_error,
             "Failed to get file size: " + file_path.string()
-        });
+        }};
     }
 
     auto target_path = impl_->full_path_for(key);
 
     // Check for existing file
     if (std::filesystem::exists(target_path, ec) && !options.overwrite) {
-        return result<store_result>(error{
+        return unexpected{error{
             error_code::file_already_exists,
             "File already exists: " + key
-        });
+        }};
     }
 
     // Create parent directories if needed
@@ -205,10 +209,10 @@ auto local_storage_backend::store_file(
         std::filesystem::copy_options::overwrite_existing, ec);
 
     if (ec) {
-        return result<store_result>(error{
-            error_code::file_write_failed,
+        return unexpected{error{
+            error_code::file_write_error,
             "Failed to copy file: " + ec.message()
-        });
+        }};
     }
 
     auto end_time = std::chrono::steady_clock::now();
@@ -232,36 +236,36 @@ auto local_storage_backend::retrieve(
 
     std::error_code ec;
     if (!std::filesystem::exists(target_path, ec) || ec) {
-        return result<std::vector<std::byte>>(error{
+        return unexpected{error{
             error_code::file_not_found,
             "File not found: " + key
-        });
+        }};
     }
 
     auto file_size = std::filesystem::file_size(target_path, ec);
     if (ec) {
-        return result<std::vector<std::byte>>(error{
-            error_code::file_read_failed,
+        return unexpected{error{
+            error_code::file_read_error,
             "Failed to get file size: " + key
-        });
+        }};
     }
 
     std::ifstream file(target_path, std::ios::binary);
     if (!file) {
-        return result<std::vector<std::byte>>(error{
-            error_code::file_open_failed,
+        return unexpected{error{
+            error_code::file_access_denied,
             "Failed to open file for reading: " + key
-        });
+        }};
     }
 
     std::vector<std::byte> data(file_size);
     file.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(file_size));
 
     if (!file) {
-        return result<std::vector<std::byte>>(error{
-            error_code::file_read_failed,
+        return unexpected{error{
+            error_code::file_read_error,
             "Failed to read file: " + key
-        });
+        }};
     }
 
     return result<std::vector<std::byte>>(std::move(data));
@@ -277,18 +281,18 @@ auto local_storage_backend::retrieve_file(
 
     std::error_code ec;
     if (!std::filesystem::exists(source_path, ec) || ec) {
-        return result<retrieve_result>(error{
+        return unexpected{error{
             error_code::file_not_found,
             "File not found: " + key
-        });
+        }};
     }
 
     auto file_size = std::filesystem::file_size(source_path, ec);
     if (ec) {
-        return result<retrieve_result>(error{
-            error_code::file_read_failed,
+        return unexpected{error{
+            error_code::file_read_error,
             "Failed to get file size: " + key
-        });
+        }};
     }
 
     // Create parent directories if needed
@@ -302,10 +306,10 @@ auto local_storage_backend::retrieve_file(
         std::filesystem::copy_options::overwrite_existing, ec);
 
     if (ec) {
-        return result<retrieve_result>(error{
-            error_code::file_write_failed,
+        return unexpected{error{
+            error_code::file_write_error,
             "Failed to copy file: " + ec.message()
-        });
+        }};
     }
 
     auto end_time = std::chrono::steady_clock::now();
@@ -338,18 +342,18 @@ auto local_storage_backend::remove(const std::string& key) -> result<void> {
 
     std::error_code ec;
     if (!std::filesystem::exists(target_path, ec)) {
-        return result<void>(error{
+        return unexpected{error{
             error_code::file_not_found,
             "File not found: " + key
-        });
+        }};
     }
 
     std::filesystem::remove(target_path, ec);
     if (ec) {
-        return result<void>(error{
-            error_code::file_delete_failed,
+        return unexpected{error{
+            error_code::file_access_denied,
             "Failed to delete file: " + key
-        });
+        }};
     }
 
     return result<void>();
@@ -368,10 +372,10 @@ auto local_storage_backend::get_metadata(const std::string& key)
 
     std::error_code ec;
     if (!std::filesystem::exists(target_path, ec) || ec) {
-        return result<stored_object_metadata>(error{
+        return unexpected{error{
             error_code::file_not_found,
             "File not found: " + key
-        });
+        }};
     }
 
     stored_object_metadata metadata;
@@ -380,10 +384,10 @@ auto local_storage_backend::get_metadata(const std::string& key)
 
     metadata.size = std::filesystem::file_size(target_path, ec);
     if (ec) {
-        return result<stored_object_metadata>(error{
-            error_code::file_read_failed,
+        return unexpected{error{
+            error_code::file_read_error,
             "Failed to get file size: " + key
-        });
+        }};
     }
 
     auto last_write = std::filesystem::last_write_time(target_path, ec);
@@ -548,6 +552,10 @@ cloud_storage_backend::cloud_storage_backend(
     storage_backend_type backend_type)
     : impl_(std::make_unique<impl>(std::move(storage), backend_type)) {}
 
+cloud_storage_backend::~cloud_storage_backend() = default;
+cloud_storage_backend::cloud_storage_backend(cloud_storage_backend&&) noexcept = default;
+auto cloud_storage_backend::operator=(cloud_storage_backend&&) noexcept -> cloud_storage_backend& = default;
+
 auto cloud_storage_backend::create(
     std::unique_ptr<cloud_storage_interface> storage,
     storage_backend_type backend_type) -> std::unique_ptr<cloud_storage_backend> {
@@ -574,18 +582,18 @@ auto cloud_storage_backend::is_available() const -> bool {
 
 auto cloud_storage_backend::connect() -> result<void> {
     if (!impl_->storage) {
-        return result<void>(error{
-            error_code::storage_init_failed,
+        return unexpected{error{
+            error_code::invalid_configuration,
             "Cloud storage not initialized"
-        });
+        }};
     }
 
     auto res = impl_->storage->connect();
     if (!res.has_value()) {
-        return result<void>(error{
-            error_code::storage_init_failed,
+        return unexpected{error{
+            error_code::invalid_configuration,
             "Failed to connect to cloud storage: " + res.error().message
-        });
+        }};
     }
 
     return result<void>();
@@ -595,10 +603,10 @@ auto cloud_storage_backend::disconnect() -> result<void> {
     if (impl_->storage) {
         auto res = impl_->storage->disconnect();
         if (!res.has_value()) {
-            return result<void>(error{
-                error_code::storage_cleanup_failed,
+            return unexpected{error{
+                error_code::internal_error,
                 "Failed to disconnect from cloud storage"
-            });
+            }};
         }
     }
     return result<void>();
@@ -619,15 +627,15 @@ auto cloud_storage_backend::store(
         cloud_options.storage_class = *options.storage_class;
     }
     for (const auto& [k, v] : options.custom_metadata) {
-        cloud_options.custom_metadata.emplace_back(k, v);
+        cloud_options.metadata.emplace_back(k, v);
     }
 
     auto upload_result = impl_->storage->upload(key, data, cloud_options);
     if (!upload_result.has_value()) {
-        return result<store_result>(error{
-            error_code::storage_write_failed,
+        return unexpected{error{
+            error_code::file_write_error,
             "Cloud upload failed: " + upload_result.error().message
-        });
+        }};
     }
 
     auto end_time = std::chrono::steady_clock::now();
@@ -659,15 +667,15 @@ auto cloud_storage_backend::store_file(
         cloud_options.storage_class = *options.storage_class;
     }
     for (const auto& [k, v] : options.custom_metadata) {
-        cloud_options.custom_metadata.emplace_back(k, v);
+        cloud_options.metadata.emplace_back(k, v);
     }
 
     auto upload_result = impl_->storage->upload_file(file_path, key, cloud_options);
     if (!upload_result.has_value()) {
-        return result<store_result>(error{
-            error_code::storage_write_failed,
+        return unexpected{error{
+            error_code::file_write_error,
             "Cloud file upload failed: " + upload_result.error().message
-        });
+        }};
     }
 
     auto end_time = std::chrono::steady_clock::now();
@@ -690,10 +698,10 @@ auto cloud_storage_backend::retrieve(
 
     auto download_result = impl_->storage->download(key);
     if (!download_result.has_value()) {
-        return result<std::vector<std::byte>>(error{
-            error_code::storage_read_failed,
+        return unexpected{error{
+            error_code::file_read_error,
             "Cloud download failed: " + download_result.error().message
-        });
+        }};
     }
 
     return result<std::vector<std::byte>>(std::move(download_result.value()));
@@ -708,10 +716,10 @@ auto cloud_storage_backend::retrieve_file(
 
     auto download_res = impl_->storage->download_file(key, file_path);
     if (!download_res.has_value()) {
-        return result<retrieve_result>(error{
-            error_code::storage_read_failed,
+        return unexpected{error{
+            error_code::file_read_error,
             "Cloud file download failed: " + download_res.error().message
-        });
+        }};
     }
 
     auto end_time = std::chrono::steady_clock::now();
@@ -741,10 +749,10 @@ auto cloud_storage_backend::retrieve_file(
 auto cloud_storage_backend::remove(const std::string& key) -> result<void> {
     auto delete_result = impl_->storage->delete_object(key);
     if (!delete_result.has_value()) {
-        return result<void>(error{
-            error_code::storage_delete_failed,
+        return unexpected{error{
+            error_code::file_access_denied,
             "Cloud delete failed: " + delete_result.error().message
-        });
+        }};
     }
     return result<void>();
 }
@@ -752,10 +760,10 @@ auto cloud_storage_backend::remove(const std::string& key) -> result<void> {
 auto cloud_storage_backend::exists(const std::string& key) -> result<bool> {
     auto exists_result = impl_->storage->exists(key);
     if (!exists_result.has_value()) {
-        return result<bool>(error{
-            error_code::storage_read_failed,
+        return unexpected{error{
+            error_code::file_read_error,
             "Cloud exists check failed: " + exists_result.error().message
-        });
+        }};
     }
     return result<bool>(exists_result.value());
 }
@@ -765,10 +773,10 @@ auto cloud_storage_backend::get_metadata(const std::string& key)
 
     auto meta_result = impl_->storage->get_metadata(key);
     if (!meta_result.has_value()) {
-        return result<stored_object_metadata>(error{
-            error_code::storage_read_failed,
+        return unexpected{error{
+            error_code::file_read_error,
             "Cloud metadata failed: " + meta_result.error().message
-        });
+        }};
     }
 
     const auto& cloud_meta = meta_result.value();
@@ -812,10 +820,10 @@ auto cloud_storage_backend::list(const list_storage_options& options)
 
     auto list_result = impl_->storage->list_objects(cloud_options);
     if (!list_result.has_value()) {
-        return result<list_storage_result>(error{
-            error_code::storage_read_failed,
+        return unexpected{error{
+            error_code::file_read_error,
             "Cloud list failed: " + list_result.error().message
-        });
+        }};
     }
 
     list_storage_result res;
@@ -982,10 +990,10 @@ auto storage_manager::initialize() -> result<void> {
     // Connect primary backend
     auto primary_result = impl_->config.primary_backend->connect();
     if (!primary_result.has_value()) {
-        return result<void>(error{
-            error_code::storage_init_failed,
+        return unexpected{error{
+            error_code::invalid_configuration,
             "Failed to connect primary backend: " + primary_result.error().message
-        });
+        }};
     }
 
     // Connect secondary backend if configured
@@ -1024,10 +1032,10 @@ auto storage_manager::store(
     const store_options& options) -> result<store_result> {
 
     if (!impl_->initialized) {
-        return result<store_result>(error{
-            error_code::storage_init_failed,
+        return unexpected{error{
+            error_code::invalid_configuration,
             "Storage manager not initialized"
-        });
+        }};
     }
 
     // Store to primary backend
@@ -1059,10 +1067,10 @@ auto storage_manager::store_file(
     const store_options& options) -> result<store_result> {
 
     if (!impl_->initialized) {
-        return result<store_result>(error{
-            error_code::storage_init_failed,
+        return unexpected{error{
+            error_code::invalid_configuration,
             "Storage manager not initialized"
-        });
+        }};
     }
 
     auto primary_result = impl_->config.primary_backend->store_file(key, file_path, options);
@@ -1092,10 +1100,10 @@ auto storage_manager::retrieve(
     const retrieve_options& options) -> result<std::vector<std::byte>> {
 
     if (!impl_->initialized) {
-        return result<std::vector<std::byte>>(error{
-            error_code::storage_init_failed,
+        return unexpected{error{
+            error_code::invalid_configuration,
             "Storage manager not initialized"
-        });
+        }};
     }
 
     // Try primary backend first
@@ -1124,10 +1132,10 @@ auto storage_manager::retrieve_file(
     const retrieve_options& options) -> result<retrieve_result> {
 
     if (!impl_->initialized) {
-        return result<retrieve_result>(error{
-            error_code::storage_init_failed,
+        return unexpected{error{
+            error_code::invalid_configuration,
             "Storage manager not initialized"
-        });
+        }};
     }
 
     // Try primary backend first
@@ -1153,10 +1161,10 @@ auto storage_manager::retrieve_file(
 
 auto storage_manager::remove(const std::string& key) -> result<void> {
     if (!impl_->initialized) {
-        return result<void>(error{
-            error_code::storage_init_failed,
+        return unexpected{error{
+            error_code::invalid_configuration,
             "Storage manager not initialized"
-        });
+        }};
     }
 
     // Remove from primary
@@ -1178,10 +1186,10 @@ auto storage_manager::remove(const std::string& key) -> result<void> {
 
 auto storage_manager::exists(const std::string& key) -> result<bool> {
     if (!impl_->initialized) {
-        return result<bool>(error{
-            error_code::storage_init_failed,
+        return unexpected{error{
+            error_code::invalid_configuration,
             "Storage manager not initialized"
-        });
+        }};
     }
 
     // Check primary first
@@ -1205,10 +1213,10 @@ auto storage_manager::get_metadata(const std::string& key)
     -> result<stored_object_metadata> {
 
     if (!impl_->initialized) {
-        return result<stored_object_metadata>(error{
-            error_code::storage_init_failed,
+        return unexpected{error{
+            error_code::invalid_configuration,
             "Storage manager not initialized"
-        });
+        }};
     }
 
     // Try primary first
@@ -1232,10 +1240,10 @@ auto storage_manager::list(const list_storage_options& options)
     -> result<list_storage_result> {
 
     if (!impl_->initialized) {
-        return result<list_storage_result>(error{
-            error_code::storage_init_failed,
+        return unexpected{error{
+            error_code::invalid_configuration,
             "Storage manager not initialized"
-        });
+        }};
     }
 
     // Merge results from both backends if hybrid storage
@@ -1327,16 +1335,16 @@ auto storage_manager::change_tier(
     storage_tier target_tier) -> result<void> {
 
     if (!impl_->initialized) {
-        return result<void>(error{
-            error_code::storage_init_failed,
+        return unexpected{error{
+            error_code::invalid_configuration,
             "Storage manager not initialized"
-        });
+        }};
     }
 
     // For tier change, we need to retrieve and re-store with new options
     auto data = retrieve(key);
     if (!data.has_value()) {
-        return result<void>(data.error());
+        return unexpected{data.error()};
     }
 
     store_options options;
@@ -1361,7 +1369,7 @@ auto storage_manager::change_tier(
 
     auto store_res = store(key, data.value(), options);
     if (!store_res.has_value()) {
-        return result<void>(store_res.error());
+        return unexpected{store_res.error()};
     }
 
     std::unique_lock lock(impl_->mutex);
@@ -1376,10 +1384,10 @@ auto storage_manager::copy_between_backends(
     storage_backend_type destination) -> result<void> {
 
     if (!impl_->initialized) {
-        return result<void>(error{
-            error_code::storage_init_failed,
+        return unexpected{error{
+            error_code::invalid_configuration,
             "Storage manager not initialized"
-        });
+        }};
     }
 
     storage_backend* src_backend = nullptr;
@@ -1401,16 +1409,16 @@ auto storage_manager::copy_between_backends(
     }
 
     if (!src_backend || !dst_backend) {
-        return result<void>(error{
+        return unexpected{error{
             error_code::invalid_configuration,
             "Invalid source or destination backend"
-        });
+        }};
     }
 
     // Retrieve from source
     auto data = src_backend->retrieve(key);
     if (!data.has_value()) {
-        return result<void>(data.error());
+        return unexpected{data.error()};
     }
 
     // Store to destination
@@ -1418,7 +1426,7 @@ auto storage_manager::copy_between_backends(
     options.overwrite = true;
     auto store_res = dst_backend->store(key, data.value(), options);
     if (!store_res.has_value()) {
-        return result<void>(store_res.error());
+        return unexpected{store_res.error()};
     }
 
     return result<void>();

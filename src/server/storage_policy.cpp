@@ -77,76 +77,6 @@ struct storage_policy::builder::builder_data {
     bool dry_run = false;
 };
 
-storage_policy::builder::builder()
-    : data_(std::make_unique<builder_data>()) {}
-
-auto storage_policy::builder::with_access_pattern_tiering(
-    const access_pattern_config& config) -> builder& {
-    data_->access_config = config;
-    return *this;
-}
-
-auto storage_policy::builder::with_age_tiering(
-    const age_tiering_config& config) -> builder& {
-    data_->age_config = config;
-    return *this;
-}
-
-auto storage_policy::builder::with_size_tiering(
-    const size_tiering_config& config) -> builder& {
-    data_->size_config = config;
-    return *this;
-}
-
-auto storage_policy::builder::with_rule(tiering_rule rule) -> builder& {
-    data_->rules.push_back(std::move(rule));
-    return *this;
-}
-
-auto storage_policy::builder::with_retention(retention_policy policy) -> builder& {
-    data_->retention = std::move(policy);
-    return *this;
-}
-
-auto storage_policy::builder::with_auto_evaluation(
-    std::chrono::seconds interval) -> builder& {
-    data_->auto_eval_interval = interval;
-    return *this;
-}
-
-auto storage_policy::builder::with_auto_execution(bool enable) -> builder& {
-    data_->auto_execution = enable;
-    return *this;
-}
-
-auto storage_policy::builder::with_dry_run(bool enable) -> builder& {
-    data_->dry_run = enable;
-    return *this;
-}
-
-auto storage_policy::builder::build() -> std::unique_ptr<storage_policy> {
-    auto policy = std::unique_ptr<storage_policy>(new storage_policy());
-
-    policy->impl_->access_config = data_->access_config;
-    policy->impl_->age_config = data_->age_config;
-    policy->impl_->size_config = data_->size_config;
-    policy->impl_->rules = std::move(data_->rules);
-    policy->impl_->retention_policy_ = data_->retention.value_or(retention_policy{});
-    policy->impl_->auto_eval_interval = data_->auto_eval_interval;
-    policy->impl_->auto_execution = data_->auto_execution;
-    policy->impl_->dry_run = data_->dry_run;
-
-    // Sort rules by priority
-    std::sort(policy->impl_->rules.begin(), policy->impl_->rules.end(),
-        [](const tiering_rule& a, const tiering_rule& b) {
-            return a.priority > b.priority;
-        });
-
-    return policy;
-}
-
-// ============================================================================
-// storage_policy implementation
 // ============================================================================
 
 struct storage_policy::impl {
@@ -382,6 +312,81 @@ struct storage_policy::impl {
     }
 };
 
+storage_policy::builder::builder()
+    : data_(std::make_unique<builder_data>()) {}
+
+storage_policy::builder::~builder() = default;
+storage_policy::builder::builder(builder&&) noexcept = default;
+auto storage_policy::builder::operator=(builder&&) noexcept -> storage_policy::builder& = default;
+
+auto storage_policy::builder::with_access_pattern_tiering(
+    const access_pattern_config& config) -> builder& {
+    data_->access_config = config;
+    return *this;
+}
+
+auto storage_policy::builder::with_age_tiering(
+    const age_tiering_config& config) -> builder& {
+    data_->age_config = config;
+    return *this;
+}
+
+auto storage_policy::builder::with_size_tiering(
+    const size_tiering_config& config) -> builder& {
+    data_->size_config = config;
+    return *this;
+}
+
+auto storage_policy::builder::with_rule(tiering_rule rule) -> builder& {
+    data_->rules.push_back(std::move(rule));
+    return *this;
+}
+
+auto storage_policy::builder::with_retention(retention_policy policy) -> builder& {
+    data_->retention = std::move(policy);
+    return *this;
+}
+
+auto storage_policy::builder::with_auto_evaluation(
+    std::chrono::seconds interval) -> builder& {
+    data_->auto_eval_interval = interval;
+    return *this;
+}
+
+auto storage_policy::builder::with_auto_execution(bool enable) -> builder& {
+    data_->auto_execution = enable;
+    return *this;
+}
+
+auto storage_policy::builder::with_dry_run(bool enable) -> builder& {
+    data_->dry_run = enable;
+    return *this;
+}
+
+auto storage_policy::builder::build() -> std::unique_ptr<storage_policy> {
+    auto policy = std::unique_ptr<storage_policy>(new storage_policy());
+
+    policy->impl_->access_config = data_->access_config;
+    policy->impl_->age_config = data_->age_config;
+    policy->impl_->size_config = data_->size_config;
+    policy->impl_->rules = std::move(data_->rules);
+    policy->impl_->retention_policy_ = data_->retention.value_or(retention_policy{});
+    policy->impl_->auto_eval_interval = data_->auto_eval_interval;
+    policy->impl_->auto_execution = data_->auto_execution;
+    policy->impl_->dry_run = data_->dry_run;
+
+    // Sort rules by priority
+    std::sort(policy->impl_->rules.begin(), policy->impl_->rules.end(),
+        [](const tiering_rule& a, const tiering_rule& b) {
+            return a.priority > b.priority;
+        });
+
+    return policy;
+}
+
+// ============================================================================
+// storage_policy implementation
+
 storage_policy::storage_policy()
     : impl_(std::make_unique<impl>()) {}
 
@@ -405,15 +410,15 @@ auto storage_policy::evaluate(const std::string& key)
     -> result<policy_evaluation_result> {
 
     if (!impl_->manager) {
-        return result<policy_evaluation_result>(error{
+        return unexpected{error{
             error_code::not_initialized,
             "Storage policy not attached to a storage manager"
-        });
+        }};
     }
 
     auto metadata_result = impl_->manager->get_metadata(key);
     if (!metadata_result.has_value()) {
-        return result<policy_evaluation_result>(metadata_result.error());
+        return unexpected{metadata_result.error()};
     }
 
     impl_->record_evaluation();
@@ -434,17 +439,17 @@ auto storage_policy::evaluate_all()
     -> result<std::vector<policy_evaluation_result>> {
 
     if (!impl_->manager) {
-        return result<std::vector<policy_evaluation_result>>(error{
+        return unexpected{error{
             error_code::not_initialized,
             "Storage policy not attached to a storage manager"
-        });
+        }};
     }
 
     std::vector<policy_evaluation_result> results;
 
     auto list_result = impl_->manager->list();
     if (!list_result.has_value()) {
-        return result<std::vector<policy_evaluation_result>>(list_result.error());
+        return unexpected{list_result.error()};
     }
 
     for (const auto& obj : list_result.value().objects) {
@@ -468,10 +473,10 @@ auto storage_policy::evaluate_prefix(const std::string& prefix)
     -> result<std::vector<policy_evaluation_result>> {
 
     if (!impl_->manager) {
-        return result<std::vector<policy_evaluation_result>>(error{
+        return unexpected{error{
             error_code::not_initialized,
             "Storage policy not attached to a storage manager"
-        });
+        }};
     }
 
     std::vector<policy_evaluation_result> results;
@@ -481,7 +486,7 @@ auto storage_policy::evaluate_prefix(const std::string& prefix)
 
     auto list_result = impl_->manager->list(options);
     if (!list_result.has_value()) {
-        return result<std::vector<policy_evaluation_result>>(list_result.error());
+        return unexpected{list_result.error()};
     }
 
     for (const auto& obj : list_result.value().objects) {
@@ -504,30 +509,30 @@ auto storage_policy::evaluate_prefix(const std::string& prefix)
 auto storage_policy::execute(const std::string& key) -> result<void> {
     auto eval_result = evaluate(key);
     if (!eval_result.has_value()) {
-        return result<void>(eval_result.error());
+        return unexpected{eval_result.error()};
     }
 
-    const auto& result = eval_result.value();
-    if (result.target_tier == result.current_tier) {
-        return result<void>();  // No action needed
+    const auto& eval = eval_result.value();
+    if (eval.target_tier == eval.current_tier) {
+        return {};  // No action needed
     }
 
-    if (result.blocked_by_retention) {
-        return result<void>(error{
-            error_code::access_denied,
+    if (eval.blocked_by_retention) {
+        return unexpected{error{
+            error_code::file_access_denied,
             "Action blocked by retention policy"
-        });
+        }};
     }
 
-    return execute_action(key, result.target_tier, result.recommended_action);
+    return execute_action(key, eval.target_tier, eval.recommended_action);
 }
 
 auto storage_policy::execute_pending() -> result<std::size_t> {
     if (!impl_->manager) {
-        return result<std::size_t>(error{
+        return unexpected{error{
             error_code::not_initialized,
             "Storage policy not attached to a storage manager"
-        });
+        }};
     }
 
     std::vector<policy_evaluation_result> actions;
@@ -559,10 +564,10 @@ auto storage_policy::execute_action(
     tiering_action action) -> result<void> {
 
     if (!impl_->manager) {
-        return result<void>(error{
+        return unexpected{error{
             error_code::not_initialized,
             "Storage policy not attached to a storage manager"
-        });
+        }};
     }
 
     // Get current metadata
@@ -570,7 +575,7 @@ auto storage_policy::execute_action(
     if (!metadata_result.has_value()) {
         impl_->record_error();
         impl_->report_error(key, metadata_result.error());
-        return result<void>(metadata_result.error());
+        return unexpected{metadata_result.error()};
     }
 
     storage_tier current_tier = metadata_result.value().tier;
@@ -646,10 +651,10 @@ void storage_policy::set_rule_enabled(const std::string& name, bool enable) {
 
 auto storage_policy::can_delete(const std::string& key) -> result<bool> {
     if (!impl_->manager) {
-        return result<bool>(error{
+        return unexpected{error{
             error_code::not_initialized,
             "Storage policy not attached"
-        });
+        }};
     }
 
     std::lock_guard lock(impl_->retention_mutex);

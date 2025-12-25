@@ -269,6 +269,9 @@ public:
     class builder {
     public:
         builder();
+        ~builder();
+        builder(builder&&) noexcept;
+        auto operator=(builder&&) noexcept -> builder&;
 
         /**
          * @brief Enable access pattern based tiering
