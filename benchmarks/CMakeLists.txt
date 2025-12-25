@@ -255,8 +255,64 @@ add_custom_target(run_transport_benchmarks
     COMMENT "Running transport benchmarks (QUIC vs TCP)..."
 )
 
+##################################################
+# Encryption Benchmarks (conditional)
+##################################################
+
+if(FILE_TRANS_ENABLE_ENCRYPTION AND OpenSSL_FOUND)
+    add_executable(encryption_benchmarks
+        encryption/bench_encryption_throughput.cpp
+        encryption/bench_key_derivation.cpp
+    )
+
+    target_link_libraries(encryption_benchmarks PRIVATE
+        FileTransSystem
+        benchmark_utils
+        benchmark::benchmark
+        benchmark::benchmark_main
+        Threads::Threads
+    )
+
+    set_target_properties(encryption_benchmarks PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    )
+
+    add_custom_target(run_encryption_benchmarks
+        COMMAND $<TARGET_FILE:encryption_benchmarks>
+            --benchmark_format=console
+            --benchmark_out=${CMAKE_BINARY_DIR}/benchmark_results/encryption.json
+            --benchmark_out_format=json
+        DEPENDS encryption_benchmarks
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+        COMMENT "Running encryption benchmarks..."
+    )
+
+    message(STATUS "Encryption benchmarks enabled")
+else()
+    message(STATUS "Encryption benchmarks disabled (FILE_TRANS_ENABLE_ENCRYPTION=${FILE_TRANS_ENABLE_ENCRYPTION})")
+endif()
+
+##################################################
+# Run All Benchmarks Target
+##################################################
+
+set(ALL_BENCHMARK_TARGETS
+    run_throughput_benchmarks
+    run_compression_benchmarks
+    run_latency_benchmarks
+    run_memory_benchmarks
+    run_scalability_benchmarks
+    run_transport_benchmarks
+)
+
+if(FILE_TRANS_ENABLE_ENCRYPTION AND OpenSSL_FOUND)
+    list(APPEND ALL_BENCHMARK_TARGETS run_encryption_benchmarks)
+endif()
+
 add_custom_target(run_benchmarks
-    DEPENDS run_throughput_benchmarks run_compression_benchmarks run_latency_benchmarks run_memory_benchmarks run_scalability_benchmarks run_transport_benchmarks
+    DEPENDS ${ALL_BENCHMARK_TARGETS}
     COMMENT "Running all benchmarks..."
 )
 
