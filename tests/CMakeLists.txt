@@ -83,6 +83,13 @@ if(FILE_TRANS_ENABLE_ENCRYPTION AND OpenSSL_FOUND)
     )
 endif()
 
+# Add cloud storage tests if encryption is enabled (required for AWS Signature V4)
+if(FILE_TRANS_ENABLE_ENCRYPTION AND OpenSSL_FOUND)
+    list(APPEND UNIT_TEST_SOURCES
+        unit/cloud/test_s3_storage.cpp
+    )
+endif()
+
 add_executable(file_trans_unit_tests ${UNIT_TEST_SOURCES})
 
 target_link_libraries(file_trans_unit_tests PRIVATE
