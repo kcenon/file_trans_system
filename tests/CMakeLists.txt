@@ -64,6 +64,8 @@ set(UNIT_TEST_SOURCES
     unit/server/test_server_pipeline.cpp
     unit/server/test_pipeline_jobs.cpp
     unit/server/test_quota_manager.cpp
+    unit/server/test_storage_manager.cpp
+    unit/server/test_storage_policy.cpp
     unit/client/test_transfer_control.cpp
     unit/client/test_batch_transfer.cpp
     unit/transport/test_transport_interface.cpp
