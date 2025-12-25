@@ -473,7 +473,7 @@ int main(int argc, char* argv[]) {
 
     // Create storage instance
     std::cout << "\n2. Creating GCS storage instance...\n";
-    auto storage = gcs_storage::create(config, credentials);
+    auto storage = gcs_storage::create(config, std::move(credentials));
     if (!storage) {
         std::cerr << "   Failed to create GCS storage instance!\n";
         return 1;
