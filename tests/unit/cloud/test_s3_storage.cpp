@@ -500,7 +500,272 @@ TEST_F(S3PresignedUrlTest, GeneratePutUrl) {
     EXPECT_TRUE(result.has_value());
 }
 
+TEST_F(S3PresignedUrlTest, GeneratePutUrlWithSSE_S3) {
+    ASSERT_NE(storage_, nullptr);
+
+    presigned_url_options options;
+    options.method = "PUT";
+    options.expiration = std::chrono::seconds{300};
+    options.server_side_encryption = "AES256";
+
+    auto result = storage_->generate_presigned_url("encrypted/file.bin", options);
+    EXPECT_TRUE(result.has_value());
+
+    if (result.has_value()) {
+        const auto& url = result.value();
+        EXPECT_TRUE(url.find("x-amz-server-side-encryption") != std::string::npos);
+    }
+}
+
+TEST_F(S3PresignedUrlTest, GeneratePutUrlWithSSE_KMS) {
+    ASSERT_NE(storage_, nullptr);
+
+    presigned_url_options options;
+    options.method = "PUT";
+    options.expiration = std::chrono::seconds{300};
+    options.server_side_encryption = "aws:kms";
+    options.kms_key_id = "arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789012";
+
+    auto result = storage_->generate_presigned_url("kms-encrypted/file.bin", options);
+    EXPECT_TRUE(result.has_value());
+
+    if (result.has_value()) {
+        const auto& url = result.value();
+        EXPECT_TRUE(url.find("x-amz-server-side-encryption") != std::string::npos);
+    }
+}
+
+TEST_F(S3PresignedUrlTest, GeneratePutUrlWithStorageClass) {
+    ASSERT_NE(storage_, nullptr);
+
+    presigned_url_options options;
+    options.method = "PUT";
+    options.expiration = std::chrono::seconds{300};
+    options.storage_class = "STANDARD_IA";
+
+    auto result = storage_->generate_presigned_url("archived/file.bin", options);
+    EXPECT_TRUE(result.has_value());
+
+    if (result.has_value()) {
+        const auto& url = result.value();
+        EXPECT_TRUE(url.find("x-amz-storage-class") != std::string::npos);
+    }
+}
+
+TEST_F(S3PresignedUrlTest, GeneratePutUrlWithCustomMetadata) {
+    ASSERT_NE(storage_, nullptr);
+
+    presigned_url_options options;
+    options.method = "PUT";
+    options.expiration = std::chrono::seconds{300};
+    options.custom_metadata = {
+        {"author", "test-user"},
+        {"version", "1.0"}
+    };
+
+    auto result = storage_->generate_presigned_url("metadata/file.bin", options);
+    EXPECT_TRUE(result.has_value());
+
+    if (result.has_value()) {
+        const auto& url = result.value();
+        EXPECT_TRUE(url.find("x-amz-meta-author") != std::string::npos);
+        EXPECT_TRUE(url.find("x-amz-meta-version") != std::string::npos);
+    }
+}
+
+TEST_F(S3PresignedUrlTest, GenerateGetUrlWithResponseOverrides) {
+    ASSERT_NE(storage_, nullptr);
+
+    presigned_url_options options;
+    options.method = "GET";
+    options.expiration = std::chrono::seconds{3600};
+    options.response_content_type = "application/pdf";
+    options.response_content_disposition = "attachment; filename=\"document.pdf\"";
+
+    auto result = storage_->generate_presigned_url("docs/document.pdf", options);
+    EXPECT_TRUE(result.has_value());
+
+    if (result.has_value()) {
+        const auto& url = result.value();
+        EXPECT_TRUE(url.find("response-content-type=") != std::string::npos);
+        EXPECT_TRUE(url.find("response-content-disposition=") != std::string::npos);
+    }
+}
+
 #endif  // FILE_TRANS_ENABLE_ENCRYPTION
+
+// ============================================================================
+// S3 MinIO Compatibility Tests
+// ============================================================================
+
+class S3MinIOCompatibilityTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        static_credentials creds;
+        creds.access_key_id = "minioadmin";
+        creds.secret_access_key = "minioadmin";
+        provider_ = s3_credential_provider::create(creds);
+    }
+
+    std::shared_ptr<credential_provider> provider_;
+};
+
+TEST_F(S3MinIOCompatibilityTest, CreateWithMinIOEndpoint) {
+    auto config = cloud_config_builder::s3()
+        .with_bucket("test-bucket")
+        .with_region("us-east-1")
+        .with_endpoint("http://localhost:9000")
+        .with_path_style(true)
+        .with_ssl(false, false)
+        .build_s3();
+
+    auto storage = s3_storage::create(config, provider_);
+    ASSERT_NE(storage, nullptr);
+
+    EXPECT_EQ(storage->endpoint_url(), "http://localhost:9000");
+    EXPECT_FALSE(storage->is_transfer_acceleration_enabled());
+}
+
+TEST_F(S3MinIOCompatibilityTest, CreateWithHTTPSMinIOEndpoint) {
+    auto config = cloud_config_builder::s3()
+        .with_bucket("secure-bucket")
+        .with_region("us-east-1")
+        .with_endpoint("https://minio.example.com:9000")
+        .with_path_style(true)
+        .build_s3();
+
+    auto storage = s3_storage::create(config, provider_);
+    ASSERT_NE(storage, nullptr);
+
+    EXPECT_EQ(storage->endpoint_url(), "https://minio.example.com:9000");
+}
+
+TEST_F(S3MinIOCompatibilityTest, PathStyleURLs) {
+    auto config = cloud_config_builder::s3()
+        .with_bucket("my-bucket")
+        .with_region("us-east-1")
+        .with_endpoint("http://localhost:9000")
+        .with_path_style(true)
+        .build_s3();
+
+    auto storage = s3_storage::create(config, provider_);
+    ASSERT_NE(storage, nullptr);
+
+    // Path-style URL should use /bucket/key format
+    const auto& s3_cfg = storage->get_s3_config();
+    EXPECT_TRUE(s3_cfg.use_path_style);
+}
+
+// ============================================================================
+// S3 Storage Class Tests
+// ============================================================================
+
+class S3StorageClassTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        static_credentials creds;
+        creds.access_key_id = "AKIAIOSFODNN7EXAMPLE";
+        creds.secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+        provider_ = s3_credential_provider::create(creds);
+
+        auto config = cloud_config_builder::s3()
+            .with_bucket("test-bucket")
+            .with_region("us-east-1")
+            .build_s3();
+
+        storage_ = s3_storage::create(config, provider_);
+        storage_->connect();
+    }
+
+    std::shared_ptr<credential_provider> provider_;
+    std::unique_ptr<s3_storage> storage_;
+};
+
+TEST_F(S3StorageClassTest, UploadWithStandardStorageClass) {
+    ASSERT_NE(storage_, nullptr);
+    ASSERT_TRUE(storage_->is_connected());
+
+    std::vector<std::byte> data(512);
+    cloud_transfer_options options;
+    options.storage_class = "STANDARD";
+
+    auto result = storage_->upload("test/standard.bin", data, options);
+    EXPECT_TRUE(result.has_value());
+}
+
+TEST_F(S3StorageClassTest, UploadWithInfrequentAccessStorageClass) {
+    ASSERT_NE(storage_, nullptr);
+    ASSERT_TRUE(storage_->is_connected());
+
+    std::vector<std::byte> data(512);
+    cloud_transfer_options options;
+    options.storage_class = "STANDARD_IA";
+
+    auto result = storage_->upload("test/infrequent.bin", data, options);
+    EXPECT_TRUE(result.has_value());
+}
+
+TEST_F(S3StorageClassTest, UploadWithGlacierStorageClass) {
+    ASSERT_NE(storage_, nullptr);
+    ASSERT_TRUE(storage_->is_connected());
+
+    std::vector<std::byte> data(512);
+    cloud_transfer_options options;
+    options.storage_class = "GLACIER";
+
+    auto result = storage_->upload("test/glacier.bin", data, options);
+    EXPECT_TRUE(result.has_value());
+}
+
+// ============================================================================
+// S3 Server-Side Encryption Tests
+// ============================================================================
+
+class S3EncryptionTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        static_credentials creds;
+        creds.access_key_id = "AKIAIOSFODNN7EXAMPLE";
+        creds.secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+        provider_ = s3_credential_provider::create(creds);
+
+        auto config = cloud_config_builder::s3()
+            .with_bucket("test-bucket")
+            .with_region("us-east-1")
+            .build_s3();
+
+        storage_ = s3_storage::create(config, provider_);
+        storage_->connect();
+    }
+
+    std::shared_ptr<credential_provider> provider_;
+    std::unique_ptr<s3_storage> storage_;
+};
+
+TEST_F(S3EncryptionTest, UploadWithSSE_S3) {
+    ASSERT_NE(storage_, nullptr);
+    ASSERT_TRUE(storage_->is_connected());
+
+    std::vector<std::byte> data(512);
+    cloud_transfer_options options;
+    options.server_side_encryption = "AES256";
+
+    auto result = storage_->upload("encrypted/sse-s3.bin", data, options);
+    EXPECT_TRUE(result.has_value());
+}
+
+TEST_F(S3EncryptionTest, UploadWithSSE_KMS) {
+    ASSERT_NE(storage_, nullptr);
+    ASSERT_TRUE(storage_->is_connected());
+
+    std::vector<std::byte> data(512);
+    cloud_transfer_options options;
+    options.server_side_encryption = "aws:kms";
+    options.kms_key_id = "arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789012";
+
+    auto result = storage_->upload("encrypted/sse-kms.bin", data, options);
+    EXPECT_TRUE(result.has_value());
+}
 
 // ============================================================================
 // S3 Configuration Tests

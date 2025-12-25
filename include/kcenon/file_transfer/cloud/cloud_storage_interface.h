@@ -249,6 +249,24 @@ struct presigned_url_options {
 
     /// Content MD5 (for PUT)
     std::optional<std::string> content_md5;
+
+    /// Storage class (for PUT: STANDARD, STANDARD_IA, ONEZONE_IA, GLACIER, etc.)
+    std::optional<std::string> storage_class;
+
+    /// Server-side encryption algorithm (AES256, aws:kms)
+    std::optional<std::string> server_side_encryption;
+
+    /// KMS key ID (required when server_side_encryption is "aws:kms")
+    std::optional<std::string> kms_key_id;
+
+    /// Custom metadata headers
+    std::vector<std::pair<std::string, std::string>> custom_metadata;
+
+    /// Response content type override (for GET with inline viewing)
+    std::optional<std::string> response_content_type;
+
+    /// Response content disposition override (for GET with download filename)
+    std::optional<std::string> response_content_disposition;
 };
 
 /**

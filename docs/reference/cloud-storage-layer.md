@@ -349,6 +349,7 @@ if (stream) {
 Generate temporary URLs for direct client access:
 
 ```cpp
+// Basic presigned URL for download
 presigned_url_options options;
 options.expiration = std::chrono::seconds{3600};  // 1 hour
 options.method = "GET";  // or "PUT" for uploads
@@ -357,6 +358,157 @@ auto url = storage->generate_presigned_url("my-file.txt", options);
 if (url.has_value()) {
     std::cout << "Download URL: " << url.value() << std::endl;
 }
+```
+
+### Presigned URL with Server-Side Encryption
+
+```cpp
+// Presigned PUT URL with SSE-S3
+presigned_url_options put_options;
+put_options.method = "PUT";
+put_options.expiration = std::chrono::seconds{300};
+put_options.server_side_encryption = "AES256";
+
+// Presigned PUT URL with SSE-KMS
+presigned_url_options kms_options;
+kms_options.method = "PUT";
+kms_options.expiration = std::chrono::seconds{300};
+kms_options.server_side_encryption = "aws:kms";
+kms_options.kms_key_id = "arn:aws:kms:us-east-1:123456789012:key/12345678-...";
+
+auto url = storage->generate_presigned_url("encrypted-file.bin", kms_options);
+```
+
+### Presigned URL with Storage Class
+
+```cpp
+// Upload to Infrequent Access tier
+presigned_url_options ia_options;
+ia_options.method = "PUT";
+ia_options.storage_class = "STANDARD_IA";  // or GLACIER, DEEP_ARCHIVE, etc.
+
+auto url = storage->generate_presigned_url("archive/data.bin", ia_options);
+```
+
+### Presigned URL with Custom Metadata
+
+```cpp
+presigned_url_options meta_options;
+meta_options.method = "PUT";
+meta_options.custom_metadata = {
+    {"author", "user-123"},
+    {"version", "1.0"},
+    {"checksum", "abc123"}
+};
+
+auto url = storage->generate_presigned_url("metadata/file.bin", meta_options);
+```
+
+### Presigned URL with Response Overrides
+
+For download URLs, override response headers:
+
+```cpp
+presigned_url_options get_options;
+get_options.method = "GET";
+get_options.expiration = std::chrono::seconds{3600};
+// Override Content-Type for inline viewing
+get_options.response_content_type = "application/pdf";
+// Override Content-Disposition for download filename
+get_options.response_content_disposition = "attachment; filename=\"report.pdf\"";
+
+auto url = storage->generate_presigned_url("docs/report.pdf", get_options);
+```
+
+## Server-Side Encryption
+
+Enable encryption at rest with cloud provider managed keys:
+
+```cpp
+cloud_transfer_options options;
+
+// SSE-S3: Amazon S3 managed keys
+options.server_side_encryption = "AES256";
+
+// SSE-KMS: AWS KMS managed keys
+options.server_side_encryption = "aws:kms";
+options.kms_key_id = "arn:aws:kms:us-east-1:123456789012:key/12345678-...";
+
+auto result = storage->upload("encrypted-file.bin", data, options);
+```
+
+## Storage Classes
+
+Optimize storage costs with different storage tiers:
+
+```cpp
+cloud_transfer_options options;
+
+// Standard storage (default)
+options.storage_class = "STANDARD";
+
+// Infrequent Access (for less frequently accessed data)
+options.storage_class = "STANDARD_IA";
+
+// One Zone Infrequent Access (lower cost, single AZ)
+options.storage_class = "ONEZONE_IA";
+
+// Glacier (archive storage)
+options.storage_class = "GLACIER";
+
+// Glacier Deep Archive (lowest cost, longest retrieval)
+options.storage_class = "DEEP_ARCHIVE";
+
+auto result = storage->upload("archive/data.bin", data, options);
+```
+
+## S3-Compatible Storage (MinIO)
+
+Use S3 protocol with MinIO or other S3-compatible storage:
+
+```cpp
+// Configure for MinIO
+auto minio_config = cloud_config_builder::s3()
+    .with_bucket("my-bucket")
+    .with_region("us-east-1")  // Region is required but not used by MinIO
+    .with_endpoint("http://localhost:9000")
+    .with_path_style(true)     // MinIO requires path-style URLs
+    .with_ssl(false, false)    // Disable SSL for local development
+    .build_s3();
+
+// Create credentials (MinIO default: minioadmin/minioadmin)
+static_credentials creds;
+creds.access_key_id = "minioadmin";
+creds.secret_access_key = "minioadmin";
+
+auto provider = s3_credential_provider::create(creds);
+auto storage = s3_storage::create(minio_config, provider);
+
+// Use like regular S3
+auto result = storage->connect();
+if (result.has_value()) {
+    storage->upload("test-file.txt", data);
+}
+```
+
+### Path Style vs Virtual Hosted Style
+
+```cpp
+// Virtual-hosted style (default for AWS S3)
+// URL: https://bucket-name.s3.region.amazonaws.com/key
+auto aws_config = cloud_config_builder::s3()
+    .with_bucket("my-bucket")
+    .with_region("us-east-1")
+    .with_path_style(false)  // default
+    .build_s3();
+
+// Path-style (required for MinIO and some S3-compatible storage)
+// URL: http://endpoint/bucket-name/key
+auto minio_config = cloud_config_builder::s3()
+    .with_bucket("my-bucket")
+    .with_endpoint("http://localhost:9000")
+    .with_path_style(true)
+    .build_s3();
 ```
 
 ## Provider Support
