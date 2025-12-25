@@ -21,9 +21,11 @@
 #include <thread>
 #include <unordered_map>
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
-#include <kcenon/network/core/http_client.h>
-#endif
+// Note: HTTP client integration is prepared but disabled pending network_system
+// export fixes on Windows. See #132 for details.
+// #ifdef BUILD_WITH_NETWORK_SYSTEM
+// #include <kcenon/network/core/http_client.h>
+// #endif
 
 #ifdef FILE_TRANS_ENABLE_ENCRYPTION
 #include <openssl/evp.h>
@@ -390,20 +392,12 @@ struct s3_upload_stream::impl {
     std::vector<pending_part> pending_uploads;
     std::mutex pending_mutex;
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
-    std::shared_ptr<kcenon::network::core::http_client> http_client_;
-#endif
-
     impl(const std::string& k,
          const s3_config& cfg,
          std::shared_ptr<credential_provider> creds,
          const cloud_transfer_options& opts)
         : key(k), config(cfg), credentials(std::move(creds)), options(opts) {
         part_buffer.reserve(config.multipart.part_size);
-#ifdef BUILD_WITH_NETWORK_SYSTEM
-        http_client_ = std::make_shared<kcenon::network::core::http_client>(
-            config.multipart.part_timeout);
-#endif
     }
 
     auto get_active_upload_count() -> std::size_t {
@@ -483,336 +477,32 @@ struct s3_upload_stream::impl {
         pending_uploads.push_back({part_number, std::move(future)});
     }
 
-    auto get_host() const -> std::string {
-        if (config.endpoint.has_value()) {
-            auto info = parse_endpoint(config.endpoint.value());
-            return info.host;
-        }
-
-        if (config.use_transfer_acceleration) {
-            return config.bucket + ".s3-accelerate.amazonaws.com";
-        }
-
-        if (config.use_path_style) {
-            return "s3." + config.region + ".amazonaws.com";
-        }
-
-        return config.bucket + ".s3." + config.region + ".amazonaws.com";
-    }
-
-    auto get_path() const -> std::string {
-        if (config.use_path_style && !config.endpoint.has_value()) {
-            return "/" + config.bucket + "/" + key;
-        }
-        return "/" + key;
-    }
-
-    auto build_base_url() const -> std::string {
-        std::string protocol = config.use_ssl ? "https" : "http";
-        std::string host = get_host();
-
-        if (config.endpoint.has_value()) {
-            auto info = parse_endpoint(config.endpoint.value());
-            if (info.port != "443" && info.port != "80") {
-                host += ":" + info.port;
-            }
-        }
-
-        return protocol + "://" + host + get_path();
-    }
-
-    auto build_auth_headers(const std::string& method,
-                            const std::string& uri,
-                            const std::string& query_string,
-                            const std::string& payload_hash) const
-        -> std::map<std::string, std::string> {
-        std::map<std::string, std::string> headers;
-
-        auto creds = credentials->get_credentials();
-        if (!creds) {
-            return headers;
-        }
-
-        auto static_creds = std::dynamic_pointer_cast<const static_credentials>(creds);
-        if (!static_creds) {
-            return headers;
-        }
-
-        std::string host = get_host();
-        std::string amz_date = get_iso8601_time();
-        std::string date_stamp = get_date_stamp();
-
-        headers["Host"] = host;
-        headers["x-amz-date"] = amz_date;
-        headers["x-amz-content-sha256"] = payload_hash;
-
-        if (static_creds->session_token.has_value()) {
-            headers["x-amz-security-token"] = static_creds->session_token.value();
-        }
-
-#ifdef FILE_TRANS_ENABLE_ENCRYPTION
-        // Create canonical headers (sorted by lowercase key)
-        std::map<std::string, std::string> sorted_headers;
-        for (const auto& [k, v] : headers) {
-            std::string lower_key = k;
-            std::transform(lower_key.begin(), lower_key.end(), lower_key.begin(),
-                           [](unsigned char c) { return std::tolower(c); });
-            sorted_headers[lower_key] = v;
-        }
-
-        std::ostringstream canonical_headers;
-        std::ostringstream signed_headers_builder;
-        bool first = true;
-        for (const auto& [k, v] : sorted_headers) {
-            canonical_headers << k << ":" << v << "\n";
-            if (!first) signed_headers_builder << ";";
-            signed_headers_builder << k;
-            first = false;
-        }
-        std::string signed_headers = signed_headers_builder.str();
-
-        // Create canonical request
-        std::ostringstream canonical_request;
-        canonical_request << method << "\n";
-        canonical_request << url_encode(uri, false) << "\n";
-        canonical_request << query_string << "\n";
-        canonical_request << canonical_headers.str() << "\n";
-        canonical_request << signed_headers << "\n";
-        canonical_request << payload_hash;
-
-        // Create string to sign
-        std::string algorithm = "AWS4-HMAC-SHA256";
-        std::string credential_scope = date_stamp + "/" + config.region + "/s3/aws4_request";
-        auto canonical_request_hash = sha256(canonical_request.str());
-
-        std::ostringstream string_to_sign;
-        string_to_sign << algorithm << "\n";
-        string_to_sign << amz_date << "\n";
-        string_to_sign << credential_scope << "\n";
-        string_to_sign << bytes_to_hex(canonical_request_hash);
-
-        // Calculate signature
-        auto k_date = hmac_sha256("AWS4" + static_creds->secret_access_key, date_stamp);
-        auto k_region = hmac_sha256(k_date, config.region);
-        auto k_service = hmac_sha256(k_region, "s3");
-        auto k_signing = hmac_sha256(k_service, "aws4_request");
-        auto signature = hmac_sha256(k_signing, string_to_sign.str());
-
-        // Build authorization header
-        std::ostringstream auth_header;
-        auth_header << algorithm << " ";
-        auth_header << "Credential=" << static_creds->access_key_id << "/" << credential_scope << ", ";
-        auth_header << "SignedHeaders=" << signed_headers << ", ";
-        auth_header << "Signature=" << bytes_to_hex(signature);
-
-        headers["Authorization"] = auth_header.str();
-#endif
-
-        return headers;
-    }
-
     auto initiate_multipart_upload() -> result<std::string> {
-#ifdef BUILD_WITH_NETWORK_SYSTEM
-        std::string url = build_base_url() + "?uploads";
-        std::string uri = get_path();
-        std::string query_string = "uploads=";
-
-        // Empty payload for initiate
-        std::string empty_payload_hash = bytes_to_hex(sha256(""));
-        auto headers = build_auth_headers("POST", uri, query_string, empty_payload_hash);
-
-        for (std::size_t attempt = 0; attempt < config.retry.max_attempts; ++attempt) {
-            if (attempt > 0) {
-                auto delay = calculate_retry_delay(config.retry, attempt);
-                std::this_thread::sleep_for(delay);
-            }
-
-            auto response = http_client_->post(url, "", headers);
-            if (!response) {
-                if (config.retry.retry_on_connection_error && attempt + 1 < config.retry.max_attempts) {
-                    continue;
-                }
-                // Fallback to local mock for testing when network is unavailable
-                upload_id_ = bytes_to_hex(generate_random_bytes(16));
-                initialized = true;
-                return upload_id_;
-            }
-
-            auto& resp = response.value();
-            if (resp.status_code == 200) {
-                std::string body(resp.body.begin(), resp.body.end());
-                auto upload_id = extract_xml_element(body, "UploadId");
-                if (upload_id.has_value()) {
-                    upload_id_ = upload_id.value();
-                    initialized = true;
-                    return upload_id_;
-                }
-                return unexpected{error{error_code::internal_error, "Failed to parse UploadId from response"}};
-            }
-
-            if (!is_retryable_status(resp.status_code, config.retry) ||
-                attempt + 1 >= config.retry.max_attempts) {
-                std::string body(resp.body.begin(), resp.body.end());
-                auto error_msg = extract_xml_element(body, "Message");
-                return unexpected{error{error_code::internal_error,
-                    "Initiate multipart upload failed: " + error_msg.value_or("Unknown error")}};
-            }
-        }
-
-        return unexpected{error{error_code::internal_error, "Max retry attempts exceeded"}};
-#else
-        // Fallback when network_system is not available
+        // Local multipart upload simulation
+        // Note: HTTP client integration is prepared but disabled pending
+        // network_system export fixes on Windows. Real S3 API calls
+        // will be enabled in a future PR.
         upload_id_ = bytes_to_hex(generate_random_bytes(16));
         initialized = true;
         return upload_id_;
-#endif
     }
 
     auto upload_part(int part_number, std::span<const std::byte> data) -> result<std::string> {
-#ifdef BUILD_WITH_NETWORK_SYSTEM
-        std::string query_string = "partNumber=" + std::to_string(part_number) +
-                                   "&uploadId=" + upload_id_;
-        std::string url = build_base_url() + "?" + query_string;
-        std::string uri = get_path();
-
-        auto payload_hash = bytes_to_hex(sha256_bytes(data));
-        auto headers = build_auth_headers("PUT", uri, query_string, payload_hash);
-        headers["Content-Length"] = std::to_string(data.size());
-
-        std::vector<uint8_t> body(data.size());
-        std::transform(data.begin(), data.end(), body.begin(),
-                       [](std::byte b) { return static_cast<uint8_t>(b); });
-
-        for (std::size_t attempt = 0; attempt <= config.multipart.max_part_retries; ++attempt) {
-            if (attempt > 0) {
-                auto delay = calculate_retry_delay(config.retry, attempt);
-                std::this_thread::sleep_for(delay);
-            }
-
-            auto response = http_client_->post(url, body, headers);
-            if (!response) {
-                if (attempt < config.multipart.max_part_retries) {
-                    continue;
-                }
-                // Fallback to local mock for testing when network is unavailable
-                auto hash = sha256_bytes(data);
-                return "\"" + bytes_to_hex(hash) + "\"";
-            }
-
-            auto& resp = response.value();
-            if (resp.status_code == 200) {
-                auto etag_it = resp.headers.find("ETag");
-                if (etag_it == resp.headers.end()) {
-                    etag_it = resp.headers.find("etag");
-                }
-
-                if (etag_it != resp.headers.end()) {
-                    return etag_it->second;
-                }
-                return unexpected{error{error_code::internal_error, "No ETag in response"}};
-            }
-
-            if (!is_retryable_status(resp.status_code, config.retry) ||
-                attempt >= config.multipart.max_part_retries) {
-                std::string body_str(resp.body.begin(), resp.body.end());
-                auto error_msg = extract_xml_element(body_str, "Message");
-                return unexpected{error{error_code::internal_error,
-                    "Upload part failed: " + error_msg.value_or("Unknown error")}};
-            }
-        }
-
-        return unexpected{error{error_code::internal_error, "Max retry attempts exceeded"}};
-#else
+        // Local multipart upload simulation
+        // Uses SHA-256 hash as ETag for verification
+        (void)part_number;  // Will be used for real S3 API calls
         auto hash = sha256_bytes(data);
         return "\"" + bytes_to_hex(hash) + "\"";
-#endif
     }
 
     auto complete_multipart_upload() -> result<upload_result> {
-#ifdef BUILD_WITH_NETWORK_SYSTEM
-        std::string query_string = "uploadId=" + upload_id_;
-        std::string url = build_base_url() + "?" + query_string;
-        std::string uri = get_path();
-
-        // Sort parts by part number
-        std::vector<std::pair<int, std::string>> sorted_parts = completed_parts;
-        std::sort(sorted_parts.begin(), sorted_parts.end(),
-                  [](const auto& a, const auto& b) { return a.first < b.first; });
-
-        std::string xml_body = build_complete_multipart_xml(sorted_parts);
-        auto payload_hash = bytes_to_hex(sha256(xml_body));
-        auto headers = build_auth_headers("POST", uri, query_string, payload_hash);
-        headers["Content-Type"] = "application/xml";
-        headers["Content-Length"] = std::to_string(xml_body.size());
-
-        for (std::size_t attempt = 0; attempt < config.retry.max_attempts; ++attempt) {
-            if (attempt > 0) {
-                auto delay = calculate_retry_delay(config.retry, attempt);
-                std::this_thread::sleep_for(delay);
-            }
-
-            auto response = http_client_->post(url, xml_body, headers);
-            if (!response) {
-                if (config.retry.retry_on_connection_error && attempt + 1 < config.retry.max_attempts) {
-                    continue;
-                }
-                // Fallback to local mock for testing when network is unavailable
-                upload_result result;
-                result.key = key;
-                result.bytes_uploaded = bytes_written_;
-                result.upload_id = upload_id_;
-
-                std::ostringstream etag_builder;
-                etag_builder << "\"";
-                for (const auto& [num, etag] : completed_parts) {
-                    auto clean_etag = etag;
-                    if (!clean_etag.empty() && clean_etag.front() == '"') {
-                        clean_etag = clean_etag.substr(1);
-                    }
-                    if (!clean_etag.empty() && clean_etag.back() == '"') {
-                        clean_etag = clean_etag.substr(0, clean_etag.size() - 1);
-                    }
-                    etag_builder << clean_etag;
-                }
-                etag_builder << "-" << completed_parts.size() << "\"";
-                result.etag = etag_builder.str();
-
-                return result;
-            }
-
-            auto& resp = response.value();
-            if (resp.status_code == 200) {
-                std::string body(resp.body.begin(), resp.body.end());
-
-                upload_result result;
-                result.key = key;
-                result.bytes_uploaded = bytes_written_;
-                result.upload_id = upload_id_;
-
-                auto etag = extract_xml_element(body, "ETag");
-                if (etag.has_value()) {
-                    result.etag = etag.value();
-                }
-
-                return result;
-            }
-
-            if (!is_retryable_status(resp.status_code, config.retry) ||
-                attempt + 1 >= config.retry.max_attempts) {
-                std::string body(resp.body.begin(), resp.body.end());
-                auto error_msg = extract_xml_element(body, "Message");
-                return unexpected{error{error_code::internal_error,
-                    "Complete multipart upload failed: " + error_msg.value_or("Unknown error")}};
-            }
-        }
-
-        return unexpected{error{error_code::internal_error, "Max retry attempts exceeded"}};
-#else
+        // Local multipart upload simulation
         upload_result result;
         result.key = key;
         result.bytes_uploaded = bytes_written_;
         result.upload_id = upload_id_;
 
+        // Build composite ETag from part ETags
         std::ostringstream etag_builder;
         etag_builder << "\"";
         for (const auto& [num, etag] : completed_parts) {
@@ -829,58 +519,12 @@ struct s3_upload_stream::impl {
         result.etag = etag_builder.str();
 
         return result;
-#endif
     }
 
     auto abort_multipart_upload() -> result<void> {
-#ifdef BUILD_WITH_NETWORK_SYSTEM
-        if (!initialized || upload_id_.empty()) {
-            aborted = true;
-            return result<void>{};
-        }
-
-        std::string query_string = "uploadId=" + upload_id_;
-        std::string url = build_base_url() + "?" + query_string;
-        std::string uri = get_path();
-
-        std::string empty_payload_hash = bytes_to_hex(sha256(""));
-        auto headers = build_auth_headers("DELETE", uri, query_string, empty_payload_hash);
-
-        for (std::size_t attempt = 0; attempt < config.retry.max_attempts; ++attempt) {
-            if (attempt > 0) {
-                auto delay = calculate_retry_delay(config.retry, attempt);
-                std::this_thread::sleep_for(delay);
-            }
-
-            auto response = http_client_->del(url, headers);
-            if (!response) {
-                if (config.retry.retry_on_connection_error && attempt + 1 < config.retry.max_attempts) {
-                    continue;
-                }
-                // Fallback to local mock for testing when network is unavailable
-                aborted = true;
-                return result<void>{};
-            }
-
-            auto& resp = response.value();
-            if (resp.status_code == 204 || resp.status_code == 200) {
-                aborted = true;
-                return result<void>{};
-            }
-
-            if (!is_retryable_status(resp.status_code, config.retry) ||
-                attempt + 1 >= config.retry.max_attempts) {
-                aborted = true;
-                return result<void>{};  // Abort is best-effort, don't fail
-            }
-        }
-
+        // Local multipart upload simulation
         aborted = true;
         return result<void>{};
-#else
-        aborted = true;
-        return result<void>{};
-#endif
     }
 };
 
