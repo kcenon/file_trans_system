@@ -82,6 +82,65 @@ public:
         auto with_chunk_size(std::size_t size) -> builder&;
 
         /**
+         * @brief Set storage mode
+         * @param mode Storage mode (local_only, cloud_only, hybrid)
+         * @return Reference to builder for chaining
+         */
+        auto with_storage_mode(storage_mode mode) -> builder&;
+
+        /**
+         * @brief Set cloud storage backend
+         * @param cloud_storage Cloud storage interface instance
+         * @return Reference to builder for chaining
+         */
+        auto with_cloud_storage(
+            std::shared_ptr<cloud_storage_interface> cloud_storage) -> builder&;
+
+        /**
+         * @brief Set cloud storage credentials
+         * @param credentials Credential provider instance
+         * @return Reference to builder for chaining
+         */
+        auto with_cloud_credentials(
+            std::shared_ptr<credential_provider> credentials) -> builder&;
+
+        /**
+         * @brief Set cloud key prefix
+         * @param prefix Key prefix for all cloud objects
+         * @return Reference to builder for chaining
+         */
+        auto with_cloud_key_prefix(std::string prefix) -> builder&;
+
+        /**
+         * @brief Enable cloud write replication
+         * @param enable Enable replication (default: true)
+         * @return Reference to builder for chaining
+         */
+        auto with_cloud_replication(bool enable) -> builder&;
+
+        /**
+         * @brief Enable cloud read fallback
+         * @param enable Enable fallback (default: true)
+         * @return Reference to builder for chaining
+         */
+        auto with_cloud_fallback(bool enable) -> builder&;
+
+        /**
+         * @brief Enable local caching for cloud objects
+         * @param enable Enable caching (default: true)
+         * @param max_size Maximum cache size in bytes (default: 1GB)
+         * @return Reference to builder for chaining
+         */
+        auto with_cloud_cache(bool enable, uint64_t max_size = 1ULL * 1024 * 1024 * 1024) -> builder&;
+
+        /**
+         * @brief Set cloud cache directory
+         * @param dir Cache directory path
+         * @return Reference to builder for chaining
+         */
+        auto with_cloud_cache_directory(const std::filesystem::path& dir) -> builder&;
+
+        /**
          * @brief Build the server instance
          * @return Result containing the server or an error
          */
