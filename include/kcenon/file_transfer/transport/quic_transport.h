@@ -13,6 +13,7 @@
 #include <memory>
 #include <mutex>
 
+#include "connection_migration.h"
 #include "session_resumption.h"
 #include "transport_interface.h"
 #include "transport_config.h"
@@ -205,6 +206,78 @@ public:
     [[nodiscard]] auto connect_with_0rtt(
         const endpoint& remote,
         std::span<const std::byte> early_data) -> result<connection_result>;
+
+    // ========================================================================
+    // Connection Migration
+    // ========================================================================
+
+    /**
+     * @brief Set the connection migration manager
+     * @param manager Migration manager instance
+     */
+    void set_migration_manager(std::shared_ptr<connection_migration_manager> manager);
+
+    /**
+     * @brief Get the connection migration manager
+     * @return Migration manager if set
+     */
+    [[nodiscard]] auto migration_manager() const
+        -> std::shared_ptr<connection_migration_manager>;
+
+    /**
+     * @brief Check if connection migration is available
+     * @return true if migration can be performed
+     */
+    [[nodiscard]] auto is_migration_available() const -> bool;
+
+    /**
+     * @brief Get current network path
+     * @return Current path if connected
+     */
+    [[nodiscard]] auto current_network_path() const -> std::optional<network_path>;
+
+    /**
+     * @brief Migrate connection to a new network path
+     * @param new_path Target path for migration
+     * @return Migration result
+     *
+     * Migrates the active QUIC connection to use a different network path.
+     * This allows transfers to continue when network conditions change
+     * (e.g., WiFi to cellular).
+     */
+    [[nodiscard]] auto migrate_to(const network_path& new_path)
+        -> result<migration_result>;
+
+    /**
+     * @brief Set callback for migration events
+     * @param callback Function called when migration events occur
+     */
+    void on_migration_event(
+        std::function<void(const migration_event_data&)> callback);
+
+    /**
+     * @brief Get current migration state
+     * @return Current migration state
+     */
+    [[nodiscard]] auto get_migration_state() const
+        -> ::kcenon::file_transfer::migration_state;
+
+    /**
+     * @brief Get migration statistics
+     * @return Current migration statistics
+     */
+    [[nodiscard]] auto get_migration_statistics() const -> migration_statistics;
+
+    /**
+     * @brief Start network monitoring for automatic migration
+     * @return Result indicating success or failure
+     */
+    [[nodiscard]] auto start_network_monitoring() -> result<void>;
+
+    /**
+     * @brief Stop network monitoring
+     */
+    void stop_network_monitoring();
 
 private:
     explicit quic_transport(quic_transport_config config);
