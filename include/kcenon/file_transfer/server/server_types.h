@@ -85,6 +85,12 @@ struct server_config {
     uint64_t storage_quota = 100ULL * 1024 * 1024 * 1024;     // 100GB
     std::size_t chunk_size = 256 * 1024;                       // 256KB
 
+    // Encryption settings
+    bool enable_encryption = false;        ///< Allow encrypted transfers
+    bool require_encryption = false;       ///< Require encryption for all transfers
+    std::string encryption_password;       ///< Password for key derivation
+    std::vector<std::byte> encryption_key; ///< Raw encryption key
+
     [[nodiscard]] auto is_valid() const -> bool {
         return !storage_directory.empty() && max_connections > 0;
     }

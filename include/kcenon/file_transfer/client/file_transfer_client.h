@@ -110,6 +110,27 @@ public:
         auto with_progress_config(const progress_config& config) -> builder&;
 
         /**
+         * @brief Enable encryption for transfers
+         * @param enable Enable encryption (default: false)
+         * @return Reference to builder for chaining
+         */
+        auto with_encryption(bool enable) -> builder&;
+
+        /**
+         * @brief Set encryption key from password
+         * @param password Password to derive key from
+         * @return Reference to builder for chaining
+         */
+        auto with_encryption_password(const std::string& password) -> builder&;
+
+        /**
+         * @brief Set encryption key directly
+         * @param key Raw encryption key (32 bytes for AES-256)
+         * @return Reference to builder for chaining
+         */
+        auto with_encryption_key(std::span<const std::byte> key) -> builder&;
+
+        /**
          * @brief Build the client instance
          * @return Result containing the client or an error
          */
