@@ -4,6 +4,7 @@
  */
 
 #include "kcenon/file_transfer/transport/quic_transport.h"
+#include "kcenon/file_transfer/transport/connection_migration.h"
 #include "kcenon/file_transfer/transport/session_resumption.h"
 #include "kcenon/file_transfer/core/logging.h"
 
@@ -47,6 +48,11 @@ struct quic_transport::impl {
     std::shared_ptr<session_resumption_manager> session_manager;
     std::atomic<bool> used_0rtt_{false};
     std::atomic<bool> is_0rtt_accepted_{false};
+
+    // Connection migration
+    std::shared_ptr<connection_migration_manager> migration_manager_;
+    std::function<void(const migration_event_data&)> migration_callback;
+    std::mutex migration_mutex;
 
     std::shared_ptr<ns::messaging_quic_client> quic_client;
 
@@ -849,6 +855,171 @@ auto quic_transport_factory::create(const transport_config& config)
 
 auto quic_transport_factory::supported_types() const -> std::vector<std::string> {
     return {"quic"};
+}
+
+// ============================================================================
+// Connection Migration Implementation
+// ============================================================================
+
+void quic_transport::set_migration_manager(
+    std::shared_ptr<connection_migration_manager> manager) {
+    std::lock_guard lock(impl_->migration_mutex);
+    impl_->migration_manager_ = std::move(manager);
+
+    // Set up internal migration event forwarding
+    if (impl_->migration_manager_) {
+        impl_->migration_manager_->on_migration_event(
+            [this](const migration_event_data& event) {
+                std::lock_guard lock(impl_->migration_mutex);
+                if (impl_->migration_callback) {
+                    impl_->migration_callback(event);
+                }
+            });
+    }
+}
+
+auto quic_transport::migration_manager() const
+    -> std::shared_ptr<connection_migration_manager> {
+    std::lock_guard lock(impl_->migration_mutex);
+    return impl_->migration_manager_;
+}
+
+auto quic_transport::is_migration_available() const -> bool {
+    if (!is_connected()) {
+        return false;
+    }
+
+    std::lock_guard lock(impl_->migration_mutex);
+    if (!impl_->migration_manager_) {
+        return false;
+    }
+
+    return impl_->migration_manager_->is_migration_available();
+}
+
+auto quic_transport::current_network_path() const -> std::optional<network_path> {
+    std::lock_guard lock(impl_->migration_mutex);
+    if (!impl_->migration_manager_) {
+        // Build path from current connection info
+        if (impl_->remote_ep.has_value()) {
+            network_path path;
+            path.remote_address = impl_->remote_ep->host;
+            path.remote_port = impl_->remote_ep->port;
+            if (impl_->local_ep.has_value()) {
+                path.local_address = impl_->local_ep->host;
+                path.local_port = impl_->local_ep->port;
+            }
+            path.validated = true;
+            path.created_at = std::chrono::steady_clock::now();
+            return path;
+        }
+        return std::nullopt;
+    }
+
+    return impl_->migration_manager_->current_path();
+}
+
+auto quic_transport::migrate_to(const network_path& new_path)
+    -> result<migration_result> {
+
+    if (!is_connected()) {
+        return unexpected{error{error_code::not_initialized,
+            "Transport is not connected"}};
+    }
+
+    std::lock_guard lock(impl_->migration_mutex);
+    if (!impl_->migration_manager_) {
+        return unexpected{error{error_code::not_initialized,
+            "Migration manager not configured"}};
+    }
+
+    FT_LOG_INFO(log_category::transfer,
+        "Initiating migration to: " + new_path.to_string());
+
+    auto result = impl_->migration_manager_->migrate_to_path(new_path);
+    if (!result.has_value()) {
+        FT_LOG_ERROR(log_category::transfer,
+            "Migration failed: " + result.error().message);
+        return result;
+    }
+
+    if (result.value().success) {
+        // Update local endpoint if migration succeeded
+        if (!new_path.local_address.empty()) {
+            endpoint new_local;
+            new_local.host = new_path.local_address;
+            new_local.port = new_path.local_port;
+            impl_->local_ep = new_local;
+        }
+
+        FT_LOG_INFO(log_category::transfer,
+            "Migration completed successfully in " +
+            std::to_string(result.value().duration.count()) + "ms");
+    }
+
+    return result;
+}
+
+void quic_transport::on_migration_event(
+    std::function<void(const migration_event_data&)> callback) {
+    std::lock_guard lock(impl_->migration_mutex);
+    impl_->migration_callback = std::move(callback);
+}
+
+auto quic_transport::migration_state() const -> enum migration_state {
+    std::lock_guard lock(impl_->migration_mutex);
+    if (!impl_->migration_manager_) {
+        return migration_state::idle;
+    }
+    return impl_->migration_manager_->state();
+}
+
+auto quic_transport::get_migration_statistics() const -> migration_statistics {
+    std::lock_guard lock(impl_->migration_mutex);
+    if (!impl_->migration_manager_) {
+        return migration_statistics{};
+    }
+    return impl_->migration_manager_->get_statistics();
+}
+
+auto quic_transport::start_network_monitoring() -> result<void> {
+    std::lock_guard lock(impl_->migration_mutex);
+    if (!impl_->migration_manager_) {
+        // Create a default migration manager if not set
+        impl_->migration_manager_ = connection_migration_manager::create();
+
+        // Set up event forwarding
+        impl_->migration_manager_->on_migration_event(
+            [this](const migration_event_data& event) {
+                std::lock_guard lock(impl_->migration_mutex);
+                if (impl_->migration_callback) {
+                    impl_->migration_callback(event);
+                }
+            });
+    }
+
+    // Set current path based on connection info
+    if (is_connected() && impl_->remote_ep.has_value()) {
+        network_path current_path;
+        current_path.remote_address = impl_->remote_ep->host;
+        current_path.remote_port = impl_->remote_ep->port;
+        if (impl_->local_ep.has_value()) {
+            current_path.local_address = impl_->local_ep->host;
+            current_path.local_port = impl_->local_ep->port;
+        }
+        current_path.validated = true;
+        current_path.created_at = std::chrono::steady_clock::now();
+        impl_->migration_manager_->set_current_path(current_path);
+    }
+
+    return impl_->migration_manager_->start_monitoring();
+}
+
+void quic_transport::stop_network_monitoring() {
+    std::lock_guard lock(impl_->migration_mutex);
+    if (impl_->migration_manager_) {
+        impl_->migration_manager_->stop_monitoring();
+    }
 }
 
 }  // namespace kcenon::file_transfer

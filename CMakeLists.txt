@@ -274,6 +274,7 @@ set(FILE_TRANS_SOURCES
     src/transport/tcp_transport.cpp
     src/transport/quic_transport.cpp
     src/transport/session_resumption.cpp
+    src/transport/connection_migration.cpp
 )
 
 # Add encryption sources if enabled
