@@ -162,6 +162,29 @@ set_target_properties(scalability_benchmarks PROPERTIES
 )
 
 ##################################################
+# Transport Benchmarks (QUIC vs TCP)
+##################################################
+
+add_executable(transport_benchmarks
+    transport/bench_quic_transport.cpp
+    transport/bench_tcp_vs_quic_comparison.cpp
+)
+
+target_link_libraries(transport_benchmarks PRIVATE
+    FileTransSystem
+    benchmark_utils
+    benchmark::benchmark
+    benchmark::benchmark_main
+    Threads::Threads
+)
+
+set_target_properties(transport_benchmarks PROPERTIES
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
+##################################################
 # Benchmark Data Setup
 ##################################################
 
@@ -222,8 +245,18 @@ add_custom_target(run_scalability_benchmarks
     COMMENT "Running scalability benchmarks..."
 )
 
+add_custom_target(run_transport_benchmarks
+    COMMAND $<TARGET_FILE:transport_benchmarks>
+        --benchmark_format=console
+        --benchmark_out=${CMAKE_BINARY_DIR}/benchmark_results/transport.json
+        --benchmark_out_format=json
+    DEPENDS transport_benchmarks
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    COMMENT "Running transport benchmarks (QUIC vs TCP)..."
+)
+
 add_custom_target(run_benchmarks
-    DEPENDS run_throughput_benchmarks run_compression_benchmarks run_latency_benchmarks run_memory_benchmarks run_scalability_benchmarks
+    DEPENDS run_throughput_benchmarks run_compression_benchmarks run_latency_benchmarks run_memory_benchmarks run_scalability_benchmarks run_transport_benchmarks
     COMMENT "Running all benchmarks..."
 )
 

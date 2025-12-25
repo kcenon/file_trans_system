@@ -31,6 +31,9 @@ cmake --build build --parallel
 # Run scalability benchmarks
 ./build/bin/scalability_benchmarks
 
+# Run transport benchmarks (QUIC vs TCP)
+./build/bin/transport_benchmarks
+
 # Run with detailed output
 ./build/bin/throughput_benchmarks --benchmark_counters_tabular=true
 ```
@@ -142,6 +145,37 @@ cmake --build build --parallel
 | `BM_Scalability_MemoryStability` | Long-running memory | 5, 10, 20 cycles |
 | `BM_Scalability_ConcurrentUploads` | Concurrent upload throughput | 2, 5, 10 clients |
 
+### Transport Benchmarks (`transport/`)
+
+Benchmarks for QUIC and TCP transport layer comparison.
+
+#### QUIC Transport Benchmarks
+
+| Benchmark | Description | Target |
+|-----------|-------------|--------|
+| `BM_QUIC_Connection_1RTT` | QUIC 1-RTT connection establishment | - |
+| `BM_QUIC_Connection_0RTT` | QUIC 0-RTT connection resumption | <= 50ms |
+| `BM_QUIC_SessionTicket_Operations` | Session ticket store/retrieve | - |
+| `BM_QUIC_DataPreparation_Throughput` | Data preparation throughput | >= 90% of TCP |
+| `BM_QUIC_ConnectionMigration_Preparation` | Migration preparation overhead | < 100ms |
+| `BM_QUIC_PathValidation` | Path validation challenge generation | - |
+| `BM_QUIC_Statistics_Collection` | Statistics collection overhead | - |
+| `BM_QUIC_Transport_Creation` | Transport instance creation time | - |
+| `BM_QUIC_Stream_Creation` | Stream creation overhead | - |
+
+#### TCP vs QUIC Comparison Benchmarks
+
+| Benchmark | Description | Comparison |
+|-----------|-------------|------------|
+| `BM_Comparison_Factory_*` | Factory creation overhead | TCP vs QUIC |
+| `BM_Comparison_TransportCreate_*` | Transport instance creation | TCP vs QUIC |
+| `BM_Comparison_ConfigBuild_*` | Configuration building | TCP vs QUIC |
+| `BM_Comparison_Statistics_*` | Statistics collection overhead | TCP vs QUIC |
+| `BM_Comparison_BufferPrep_*` | Buffer preparation throughput | TCP vs QUIC |
+| `BM_Comparison_StateCheck_*` | State checking overhead | TCP vs QUIC |
+| `BM_Comparison_Reconnect_*` | 1-RTT vs 0-RTT reconnection | >= 50% improvement |
+| `BM_Comparison_TypeInfo_*` | Type identification overhead | TCP vs QUIC |
+
 ## Performance Targets
 
 Based on SRS requirements:
@@ -157,6 +191,9 @@ Based on SRS requirements:
 | Client Memory | < 50 MB | `BM_Memory_ClientBaseline` | Verified |
 | Per-connection Memory | < 1 MB | `BM_Memory_PerConnection` | Verified |
 | Concurrent Connections | >= 100 | `BM_Scalability_ConcurrentConnections` | Verified |
+| QUIC Throughput | >= 90% of TCP | `BM_Comparison_BufferPrep_*` | Pending |
+| QUIC 0-RTT Reconnection | <= 50ms | `BM_QUIC_Connection_0RTT` | Pending |
+| Connection Migration | < 100ms disruption | `BM_QUIC_ConnectionMigration_*` | Pending |
 
 ## Directory Structure
 
@@ -176,8 +213,11 @@ benchmarks/
 │   └── bench_latency.cpp          # Connection and response latency
 ├── memory/
 │   └── bench_memory_usage.cpp     # Memory usage benchmarks
-└── scalability/
-    └── bench_scalability.cpp      # Scalability benchmarks
+├── scalability/
+│   └── bench_scalability.cpp      # Scalability benchmarks
+└── transport/
+    ├── bench_quic_transport.cpp          # QUIC transport benchmarks
+    └── bench_tcp_vs_quic_comparison.cpp  # TCP vs QUIC comparison
 ```
 
 ## Adding New Benchmarks
