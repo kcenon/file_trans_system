@@ -205,6 +205,7 @@ enum class client_capabilities : uint32_t {
     batch_transfer = 1 << 2,
     quic_support = 1 << 3,
     auto_reconnect = 1 << 4,
+    encryption = 1 << 5,        ///< Application-level encryption support
 };
 
 [[nodiscard]] constexpr auto operator|(client_capabilities a,
@@ -234,6 +235,7 @@ enum class transfer_options : uint32_t {
     overwrite_existing = 1 << 0,
     verify_checksum = 1 << 1,
     preserve_timestamp = 1 << 2,
+    encrypted = 1 << 3,              ///< Enable encryption for this transfer
 };
 
 [[nodiscard]] constexpr auto operator|(transfer_options a, transfer_options b)
@@ -260,6 +262,15 @@ enum class wire_compression_mode : uint8_t {
     none = 0x00,
     lz4 = 0x01,
     adaptive = 0x02,
+};
+
+/**
+ * @brief Encryption algorithm for transfers
+ */
+enum class wire_encryption_algorithm : uint8_t {
+    none = 0x00,
+    aes_256_gcm = 0x01,
+    chacha20_poly1305 = 0x02,
 };
 
 /**
@@ -329,7 +340,7 @@ struct msg_heartbeat {
 };
 
 /**
- * @brief UPLOAD_REQUEST message payload (71+ bytes)
+ * @brief UPLOAD_REQUEST message payload (72+ bytes)
  */
 struct msg_upload_request {
     std::array<uint8_t, 16> transfer_id;   // 16 bytes (UUID)
@@ -337,22 +348,24 @@ struct msg_upload_request {
     uint64_t file_size;                     // 8 bytes
     std::array<uint8_t, 32> sha256_hash;   // 32 bytes
     wire_compression_mode compression;      // 1 byte
+    wire_encryption_algorithm encryption;   // 1 byte
     transfer_options options;               // 4 bytes
     uint64_t resume_from;                   // 8 bytes (0 if new)
 
-    static constexpr std::size_t min_serialized_size = 71;
+    static constexpr std::size_t min_serialized_size = 72;
 };
 
 /**
- * @brief UPLOAD_ACCEPT message payload (29 bytes)
+ * @brief UPLOAD_ACCEPT message payload (30 bytes)
  */
 struct msg_upload_accept {
     std::array<uint8_t, 16> transfer_id;   // 16 bytes (UUID)
     wire_compression_mode compression;      // 1 byte (agreed)
+    wire_encryption_algorithm encryption;   // 1 byte (agreed)
     uint32_t chunk_size;                    // 4 bytes
     uint64_t resume_offset;                 // 8 bytes
 
-    static constexpr std::size_t serialized_size = 29;
+    static constexpr std::size_t serialized_size = 30;
 };
 
 /**
@@ -390,31 +403,33 @@ struct msg_upload_ack {
 };
 
 /**
- * @brief DOWNLOAD_REQUEST message payload (27+ bytes)
+ * @brief DOWNLOAD_REQUEST message payload (28+ bytes)
  */
 struct msg_download_request {
     std::array<uint8_t, 16> transfer_id;   // 16 bytes (UUID)
     std::string filename;                   // variable (2-byte length prefix)
     wire_compression_mode compression;      // 1 byte
+    wire_encryption_algorithm encryption;   // 1 byte
     uint64_t resume_from;                   // 8 bytes (0 if new)
 
-    static constexpr std::size_t min_serialized_size = 27;
+    static constexpr std::size_t min_serialized_size = 28;
 };
 
 /**
- * @brief DOWNLOAD_ACCEPT message payload (85 bytes)
+ * @brief DOWNLOAD_ACCEPT message payload (86 bytes)
  */
 struct msg_download_accept {
     std::array<uint8_t, 16> transfer_id;   // 16 bytes (UUID)
     uint64_t file_size;                     // 8 bytes
     std::array<uint8_t, 32> sha256_hash;   // 32 bytes
     wire_compression_mode compression;      // 1 byte (agreed)
+    wire_encryption_algorithm encryption;   // 1 byte (agreed)
     uint32_t chunk_size;                    // 4 bytes
     uint64_t total_chunks;                  // 8 bytes
     uint64_t resume_offset;                 // 8 bytes
     uint64_t modified_time;                 // 8 bytes (timestamp)
 
-    static constexpr std::size_t serialized_size = 85;
+    static constexpr std::size_t serialized_size = 86;
 };
 
 /**
