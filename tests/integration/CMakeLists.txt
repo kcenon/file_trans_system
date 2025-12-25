@@ -2,11 +2,20 @@
 # Integration Tests Configuration
 ##################################################
 
-add_executable(file_trans_integration_tests
+set(INTEGRATION_TEST_SOURCES
     test_basic_scenarios.cpp
     test_error_advanced_scenarios.cpp
     test_concurrency.cpp
 )
+
+# Add encrypted transfer tests if encryption is enabled
+if(FILE_TRANS_ENABLE_ENCRYPTION AND OpenSSL_FOUND)
+    list(APPEND INTEGRATION_TEST_SOURCES
+        test_encrypted_transfer.cpp
+    )
+endif()
+
+add_executable(file_trans_integration_tests ${INTEGRATION_TEST_SOURCES})
 
 target_include_directories(file_trans_integration_tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}

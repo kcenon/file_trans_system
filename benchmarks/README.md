@@ -34,6 +34,9 @@ cmake --build build --parallel
 # Run transport benchmarks (QUIC vs TCP)
 ./build/bin/transport_benchmarks
 
+# Run encryption benchmarks (requires OpenSSL)
+./build/bin/encryption_benchmarks
+
 # Run with detailed output
 ./build/bin/throughput_benchmarks --benchmark_counters_tabular=true
 ```
@@ -145,6 +148,39 @@ cmake --build build --parallel
 | `BM_Scalability_MemoryStability` | Long-running memory | 5, 10, 20 cycles |
 | `BM_Scalability_ConcurrentUploads` | Concurrent upload throughput | 2, 5, 10 clients |
 
+### Encryption Benchmarks (`encryption/`)
+
+Benchmarks for AES-256-GCM encryption and key derivation performance.
+Requires `FILE_TRANS_ENABLE_ENCRYPTION=ON` (enabled by default with OpenSSL).
+
+#### Encryption Throughput Benchmarks
+
+| Benchmark | Description | Target |
+|-----------|-------------|--------|
+| `BM_AES_GCM_Encryption` | Single-shot encryption throughput | >= 1 GB/s |
+| `BM_AES_GCM_Decryption` | Single-shot decryption throughput | >= 1.5 GB/s |
+| `BM_AES_GCM_Encryption_With_AAD` | Encryption with additional data | >= 1 GB/s |
+| `BM_AES_GCM_Encrypt_Chunk` | Chunk-based encryption | - |
+| `BM_AES_GCM_Decrypt_Chunk` | Chunk-based decryption | - |
+| `BM_AES_GCM_Stream_Encrypt` | Streaming encryption | - |
+| `BM_Encryption_Overhead` | Size expansion overhead | <= 10% |
+| `BM_IV_Generation` | IV/nonce generation speed | - |
+
+#### Key Derivation Benchmarks
+
+| Benchmark | Description | Target |
+|-----------|-------------|--------|
+| `BM_PBKDF2_Key_Derivation` | PBKDF2-SHA256 key derivation | >= 100 ops/sec |
+| `BM_PBKDF2_Iterations` | Varying iteration counts | - |
+| `BM_Argon2_Key_Derivation` | Argon2id key derivation | - |
+| `BM_Argon2_Memory_Cost` | Varying memory costs | - |
+| `BM_Argon2_Time_Cost` | Varying time costs | - |
+| `BM_KeyManager_Generate_Random` | Random key generation | - |
+| `BM_KeyManager_Store_Retrieve` | Key storage access | - |
+| `BM_KeyManager_Rotation` | Key rotation | - |
+| `BM_Salt_Generation` | Cryptographic salt generation | - |
+| `BM_Secure_Zero` | Secure memory zeroing | - |
+
 ### Transport Benchmarks (`transport/`)
 
 Benchmarks for QUIC and TCP transport layer comparison.
@@ -194,6 +230,10 @@ Based on SRS requirements:
 | QUIC Throughput | >= 90% of TCP | `BM_Comparison_BufferPrep_*` | Pending |
 | QUIC 0-RTT Reconnection | <= 50ms | `BM_QUIC_Connection_0RTT` | Pending |
 | Connection Migration | < 100ms disruption | `BM_QUIC_ConnectionMigration_*` | Pending |
+| Encryption Throughput | >= 1 GB/s | `BM_AES_GCM_Encryption` | Pending |
+| Decryption Throughput | >= 1.5 GB/s | `BM_AES_GCM_Decryption` | Pending |
+| Encryption Overhead | <= 10% | `BM_Encryption_Overhead` | Pending |
+| Key Derivation | >= 100 ops/sec | `BM_PBKDF2_Key_Derivation` | Pending |
 
 ## Directory Structure
 
@@ -215,9 +255,12 @@ benchmarks/
 │   └── bench_memory_usage.cpp     # Memory usage benchmarks
 ├── scalability/
 │   └── bench_scalability.cpp      # Scalability benchmarks
-└── transport/
-    ├── bench_quic_transport.cpp          # QUIC transport benchmarks
-    └── bench_tcp_vs_quic_comparison.cpp  # TCP vs QUIC comparison
+├── transport/
+│   ├── bench_quic_transport.cpp          # QUIC transport benchmarks
+│   └── bench_tcp_vs_quic_comparison.cpp  # TCP vs QUIC comparison
+└── encryption/
+    ├── bench_encryption_throughput.cpp   # AES-GCM encryption/decryption
+    └── bench_key_derivation.cpp          # PBKDF2, Argon2 key derivation
 ```
 
 ## Adding New Benchmarks
