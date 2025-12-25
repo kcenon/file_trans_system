@@ -90,6 +90,7 @@ if(FILE_TRANS_ENABLE_ENCRYPTION AND OpenSSL_FOUND)
     list(APPEND UNIT_TEST_SOURCES
         unit/cloud/test_s3_storage.cpp
         unit/cloud/test_azure_blob_storage.cpp
+        unit/cloud/test_gcs_storage.cpp
     )
 endif()
 

@@ -292,6 +292,7 @@ if(FILE_TRANS_ENABLE_ENCRYPTION AND OpenSSL_FOUND)
     list(APPEND FILE_TRANS_SOURCES
         src/cloud/s3_storage.cpp
         src/cloud/azure_blob_storage.cpp
+        src/cloud/gcs_storage.cpp
     )
 endif()
 
