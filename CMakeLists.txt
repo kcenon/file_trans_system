@@ -285,6 +285,13 @@ if(FILE_TRANS_ENABLE_ENCRYPTION AND OpenSSL_FOUND)
     )
 endif()
 
+# Add cloud storage sources (requires OpenSSL for AWS Signature V4)
+if(FILE_TRANS_ENABLE_ENCRYPTION AND OpenSSL_FOUND)
+    list(APPEND FILE_TRANS_SOURCES
+        src/cloud/s3_storage.cpp
+    )
+endif()
+
 add_library(FileTransSystem ${FILE_TRANS_SOURCES})
 
 add_library(kcenon::file_transfer ALIAS FileTransSystem)
