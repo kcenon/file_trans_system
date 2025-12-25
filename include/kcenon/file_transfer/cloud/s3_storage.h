@@ -11,8 +11,10 @@
 #define KCENON_FILE_TRANSFER_CLOUD_S3_STORAGE_H
 
 #include <atomic>
+#include <future>
 #include <memory>
 #include <mutex>
+#include <vector>
 
 #include "cloud_config.h"
 #include "cloud_credentials.h"

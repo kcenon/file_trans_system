@@ -12,12 +12,20 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <future>
 #include <iomanip>
 #include <map>
 #include <random>
+#include <regex>
 #include <sstream>
 #include <thread>
 #include <unordered_map>
+
+// Note: HTTP client integration is prepared but disabled pending network_system
+// export fixes on Windows. See #132 for details.
+// #ifdef BUILD_WITH_NETWORK_SYSTEM
+// #include <kcenon/network/core/http_client.h>
+// #endif
 
 #ifdef FILE_TRANS_ENABLE_ENCRYPTION
 #include <openssl/evp.h>
@@ -223,6 +231,89 @@ auto parse_endpoint(const std::string& endpoint) -> s3_endpoint_info {
 }
 
 /**
+ * @brief Extract XML element value
+ */
+auto extract_xml_element(const std::string& xml,
+                         const std::string& tag) -> std::optional<std::string> {
+    std::string open_tag = "<" + tag + ">";
+    std::string close_tag = "</" + tag + ">";
+
+    auto start_pos = xml.find(open_tag);
+    if (start_pos == std::string::npos) {
+        return std::nullopt;
+    }
+    start_pos += open_tag.length();
+
+    auto end_pos = xml.find(close_tag, start_pos);
+    if (end_pos == std::string::npos) {
+        return std::nullopt;
+    }
+
+    return xml.substr(start_pos, end_pos - start_pos);
+}
+
+/**
+ * @brief Calculate delay with exponential backoff and jitter
+ */
+auto calculate_retry_delay(const cloud_retry_policy& policy,
+                           std::size_t attempt) -> std::chrono::milliseconds {
+    auto delay = static_cast<double>(policy.initial_delay.count());
+
+    for (std::size_t i = 1; i < attempt; ++i) {
+        delay *= policy.backoff_multiplier;
+    }
+
+    delay = std::min(delay, static_cast<double>(policy.max_delay.count()));
+
+    if (policy.use_jitter) {
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::uniform_real_distribution<> dis(0.5, 1.5);
+        delay *= dis(gen);
+    }
+
+    return std::chrono::milliseconds(static_cast<int64_t>(delay));
+}
+
+/**
+ * @brief Check if HTTP status code indicates a retryable error
+ */
+auto is_retryable_status(int status_code,
+                         const cloud_retry_policy& policy) -> bool {
+    // Rate limiting
+    if (policy.retry_on_rate_limit && (status_code == 429 || status_code == 503)) {
+        return true;
+    }
+
+    // Server errors
+    if (policy.retry_on_server_error && status_code >= 500 && status_code < 600) {
+        return true;
+    }
+
+    return false;
+}
+
+/**
+ * @brief Build XML for completing multipart upload
+ */
+auto build_complete_multipart_xml(
+    const std::vector<std::pair<int, std::string>>& parts) -> std::string {
+    std::ostringstream xml;
+    xml << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
+    xml << "<CompleteMultipartUpload xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">\n";
+
+    for (const auto& [part_num, etag] : parts) {
+        xml << "  <Part>\n";
+        xml << "    <PartNumber>" << part_num << "</PartNumber>\n";
+        xml << "    <ETag>" << etag << "</ETag>\n";
+        xml << "  </Part>\n";
+    }
+
+    xml << "</CompleteMultipartUpload>";
+    return xml.str();
+}
+
+/**
  * @brief Content type detection based on file extension
  */
 auto detect_content_type(const std::string& key) -> std::string {
@@ -291,6 +382,15 @@ struct s3_upload_stream::impl {
     uint64_t bytes_written_ = 0;
     bool finalized = false;
     bool aborted = false;
+    bool initialized = false;
+
+    // Concurrent uploads support
+    struct pending_part {
+        int part_number;
+        std::future<result<std::string>> future;
+    };
+    std::vector<pending_part> pending_uploads;
+    std::mutex pending_mutex;
 
     impl(const std::string& k,
          const s3_config& cfg,
@@ -300,31 +400,120 @@ struct s3_upload_stream::impl {
         part_buffer.reserve(config.multipart.part_size);
     }
 
+    auto get_active_upload_count() -> std::size_t {
+        std::lock_guard<std::mutex> lock(pending_mutex);
+        std::size_t count = 0;
+        for (auto& pending : pending_uploads) {
+            if (pending.future.valid()) {
+                auto status = pending.future.wait_for(std::chrono::milliseconds(0));
+                if (status != std::future_status::ready) {
+                    ++count;
+                }
+            }
+        }
+        return count;
+    }
+
+    auto wait_for_slot() -> result<void> {
+        while (get_active_upload_count() >= config.multipart.max_concurrent_parts) {
+            // Wait for any pending upload to complete
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
+            // Check for completed uploads and collect results
+            auto collect_result = collect_completed_uploads();
+            if (!collect_result.has_value()) {
+                return unexpected{collect_result.error()};
+            }
+        }
+        return result<void>{};
+    }
+
+    auto collect_completed_uploads() -> result<void> {
+        std::lock_guard<std::mutex> lock(pending_mutex);
+
+        for (auto it = pending_uploads.begin(); it != pending_uploads.end();) {
+            if (!it->future.valid()) {
+                it = pending_uploads.erase(it);
+                continue;
+            }
+
+            auto status = it->future.wait_for(std::chrono::milliseconds(0));
+            if (status == std::future_status::ready) {
+                auto etag_result = it->future.get();
+                if (!etag_result.has_value()) {
+                    return unexpected{etag_result.error()};
+                }
+                completed_parts.emplace_back(it->part_number, etag_result.value());
+                it = pending_uploads.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        return result<void>{};
+    }
+
+    auto wait_all_uploads() -> result<void> {
+        std::lock_guard<std::mutex> lock(pending_mutex);
+
+        for (auto& pending : pending_uploads) {
+            if (pending.future.valid()) {
+                auto etag_result = pending.future.get();
+                if (!etag_result.has_value()) {
+                    return unexpected{etag_result.error()};
+                }
+                completed_parts.emplace_back(pending.part_number, etag_result.value());
+            }
+        }
+        pending_uploads.clear();
+        return result<void>{};
+    }
+
+    auto upload_part_async(int part_number, std::vector<std::byte> data) -> void {
+        auto future = std::async(std::launch::async, [this, part_number, data = std::move(data)]() {
+            return this->upload_part(part_number, std::span<const std::byte>(data));
+        });
+
+        std::lock_guard<std::mutex> lock(pending_mutex);
+        pending_uploads.push_back({part_number, std::move(future)});
+    }
+
     auto initiate_multipart_upload() -> result<std::string> {
-        // TODO: Implement actual HTTP request to initiate multipart upload
-        // POST /{bucket}/{key}?uploads
+        // Local multipart upload simulation
+        // Note: HTTP client integration is prepared but disabled pending
+        // network_system export fixes on Windows. Real S3 API calls
+        // will be enabled in a future PR.
         upload_id_ = bytes_to_hex(generate_random_bytes(16));
+        initialized = true;
         return upload_id_;
     }
 
     auto upload_part(int part_number, std::span<const std::byte> data) -> result<std::string> {
-        // TODO: Implement actual HTTP request to upload part
-        // PUT /{bucket}/{key}?partNumber={part_number}&uploadId={upload_id_}
+        // Local multipart upload simulation
+        // Uses SHA-256 hash as ETag for verification
+        (void)part_number;  // Will be used for real S3 API calls
         auto hash = sha256_bytes(data);
         return "\"" + bytes_to_hex(hash) + "\"";
     }
 
     auto complete_multipart_upload() -> result<upload_result> {
-        // TODO: Implement actual HTTP request to complete multipart upload
-        // POST /{bucket}/{key}?uploadId={upload_id_}
+        // Local multipart upload simulation
         upload_result result;
         result.key = key;
         result.bytes_uploaded = bytes_written_;
+        result.upload_id = upload_id_;
 
+        // Build composite ETag from part ETags
         std::ostringstream etag_builder;
         etag_builder << "\"";
         for (const auto& [num, etag] : completed_parts) {
-            etag_builder << etag;
+            auto clean_etag = etag;
+            if (!clean_etag.empty() && clean_etag.front() == '"') {
+                clean_etag = clean_etag.substr(1);
+            }
+            if (!clean_etag.empty() && clean_etag.back() == '"') {
+                clean_etag = clean_etag.substr(0, clean_etag.size() - 1);
+            }
+            etag_builder << clean_etag;
         }
         etag_builder << "-" << completed_parts.size() << "\"";
         result.etag = etag_builder.str();
@@ -333,8 +522,7 @@ struct s3_upload_stream::impl {
     }
 
     auto abort_multipart_upload() -> result<void> {
-        // TODO: Implement actual HTTP request to abort multipart upload
-        // DELETE /{bucket}/{key}?uploadId={upload_id_}
+        // Local multipart upload simulation
         aborted = true;
         return result<void>{};
     }
@@ -384,15 +572,23 @@ auto s3_upload_stream::write(std::span<const std::byte> data) -> result<std::siz
 
         // Upload part if buffer is full
         if (impl_->part_buffer.size() >= impl_->config.multipart.part_size) {
-            auto result = impl_->upload_part(
-                impl_->current_part_number,
-                std::span<const std::byte>(impl_->part_buffer));
-
-            if (!result.has_value()) {
-                return unexpected{result.error()};
+            // Wait for a slot if max concurrent uploads reached
+            auto wait_result = impl_->wait_for_slot();
+            if (!wait_result.has_value()) {
+                return unexpected{wait_result.error()};
             }
 
-            impl_->completed_parts.emplace_back(impl_->current_part_number, result.value());
+            // Collect any completed uploads
+            auto collect_result = impl_->collect_completed_uploads();
+            if (!collect_result.has_value()) {
+                return unexpected{collect_result.error()};
+            }
+
+            // Start async upload
+            int part_num = impl_->current_part_number;
+            std::vector<std::byte> part_data(impl_->part_buffer.begin(), impl_->part_buffer.end());
+            impl_->upload_part_async(part_num, std::move(part_data));
+
             impl_->current_part_number++;
             impl_->part_buffer.clear();
         }
@@ -422,10 +618,20 @@ auto s3_upload_stream::finalize() -> result<upload_result> {
             std::span<const std::byte>(impl_->part_buffer));
 
         if (!result.has_value()) {
+            // Try to abort on failure
+            impl_->abort_multipart_upload();
             return unexpected{result.error()};
         }
 
         impl_->completed_parts.emplace_back(impl_->current_part_number, result.value());
+    }
+
+    // Wait for all pending async uploads to complete
+    auto wait_result = impl_->wait_all_uploads();
+    if (!wait_result.has_value()) {
+        // Try to abort on failure
+        impl_->abort_multipart_upload();
+        return unexpected{wait_result.error()};
     }
 
     impl_->finalized = true;
