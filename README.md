@@ -591,6 +591,87 @@ See the [examples/](examples/) directory for:
 - `server_callbacks.cpp` - Server-side request validation and access control
 - `quota_management.cpp` - Storage quota configuration and monitoring
 
+## Cloud Storage Integration
+
+file_trans_system supports cloud storage backends for direct upload/download operations:
+
+### AWS S3 Storage
+
+```cpp
+#include <kcenon/file_transfer/cloud/s3_storage.h>
+
+using namespace kcenon::file_transfer;
+
+// Create credentials
+static_credentials creds;
+creds.access_key_id = "AKIAIOSFODNN7EXAMPLE";
+creds.secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+auto provider = s3_credential_provider::create(creds);
+
+// Create S3 storage
+auto config = cloud_config_builder::s3()
+    .with_bucket("my-bucket")
+    .with_region("us-east-1")
+    .build_s3();
+
+auto storage = s3_storage::create(config, provider);
+storage->connect();
+
+// Upload data
+std::vector<std::byte> data = {...};
+auto result = storage->upload("path/to/file.bin", data);
+```
+
+### Azure Blob Storage
+
+```cpp
+#include <kcenon/file_transfer/cloud/azure_blob_storage.h>
+
+using namespace kcenon::file_transfer;
+
+// Create credentials
+azure_credentials creds;
+creds.account_name = "mystorageaccount";
+creds.account_key = "base64encodedkey...";
+auto provider = azure_blob_credential_provider::create(creds);
+
+// Or use connection string
+auto provider = azure_blob_credential_provider::create_from_connection_string(
+    "DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;");
+
+// Create Azure Blob storage
+auto config = cloud_config_builder::azure_blob()
+    .with_account_name("mystorageaccount")
+    .with_bucket("mycontainer")
+    .build_azure_blob();
+
+auto storage = azure_blob_storage::create(config, provider);
+storage->connect();
+
+// Upload file
+auto result = storage->upload_file("/local/file.txt", "remote/file.txt");
+
+// Generate SAS token
+presigned_url_options options;
+options.method = "GET";
+options.expiration = std::chrono::hours{1};
+auto sas_url = storage->generate_blob_sas("path/to/file.bin", options);
+```
+
+### Supported Cloud Providers
+
+| Provider | Status | Features |
+|----------|--------|----------|
+| **AWS S3** | Supported | Multipart upload, presigned URLs, transfer acceleration |
+| **Azure Blob** | Supported | Block blobs, SAS tokens, access tiers (Hot/Cool/Archive) |
+| **Google Cloud Storage** | Planned | - |
+
+### Cloud Storage Examples
+
+See the [examples/cloud/](examples/cloud/) directory:
+- `s3_example.cpp` - AWS S3 operations with credentials, upload/download, presigned URLs
+- `azure_blob_example.cpp` - Azure Blob operations with SAS tokens and access tier management
+
 ## Error Handling
 
 All operations return `Result<T>` for explicit error handling:
