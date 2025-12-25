@@ -966,7 +966,7 @@ void quic_transport::on_migration_event(
     impl_->migration_callback = std::move(callback);
 }
 
-auto quic_transport::migration_state() const -> enum migration_state {
+auto quic_transport::get_migration_state() const -> enum migration_state {
     std::lock_guard lock(impl_->migration_mutex);
     if (!impl_->migration_manager_) {
         return migration_state::idle;
