@@ -419,7 +419,8 @@ auto local_storage_backend::list(const list_storage_options& options)
         auto relative_path = std::filesystem::relative(entry.path(), impl_->base_path, ec);
         if (ec) continue;
 
-        std::string key = relative_path.string();
+        // Use generic_string for cross-platform path handling (forward slashes)
+        std::string key = relative_path.generic_string();
 
         // Apply prefix filter
         if (options.prefix && !key.starts_with(*options.prefix)) {
