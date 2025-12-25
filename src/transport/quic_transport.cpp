@@ -4,6 +4,7 @@
  */
 
 #include "kcenon/file_transfer/transport/quic_transport.h"
+#include "kcenon/file_transfer/transport/session_resumption.h"
 #include "kcenon/file_transfer/core/logging.h"
 
 #include <condition_variable>
@@ -41,6 +42,11 @@ struct quic_transport::impl {
     // Handshake state
     std::atomic<bool> handshake_complete{false};
     std::optional<std::string> negotiated_alpn;
+
+    // 0-RTT session resumption
+    std::shared_ptr<session_resumption_manager> session_manager;
+    std::atomic<bool> used_0rtt_{false};
+    std::atomic<bool> is_0rtt_accepted_{false};
 
     std::shared_ptr<ns::messaging_quic_client> quic_client;
 
@@ -93,7 +99,8 @@ struct quic_transport::impl {
         stats.errors++;
     }
 
-    auto build_quic_config() const -> ns::quic_client_config {
+    auto build_quic_config(const std::string& host, uint16_t port) const
+        -> ns::quic_client_config {
         ns::quic_client_config quic_cfg;
 
         if (config.cert_path.has_value()) {
@@ -117,6 +124,17 @@ struct quic_transport::impl {
 
         if (!config.alpn.empty()) {
             quic_cfg.alpn_protocols = {config.alpn};
+        }
+
+        // Load session ticket for 0-RTT if available
+        if (config.enable_0rtt && session_manager) {
+            auto ticket = session_manager->get_ticket_for_server(host, port);
+            if (ticket.has_value()) {
+                quic_cfg.session_ticket = std::move(ticket.value());
+                FT_LOG_DEBUG(log_category::transfer,
+                    "Using session ticket for 0-RTT connection to " +
+                    host + ":" + std::to_string(port));
+            }
         }
 
         return quic_cfg;
@@ -170,8 +188,18 @@ auto quic_transport::connect(
     conn_result.remote_address = remote.host;
     conn_result.remote_port = remote.port;
 
-    // Build QUIC configuration
-    auto quic_cfg = impl_->build_quic_config();
+    // Reset 0-RTT state for new connection
+    impl_->used_0rtt_ = false;
+    impl_->is_0rtt_accepted_ = false;
+
+    // Build QUIC configuration (includes session ticket if available)
+    auto quic_cfg = impl_->build_quic_config(remote.host, remote.port);
+
+    // Track if we're attempting 0-RTT
+    bool attempting_0rtt = quic_cfg.session_ticket.has_value();
+    if (attempting_0rtt) {
+        impl_->used_0rtt_ = true;
+    }
 
     // Setup callbacks before connecting
     impl_->quic_client->set_receive_callback(
@@ -259,6 +287,27 @@ auto quic_transport::connect(
         impl_->stats.connected_at = std::chrono::steady_clock::now();
     }
 
+    // Handle 0-RTT acceptance/rejection and session ticket management
+    if (attempting_0rtt) {
+        // Check if 0-RTT was accepted (based on handshake completion timing)
+        // In QUIC, if 0-RTT is accepted, early data is processed immediately
+        impl_->is_0rtt_accepted_ = impl_->quic_client->is_handshake_complete();
+
+        if (impl_->is_0rtt_accepted_) {
+            FT_LOG_INFO(log_category::transfer,
+                "0-RTT accepted for " + remote.host + ":" + std::to_string(remote.port));
+            if (impl_->session_manager) {
+                impl_->session_manager->on_0rtt_accepted(remote.host, remote.port);
+            }
+        } else {
+            FT_LOG_INFO(log_category::transfer,
+                "0-RTT rejected for " + remote.host + ":" + std::to_string(remote.port));
+            if (impl_->session_manager) {
+                impl_->session_manager->on_0rtt_rejected(remote.host, remote.port);
+            }
+        }
+    }
+
     conn_result.success = true;
     FT_LOG_INFO(log_category::transfer,
         "QUIC transport connected to " + remote.host + ":" + std::to_string(remote.port));
@@ -297,6 +346,8 @@ auto quic_transport::disconnect() -> result<void> {
     impl_->remote_ep = std::nullopt;
     impl_->handshake_complete = false;
     impl_->negotiated_alpn = std::nullopt;
+    impl_->used_0rtt_ = false;
+    impl_->is_0rtt_accepted_ = false;
     impl_->set_state(transport_state::disconnected);
 
     FT_LOG_INFO(log_category::transfer, "QUIC transport disconnected");
@@ -549,6 +600,221 @@ auto quic_transport::is_handshake_complete() const -> bool {
 
 auto quic_transport::alpn_protocol() const -> std::optional<std::string> {
     return impl_->negotiated_alpn;
+}
+
+// ============================================================================
+// 0-RTT Session Resumption Implementation
+// ============================================================================
+
+void quic_transport::set_session_manager(
+    std::shared_ptr<session_resumption_manager> manager) {
+    impl_->session_manager = std::move(manager);
+}
+
+auto quic_transport::session_manager() const
+    -> std::shared_ptr<session_resumption_manager> {
+    return impl_->session_manager;
+}
+
+auto quic_transport::is_0rtt_available() const -> bool {
+    if (!impl_->config.enable_0rtt || !impl_->session_manager) {
+        return false;
+    }
+
+    auto remote = impl_->remote_ep;
+    if (!remote.has_value()) {
+        return false;
+    }
+
+    return impl_->session_manager->can_use_0rtt(remote->host, remote->port);
+}
+
+auto quic_transport::used_0rtt() const -> bool {
+    return impl_->used_0rtt_;
+}
+
+auto quic_transport::is_0rtt_accepted() const -> bool {
+    return impl_->is_0rtt_accepted_;
+}
+
+auto quic_transport::connect_with_0rtt(
+    const endpoint& remote,
+    std::span<const std::byte> early_data) -> result<connection_result> {
+
+    if (impl_->current_state == transport_state::connected ||
+        impl_->current_state == transport_state::connecting) {
+        return unexpected{error{error_code::already_initialized,
+            "Transport is already connected or connecting"}};
+    }
+
+    // Check if 0-RTT is possible
+    bool can_0rtt = impl_->config.enable_0rtt && impl_->session_manager &&
+                    impl_->session_manager->can_use_0rtt(remote.host, remote.port);
+
+    if (!can_0rtt) {
+        FT_LOG_DEBUG(log_category::transfer,
+            "0-RTT not available for " + remote.host + ":" + std::to_string(remote.port) +
+            ", falling back to regular connection");
+
+        // Fall back to regular connection, send early_data after handshake
+        auto conn_result = connect(remote);
+        if (conn_result.has_value() && !early_data.empty()) {
+            // Send the data after connection is established
+            auto send_result = send(early_data);
+            if (!send_result.has_value()) {
+                FT_LOG_WARN(log_category::transfer,
+                    "Failed to send data after fallback connection: " +
+                    send_result.error().message);
+            }
+        }
+        return conn_result;
+    }
+
+    FT_LOG_INFO(log_category::transfer,
+        "Attempting 0-RTT connection to " + remote.host + ":" + std::to_string(remote.port));
+
+    impl_->set_state(transport_state::connecting);
+    impl_->used_0rtt_ = true;
+    impl_->is_0rtt_accepted_ = false;
+
+    connection_result conn_result;
+    conn_result.remote_address = remote.host;
+    conn_result.remote_port = remote.port;
+
+    // Build QUIC configuration with session ticket
+    auto quic_cfg = impl_->build_quic_config(remote.host, remote.port);
+
+    // Setup callbacks
+    impl_->quic_client->set_receive_callback(
+        [this](const std::vector<std::uint8_t>& data) {
+            std::vector<std::byte> byte_data(data.size());
+            std::transform(data.begin(), data.end(), byte_data.begin(),
+                [](std::uint8_t b) { return std::byte{b}; });
+
+            {
+                std::lock_guard lock(impl_->receive_mutex);
+                impl_->receive_queue.push(byte_data);
+            }
+            impl_->receive_cv.notify_one();
+            impl_->update_receive_stats(data.size());
+
+            if (impl_->event_callback) {
+                transport_event_data event_data;
+                event_data.event = transport_event::data_received;
+                event_data.data = byte_data;
+                impl_->event_callback(event_data);
+            }
+        });
+
+    impl_->quic_client->set_connected_callback([this]() {
+        impl_->handshake_complete = true;
+        FT_LOG_DEBUG(log_category::transfer, "QUIC handshake complete (0-RTT)");
+    });
+
+    impl_->quic_client->set_disconnected_callback([this]() {
+        impl_->set_state(transport_state::disconnected);
+    });
+
+    impl_->quic_client->set_error_callback([this](std::error_code ec) {
+        FT_LOG_ERROR(log_category::transfer,
+            "QUIC transport error (0-RTT): " + ec.message());
+        impl_->increment_errors();
+
+        if (impl_->event_callback) {
+            transport_event_data event_data;
+            event_data.event = transport_event::error;
+            event_data.error_message = ec.message();
+            impl_->event_callback(event_data);
+        }
+    });
+
+    // Start connection with QUIC configuration
+    auto result = impl_->quic_client->start_client(
+        remote.host, remote.port, quic_cfg);
+
+    if (result.is_err()) {
+        impl_->set_state(transport_state::error);
+        impl_->increment_errors();
+        conn_result.success = false;
+        conn_result.error_message = result.error().message;
+        FT_LOG_ERROR(log_category::transfer,
+            "QUIC 0-RTT connection failed: " + result.error().message);
+        return unexpected{error{error_code::connection_failed,
+            "Connection failed: " + result.error().message}};
+    }
+
+    // Send early data immediately (0-RTT)
+    if (!early_data.empty()) {
+        std::vector<std::uint8_t> early_bytes(early_data.size());
+        std::transform(early_data.begin(), early_data.end(), early_bytes.begin(),
+            [](std::byte b) { return static_cast<std::uint8_t>(b); });
+
+        auto send_result = impl_->quic_client->send_packet(std::move(early_bytes));
+        if (send_result.is_err()) {
+            FT_LOG_WARN(log_category::transfer,
+                "Failed to send 0-RTT early data: " + send_result.error().message);
+            // Don't fail the connection, early data may be retried
+        } else {
+            FT_LOG_DEBUG(log_category::transfer,
+                "Sent " + std::to_string(early_data.size()) + " bytes as 0-RTT early data");
+            impl_->update_send_stats(early_data.size());
+        }
+    }
+
+    // Wait for connection with timeout
+    auto timeout = impl_->config.connect_timeout;
+    auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (!impl_->quic_client->is_connected()) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            impl_->set_state(transport_state::error);
+            impl_->increment_errors();
+            (void)impl_->quic_client->stop_client();
+            conn_result.success = false;
+            conn_result.error_message = "Connection timeout";
+            FT_LOG_ERROR(log_category::transfer, "QUIC 0-RTT connection timeout");
+            return unexpected{error{error_code::connection_failed,
+                "Connection timeout"}};
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{10});
+    }
+
+    impl_->remote_ep = remote;
+    impl_->set_state(transport_state::connected);
+    impl_->negotiated_alpn = impl_->quic_client->alpn_protocol();
+
+    {
+        std::lock_guard lock(impl_->stats_mutex);
+        impl_->stats.connected_at = std::chrono::steady_clock::now();
+    }
+
+    // Check 0-RTT acceptance
+    impl_->is_0rtt_accepted_ = impl_->quic_client->is_handshake_complete();
+    if (impl_->is_0rtt_accepted_) {
+        FT_LOG_INFO(log_category::transfer,
+            "0-RTT accepted for " + remote.host + ":" + std::to_string(remote.port));
+        impl_->session_manager->on_0rtt_accepted(remote.host, remote.port);
+    } else {
+        FT_LOG_INFO(log_category::transfer,
+            "0-RTT rejected for " + remote.host + ":" + std::to_string(remote.port) +
+            ", data will be resent");
+        impl_->session_manager->on_0rtt_rejected(remote.host, remote.port);
+
+        // Resend early data if 0-RTT was rejected
+        if (!early_data.empty()) {
+            auto resend_result = send(early_data);
+            if (!resend_result.has_value()) {
+                FT_LOG_WARN(log_category::transfer,
+                    "Failed to resend data after 0-RTT rejection: " +
+                    resend_result.error().message);
+            }
+        }
+    }
+
+    conn_result.success = true;
+    FT_LOG_INFO(log_category::transfer,
+        "QUIC 0-RTT connected to " + remote.host + ":" + std::to_string(remote.port));
+
+    return conn_result;
 }
 
 // ============================================================================

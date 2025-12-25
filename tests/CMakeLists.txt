@@ -68,6 +68,7 @@ set(UNIT_TEST_SOURCES
     unit/client/test_batch_transfer.cpp
     unit/transport/test_transport_interface.cpp
     unit/transport/quic_transport_test.cpp
+    unit/transport/test_session_resumption.cpp
     unit/encryption/test_encryption_interface.cpp
     unit/cloud/test_cloud_interface.cpp
 )

@@ -13,6 +13,7 @@
 #include <memory>
 #include <mutex>
 
+#include "session_resumption.h"
 #include "transport_interface.h"
 #include "transport_config.h"
 
@@ -156,6 +157,54 @@ public:
      * @return Protocol string if negotiated
      */
     [[nodiscard]] auto alpn_protocol() const -> std::optional<std::string>;
+
+    // ========================================================================
+    // 0-RTT Session Resumption
+    // ========================================================================
+
+    /**
+     * @brief Set the session resumption manager for 0-RTT support
+     * @param manager Session resumption manager
+     */
+    void set_session_manager(std::shared_ptr<session_resumption_manager> manager);
+
+    /**
+     * @brief Get the session resumption manager
+     * @return Session manager if set
+     */
+    [[nodiscard]] auto session_manager() const
+        -> std::shared_ptr<session_resumption_manager>;
+
+    /**
+     * @brief Check if 0-RTT is enabled and available
+     * @return true if 0-RTT can be used for the current connection
+     */
+    [[nodiscard]] auto is_0rtt_available() const -> bool;
+
+    /**
+     * @brief Check if the connection used 0-RTT
+     * @return true if 0-RTT was used for this connection
+     */
+    [[nodiscard]] auto used_0rtt() const -> bool;
+
+    /**
+     * @brief Check if 0-RTT data was accepted by the server
+     * @return true if 0-RTT data was accepted
+     */
+    [[nodiscard]] auto is_0rtt_accepted() const -> bool;
+
+    /**
+     * @brief Connect with 0-RTT early data
+     * @param remote Remote endpoint
+     * @param early_data Data to send during 0-RTT handshake
+     * @return Connection result
+     *
+     * If 0-RTT is not available or rejected, falls back to regular connection
+     * and the early data will be sent after handshake completion.
+     */
+    [[nodiscard]] auto connect_with_0rtt(
+        const endpoint& remote,
+        std::span<const std::byte> early_data) -> result<connection_result>;
 
 private:
     explicit quic_transport(quic_transport_config config);

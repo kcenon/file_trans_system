@@ -273,6 +273,7 @@ set(FILE_TRANS_SOURCES
     src/client/file_transfer_client.cpp
     src/transport/tcp_transport.cpp
     src/transport/quic_transport.cpp
+    src/transport/session_resumption.cpp
 )
 
 # Add encryption sources if enabled
