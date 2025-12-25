@@ -22,6 +22,7 @@
 
 #include "kcenon/file_transfer/core/chunk_types.h"
 #include "kcenon/file_transfer/core/types.h"
+#include "kcenon/file_transfer/encryption/encryption_config.h"
 
 namespace kcenon::file_transfer {
 
@@ -109,9 +110,6 @@ struct pipeline_stats {
      */
     auto reset() -> void;
 };
-
-// Forward declaration for encryption metadata
-struct encryption_metadata;
 
 /**
  * @brief Chunk data for pipeline processing
