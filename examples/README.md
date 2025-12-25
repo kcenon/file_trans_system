@@ -57,6 +57,24 @@ Built examples are located in `build/bin/`.
 | Server Callbacks | `server_callbacks.cpp` | Request validation, access control, event logging |
 | Quota Management | `quota_management.cpp` | Storage quotas, usage monitoring, thresholds |
 
+### Cloud Storage Examples
+
+Cloud storage examples require encryption support. Build with:
+
+```bash
+cmake -B build -DFILE_TRANS_ENABLE_ENCRYPTION=ON
+cmake --build build --parallel
+```
+
+| Example | File | Description |
+|---------|------|-------------|
+| S3 Example | `cloud/s3_example.cpp` | AWS S3 upload, download, presigned URLs |
+| Azure Blob Example | `cloud/azure_blob_example.cpp` | Azure Blob Storage operations, SAS tokens |
+| GCS Example | `cloud/gcs_example.cpp` | Google Cloud Storage operations |
+| Hybrid Storage | `cloud/hybrid_storage_example.cpp` | Local + cloud tiered storage |
+| Multi-Cloud Failover | `cloud/multi_cloud_failover_example.cpp` | Cross-provider failover |
+| Large File Transfer | `cloud/large_file_transfer_example.cpp` | Streaming uploads for large files |
+
 ## Quick Start
 
 ### Running the Server
