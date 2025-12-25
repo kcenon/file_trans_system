@@ -271,6 +271,7 @@ set(FILE_TRANS_SOURCES
     src/server/pipeline_jobs.cpp
     src/server/quota_manager.cpp
     src/server/storage_manager.cpp
+    src/server/storage_policy.cpp
     src/client/file_transfer_client.cpp
     src/transport/tcp_transport.cpp
     src/transport/quic_transport.cpp
