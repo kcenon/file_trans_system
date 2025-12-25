@@ -224,10 +224,32 @@ set_target_properties(quota_management PROPERTIES
 )
 
 ##################################################
+# Cloud Storage Examples (require encryption for AWS Signature V4)
+##################################################
+
+if(FILE_TRANS_ENABLE_ENCRYPTION AND OpenSSL_FOUND)
+    add_executable(s3_example
+        cloud/s3_example.cpp
+    )
+
+    target_link_libraries(s3_example
+        PRIVATE
+            kcenon::file_transfer
+    )
+
+    set_target_properties(s3_example PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+    )
+
+    message(STATUS "Building cloud storage examples")
+endif()
+
+##################################################
 # Installation
 ##################################################
 
-install(TARGETS
+set(EXAMPLE_TARGETS
     simple_server
     simple_client
     upload_example
@@ -240,5 +262,12 @@ install(TARGETS
     bandwidth_throttling
     server_callbacks
     quota_management
+)
+
+if(FILE_TRANS_ENABLE_ENCRYPTION AND OpenSSL_FOUND)
+    list(APPEND EXAMPLE_TARGETS s3_example)
+endif()
+
+install(TARGETS ${EXAMPLE_TARGETS}
     RUNTIME DESTINATION bin/examples
 )
