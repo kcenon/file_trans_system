@@ -1304,6 +1304,61 @@ auto s3_storage::generate_presigned_url(
     std::string host = impl_->get_host();
     std::string uri = impl_->get_path(key);
 
+    // Build signed headers list
+    std::vector<std::string> signed_header_names;
+    std::map<std::string, std::string> headers_to_sign;
+    signed_header_names.push_back("host");
+    headers_to_sign["host"] = host;
+
+    // Add SSE headers for PUT requests
+    if (options.method == "PUT") {
+        if (options.server_side_encryption.has_value()) {
+            const auto& sse = options.server_side_encryption.value();
+            signed_header_names.push_back("x-amz-server-side-encryption");
+            headers_to_sign["x-amz-server-side-encryption"] = sse;
+
+            // Add KMS key ID if using aws:kms encryption
+            if (sse == "aws:kms" && options.kms_key_id.has_value()) {
+                signed_header_names.push_back("x-amz-server-side-encryption-aws-kms-key-id");
+                headers_to_sign["x-amz-server-side-encryption-aws-kms-key-id"] =
+                    options.kms_key_id.value();
+            }
+        }
+
+        // Add storage class header
+        if (options.storage_class.has_value()) {
+            signed_header_names.push_back("x-amz-storage-class");
+            headers_to_sign["x-amz-storage-class"] = options.storage_class.value();
+        }
+
+        // Add content type header
+        if (options.content_type.has_value()) {
+            signed_header_names.push_back("content-type");
+            headers_to_sign["content-type"] = options.content_type.value();
+        }
+
+        // Add custom metadata headers
+        for (const auto& [meta_key, meta_value] : options.custom_metadata) {
+            std::string header_name = "x-amz-meta-" + meta_key;
+            std::transform(header_name.begin(), header_name.end(),
+                           header_name.begin(),
+                           [](unsigned char c) { return std::tolower(c); });
+            signed_header_names.push_back(header_name);
+            headers_to_sign[header_name] = meta_value;
+        }
+    }
+
+    // Sort header names for canonical header list
+    std::sort(signed_header_names.begin(), signed_header_names.end());
+
+    // Build signed headers string
+    std::ostringstream signed_headers_builder;
+    for (size_t i = 0; i < signed_header_names.size(); ++i) {
+        if (i > 0) signed_headers_builder << ";";
+        signed_headers_builder << signed_header_names[i];
+    }
+    std::string signed_headers = signed_headers_builder.str();
+
     // Build query string parameters
     std::string algorithm = "AWS4-HMAC-SHA256";
     std::string credential_scope = date_stamp + "/" + impl_->config_.region + "/s3/aws4_request";
@@ -1314,7 +1369,19 @@ auto s3_storage::generate_presigned_url(
     query_builder << "&X-Amz-Credential=" << url_encode(credential);
     query_builder << "&X-Amz-Date=" << amz_date;
     query_builder << "&X-Amz-Expires=" << options.expiration.count();
-    query_builder << "&X-Amz-SignedHeaders=host";
+    query_builder << "&X-Amz-SignedHeaders=" << url_encode(signed_headers);
+
+    // Add response override parameters for GET requests
+    if (options.method == "GET") {
+        if (options.response_content_type.has_value()) {
+            query_builder << "&response-content-type="
+                          << url_encode(options.response_content_type.value());
+        }
+        if (options.response_content_disposition.has_value()) {
+            query_builder << "&response-content-disposition="
+                          << url_encode(options.response_content_disposition.value());
+        }
+    }
 
     std::string query_string = query_builder.str();
 
@@ -1323,9 +1390,13 @@ auto s3_storage::generate_presigned_url(
     canonical_request << options.method << "\n";
     canonical_request << url_encode(uri, false) << "\n";
     canonical_request << query_string << "\n";
-    canonical_request << "host:" << host << "\n";
+
+    // Add canonical headers
+    for (const auto& header_name : signed_header_names) {
+        canonical_request << header_name << ":" << headers_to_sign[header_name] << "\n";
+    }
     canonical_request << "\n";
-    canonical_request << "host\n";
+    canonical_request << signed_headers << "\n";
     canonical_request << "UNSIGNED-PAYLOAD";
 
     // Create string to sign
