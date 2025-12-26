@@ -270,6 +270,48 @@ if(FILE_TRANS_ENABLE_ENCRYPTION AND OpenSSL_FOUND)
         CXX_STANDARD_REQUIRED ON
     )
 
+    add_executable(hybrid_storage_example
+        cloud/hybrid_storage_example.cpp
+    )
+
+    target_link_libraries(hybrid_storage_example
+        PRIVATE
+            kcenon::file_transfer
+    )
+
+    set_target_properties(hybrid_storage_example PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+    )
+
+    add_executable(multi_cloud_failover_example
+        cloud/multi_cloud_failover_example.cpp
+    )
+
+    target_link_libraries(multi_cloud_failover_example
+        PRIVATE
+            kcenon::file_transfer
+    )
+
+    set_target_properties(multi_cloud_failover_example PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+    )
+
+    add_executable(large_file_transfer_example
+        cloud/large_file_transfer_example.cpp
+    )
+
+    target_link_libraries(large_file_transfer_example
+        PRIVATE
+            kcenon::file_transfer
+    )
+
+    set_target_properties(large_file_transfer_example PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+    )
+
     message(STATUS "Building cloud storage examples")
 endif()
 
@@ -293,7 +335,14 @@ set(EXAMPLE_TARGETS
 )
 
 if(FILE_TRANS_ENABLE_ENCRYPTION AND OpenSSL_FOUND)
-    list(APPEND EXAMPLE_TARGETS s3_example azure_blob_example gcs_example)
+    list(APPEND EXAMPLE_TARGETS
+        s3_example
+        azure_blob_example
+        gcs_example
+        hybrid_storage_example
+        multi_cloud_failover_example
+        large_file_transfer_example
+    )
 endif()
 
 install(TARGETS ${EXAMPLE_TARGETS}
