@@ -502,6 +502,7 @@ ctest --output-on-failure
 | **Integration Tests - Basic** | Server/client lifecycle, connection, basic transfers | `test_basic_scenarios.cpp` |
 | **Integration Tests - Advanced** | Error handling, large files, compression, stress tests | `test_error_advanced_scenarios.cpp` |
 | **Integration Tests - Concurrency** | Multi-client connections, 100-connection load test, concurrent transfers | `test_concurrency.cpp` |
+| **Integration Tests - Cloud** | S3/MinIO integration tests (requires external service) | `cloud/test_s3_integration.cpp` |
 
 #### Disabling Integration Tests
 
@@ -510,6 +511,29 @@ Integration tests require actual network connections and may be unstable in CI e
 ```bash
 cmake -B build -DFILE_TRANS_BUILD_INTEGRATION_TESTS=OFF
 cmake --build build
+```
+
+#### Running Cloud Integration Tests
+
+Cloud integration tests require an S3-compatible service (AWS S3 or MinIO):
+
+```bash
+# Start MinIO locally with Docker
+docker run -p 9000:9000 -p 9001:9001 \
+  -e MINIO_ROOT_USER=minioadmin \
+  -e MINIO_ROOT_PASSWORD=minioadmin \
+  minio/minio server /data --console-address ":9001"
+
+# Create test bucket
+mc alias set local http://localhost:9000 minioadmin minioadmin
+mc mb local/test-bucket
+
+# Run cloud integration tests
+MINIO_ENDPOINT=http://localhost:9000 \
+MINIO_ACCESS_KEY=minioadmin \
+MINIO_SECRET_KEY=minioadmin \
+MINIO_BUCKET=test-bucket \
+./bin/file_trans_cloud_integration_tests
 ```
 
 ### Sanitizer Testing
@@ -664,13 +688,27 @@ auto sas_url = storage->generate_blob_sas("path/to/file.bin", options);
 |----------|--------|----------|
 | **AWS S3** | Supported | Multipart upload, presigned URLs, transfer acceleration |
 | **Azure Blob** | Supported | Block blobs, SAS tokens, access tiers (Hot/Cool/Archive) |
-| **Google Cloud Storage** | Planned | - |
+| **Google Cloud Storage** | Supported | Resumable uploads, signed URLs, storage classes |
 
 ### Cloud Storage Examples
 
 See the [examples/cloud/](examples/cloud/) directory:
 - `s3_example.cpp` - AWS S3 operations with credentials, upload/download, presigned URLs
 - `azure_blob_example.cpp` - Azure Blob operations with SAS tokens and access tier management
+- `gcs_example.cpp` - Google Cloud Storage with service account authentication
+- `hybrid_storage_example.cpp` - Local + cloud hybrid storage patterns
+- `large_file_transfer_example.cpp` - Large file multipart uploads
+- `multi_cloud_failover_example.cpp` - Multi-cloud redundancy and failover
+
+### Cloud Storage Documentation
+
+| Document | Description |
+|----------|-------------|
+| [AWS S3 Setup](docs/cloud/AWS_S3_SETUP.md) | S3 configuration and credentials |
+| [Azure Blob Setup](docs/cloud/AZURE_BLOB_SETUP.md) | Azure Blob configuration |
+| [GCS Setup](docs/cloud/GCS_SETUP.md) | Google Cloud Storage configuration |
+| [Quick Start](docs/reference/cloud-quick-start.md) | Getting started with cloud storage |
+| [Best Practices](docs/reference/cloud-best-practices.md) | Cloud storage best practices |
 
 ## Error Handling
 
@@ -760,7 +798,7 @@ Contributions are welcome! Please read our contributing guidelines before submit
 - [x] **Phase 1**: Client-Server architecture with TCP transfer and LZ4 compression
 - [x] **Phase 2**: QUIC transport support
 - [x] **Phase 3**: Encryption layer (AES-256-GCM)
-- [ ] **Phase 4**: Cloud storage integration
+- [x] **Phase 4**: Cloud storage integration (AWS S3, Azure Blob, GCS)
 
 ---
 
