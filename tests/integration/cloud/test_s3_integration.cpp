@@ -424,7 +424,7 @@ TEST_F(MinIOIntegrationTest, ListObjects) {
     }
 
     // List objects with prefix
-    cloud_list_options list_options;
+    list_objects_options list_options;
     list_options.prefix = test_prefix_;
     list_options.max_keys = 10;
 
@@ -598,7 +598,7 @@ TEST_F(MinIOIntegrationTest, StatisticsTracking) {
     auto download_result = storage_->download(key);
     ASSERT_TRUE(download_result.has_value());
 
-    cloud_list_options list_options;
+    list_objects_options list_options;
     list_options.prefix = test_prefix_;
     (void)storage_->list_objects(list_options);
 
