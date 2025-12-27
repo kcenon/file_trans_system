@@ -417,8 +417,11 @@ struct s3_upload_stream::impl {
         : key(k), config(cfg), credentials(std::move(creds)), options(opts) {
         part_buffer.reserve(config.multipart.part_size);
 #ifdef BUILD_WITH_NETWORK_SYSTEM
-        http_client_ = std::make_shared<kcenon::network::core::http_client>(
-            std::chrono::milliseconds(300000));  // 5 minute timeout for uploads
+        // Only initialize HTTP client when a custom endpoint is configured
+        if (config.endpoint.has_value()) {
+            http_client_ = std::make_shared<kcenon::network::core::http_client>(
+                std::chrono::milliseconds(300000));  // 5 minute timeout for uploads
+        }
 #endif
     }
 
@@ -1070,8 +1073,14 @@ struct s3_storage::impl {
     impl(const s3_config& config, std::shared_ptr<credential_provider> credentials)
         : config_(config), credentials_(std::move(credentials)) {
 #ifdef BUILD_WITH_NETWORK_SYSTEM
-        http_client_ = std::make_shared<kcenon::network::core::http_client>(
-            std::chrono::milliseconds(30000));  // 30 second timeout
+        // Only initialize HTTP client when a custom endpoint is configured
+        // (e.g., MinIO, LocalStack) to enable real API calls.
+        // For standard AWS S3 without custom endpoint, use simulation mode
+        // to avoid network dependencies in unit tests.
+        if (config_.endpoint.has_value()) {
+            http_client_ = std::make_shared<kcenon::network::core::http_client>(
+                std::chrono::milliseconds(30000));  // 30 second timeout
+        }
 #endif
     }
 
