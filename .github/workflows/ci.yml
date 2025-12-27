@@ -174,7 +174,12 @@ jobs:
         cmake -B network_system/build -S network_system -G Ninja \
           -DCMAKE_BUILD_TYPE=Debug \
           -DBUILD_TESTS=OFF \
-          -DBUILD_SAMPLES=OFF
+          -DBUILD_SAMPLES=OFF \
+          -DCOMMON_SYSTEM_INCLUDE_DIR=${{ github.workspace }}/common_system/include \
+          -DTHREAD_SYSTEM_INCLUDE_DIR=${{ github.workspace }}/thread_system/include \
+          -DTHREAD_SYSTEM_LIBRARY=${{ github.workspace }}/thread_system/build/lib/libThreadSystem.a \
+          -DLOGGER_SYSTEM_INCLUDE_DIR=${{ github.workspace }}/logger_system/include \
+          -DLOGGER_SYSTEM_LIBRARY=${{ github.workspace }}/logger_system/build/lib/libLoggerSystem.a
         cmake --build network_system/build
 
     - name: Build network_system (Windows)
@@ -184,7 +189,12 @@ jobs:
         cmake -B network_system/build -S network_system -G Ninja `
           -DCMAKE_BUILD_TYPE=Debug `
           -DBUILD_TESTS=OFF `
-          -DBUILD_SAMPLES=OFF
+          -DBUILD_SAMPLES=OFF `
+          -DCOMMON_SYSTEM_INCLUDE_DIR="${{ github.workspace }}/common_system/include" `
+          -DTHREAD_SYSTEM_INCLUDE_DIR="${{ github.workspace }}/thread_system/include" `
+          -DTHREAD_SYSTEM_LIBRARY="${{ github.workspace }}/thread_system/build/lib/ThreadSystem.lib" `
+          -DLOGGER_SYSTEM_INCLUDE_DIR="${{ github.workspace }}/logger_system/include" `
+          -DLOGGER_SYSTEM_LIBRARY="${{ github.workspace }}/logger_system/build/lib/LoggerSystem.lib"
         cmake --build network_system/build
 
     - name: Configure file_trans_system (Unix)
