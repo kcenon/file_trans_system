@@ -370,9 +370,13 @@ endif()
 if(BUILD_WITH_NETWORK_SYSTEM AND NETWORK_SYSTEM_INCLUDE_DIR)
     target_include_directories(FileTransSystem PUBLIC ${NETWORK_SYSTEM_INCLUDE_DIR})
     # Define both legacy and new unified macros for compatibility
+    # KCENON_WITH_COMMON_SYSTEM=1 is required for ABI compatibility with network_system
+    # when linking against the library file (not CMake target). network_system's
+    # Result<T> type changes based on this flag, so both must use the same setting.
     target_compile_definitions(FileTransSystem PUBLIC
         BUILD_WITH_NETWORK_SYSTEM
         KCENON_WITH_NETWORK_SYSTEM=1
+        KCENON_WITH_COMMON_SYSTEM=1
     )
 
     # Link network_system library
