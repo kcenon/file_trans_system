@@ -12,8 +12,10 @@
 
 #include <atomic>
 #include <future>
+#include <map>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <vector>
 
 #include "cloud_config.h"
@@ -22,6 +24,65 @@
 #include "cloud_storage_interface.h"
 
 namespace kcenon::file_transfer {
+
+/**
+ * @brief HTTP response structure for GCS HTTP client interface
+ */
+struct gcs_http_response {
+    int status_code = 0;
+    std::map<std::string, std::string> headers;
+    std::vector<uint8_t> body;
+
+    [[nodiscard]] auto get_body_string() const -> std::string {
+        return std::string(body.begin(), body.end());
+    }
+};
+
+/**
+ * @brief HTTP client interface for GCS operations
+ *
+ * This interface allows for dependency injection of HTTP clients,
+ * enabling mock implementations for testing.
+ */
+class gcs_http_client_interface {
+public:
+    virtual ~gcs_http_client_interface() = default;
+
+    /**
+     * @brief Perform HTTP GET request
+     */
+    [[nodiscard]] virtual auto get(
+        const std::string& url,
+        const std::map<std::string, std::string>& query,
+        const std::map<std::string, std::string>& headers)
+        -> result<gcs_http_response> = 0;
+
+    /**
+     * @brief Perform HTTP POST request with binary body
+     */
+    [[nodiscard]] virtual auto post(
+        const std::string& url,
+        const std::vector<uint8_t>& body,
+        const std::map<std::string, std::string>& headers)
+        -> result<gcs_http_response> = 0;
+
+    /**
+     * @brief Perform HTTP POST request with string body
+     */
+    [[nodiscard]] virtual auto post(
+        const std::string& url,
+        const std::string& body,
+        const std::map<std::string, std::string>& headers)
+        -> result<gcs_http_response> = 0;
+
+    /**
+     * @brief Perform HTTP DELETE request
+     */
+    [[nodiscard]] virtual auto del(
+        const std::string& url,
+        const std::map<std::string, std::string>& headers)
+        -> result<gcs_http_response> = 0;
+};
 
 /**
  * @brief GCS upload stream implementation for resumable uploads
@@ -145,6 +206,18 @@ public:
     [[nodiscard]] static auto create(
         const gcs_config& config,
         std::shared_ptr<credential_provider> credentials) -> std::unique_ptr<gcs_storage>;
+
+    /**
+     * @brief Create a GCS storage instance with custom HTTP client
+     * @param config GCS configuration
+     * @param credentials Credential provider
+     * @param http_client Custom HTTP client (for testing)
+     * @return Unique pointer to storage instance, or nullptr on failure
+     */
+    [[nodiscard]] static auto create(
+        const gcs_config& config,
+        std::shared_ptr<credential_provider> credentials,
+        std::shared_ptr<gcs_http_client_interface> http_client) -> std::unique_ptr<gcs_storage>;
 
     ~gcs_storage() override;
 
@@ -343,6 +416,11 @@ private:
     explicit gcs_storage(
         const gcs_config& config,
         std::shared_ptr<credential_provider> credentials);
+
+    gcs_storage(
+        const gcs_config& config,
+        std::shared_ptr<credential_provider> credentials,
+        std::shared_ptr<gcs_http_client_interface> http_client);
 
     struct impl;
     std::unique_ptr<impl> impl_;

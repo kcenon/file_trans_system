@@ -96,27 +96,40 @@ endif()
 
 add_executable(file_trans_unit_tests ${UNIT_TEST_SOURCES})
 
-target_link_libraries(file_trans_unit_tests PRIVATE
-    FileTransSystem
-    GTest::gtest
-    GTest::gtest_main
-    Threads::Threads
-)
+# On Windows MSVC, static library transitive dependencies are not automatically
+# propagated to executables, and the linker may not include unreferenced symbols
+# from static libraries. We need to ensure NetworkSystem is linked with /WHOLEARCHIVE
+# before FileTransSystem to resolve http_client and messaging_client external symbols.
+# See: https://gitlab.kitware.com/cmake/cmake/-/issues/18075
+if(MSVC AND NETWORK_SYSTEM_LIBRARY)
+    # Convert CMake path to native Windows path for MSVC linker
+    file(TO_NATIVE_PATH "${NETWORK_SYSTEM_LIBRARY}" NETWORK_SYSTEM_LIBRARY_NATIVE)
+
+    # Link NetworkSystem first with WHOLEARCHIVE to ensure all symbols are available
+    # before FileTransSystem (which depends on http_client, messaging_client, etc.)
+    target_link_libraries(file_trans_unit_tests PRIVATE
+        ${NETWORK_SYSTEM_LIBRARY}
+        FileTransSystem
+        GTest::gtest
+        GTest::gtest_main
+        Threads::Threads
+    )
+
+    # Force all symbols from network_system to be included
+    target_link_options(file_trans_unit_tests PRIVATE
+        "/WHOLEARCHIVE:${NETWORK_SYSTEM_LIBRARY_NATIVE}"
+    )
+else()
+    target_link_libraries(file_trans_unit_tests PRIVATE
+        FileTransSystem
+        GTest::gtest
+        GTest::gtest_main
+        Threads::Threads
+    )
+endif()
 
 # Note: OpenSSL linking is handled by FileTransSystem (PUBLIC) after network_system
 # to ensure proper symbol resolution order on Unix linkers
-
-# On Windows MSVC, static library transitive dependencies are not automatically
-# propagated to executables, and the linker may not include unreferenced symbols
-# from static libraries. We use /WHOLEARCHIVE to force inclusion of all symbols
-# from network_system to resolve messaging_client external symbols.
-# See: https://gitlab.kitware.com/cmake/cmake/-/issues/18075
-if(MSVC AND NETWORK_SYSTEM_LIBRARY)
-    # Use WHOLEARCHIVE to force all symbols from network_system to be included
-    target_link_options(file_trans_unit_tests PRIVATE
-        "/WHOLEARCHIVE:${NETWORK_SYSTEM_LIBRARY}"
-    )
-endif()
 
 # Set properties
 set_target_properties(file_trans_unit_tests PROPERTIES

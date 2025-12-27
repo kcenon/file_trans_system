@@ -11,6 +11,143 @@ namespace kcenon::file_transfer {
 namespace {
 
 // ============================================================================
+// Mock HTTP Client for Testing
+// ============================================================================
+
+/**
+ * @brief Helper function to create test service account JSON with valid RSA key
+ */
+inline std::string create_test_service_account_json() {
+    // Valid 2048-bit RSA private key for testing (not for production use)
+    return R"({
+        "type": "service_account",
+        "project_id": "my-project-id",
+        "private_key_id": "key123",
+        "private_key": "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF8PbnGy0AHB7MxExmUZ8M+cQ8bpy\nHDmNRbZ+/Mc6D3G4rQhE0J0aQMJGZ7qWQVk4BFTrBfF7fZ5PY7M7CsYNl7Q5i1P0\nSdT1xjyWaRVlz3BfhCKz8/4MZEKtfPxJi/VdG8uGGfKG6QXvKsFn/bP2dxQWpRq0\ntXqG1q3o8IZNxT4xmQqhN1xJ7K8qREeoHxVj8nE1QqGYXLQjP+b0z8v6T6Y2NG1i\n3HWLKSyK8QMJEb1P8t8Qnmq9GOPY3vF4WYU5TXjKTRjNwFHmWS8X0F1NMuXPCqNJ\nV6hR0tYR6gHbRMYZ+7B8P5MkZ3C5CvPPt6qy3wIDAQABAoIBAAL0VHLgA8GU1y3/\nJtG+7hkQGNqFRPMPuOEmYKLJWvt8EGUq4pv5IGIhlQ5HsYlSiMcR3xQwJkP8T1cP\nPelON1kYI4D7k3VjQPrzPYQ5YjGwhoezqBJJL6SAxVQQGCdZaM9AoVq7n6XLIID7\nxhQ9NjLhUFl0lQopBwqDYjAOu4+d5ixjLPFVCrPAQ0YpXprxY+J5G5Q5/3xPGTcQ\njnz4XoRLuGgn1pHXmkxZVHMj5APNQZ6P3+LmE9VWVtPh3JqmihS9DLqN7QoM9FEK\npxtmCt9cV/Q8INYI3LxpNvZPL3q0TZxP3HhvHU+nFP3rMvF8PvfJt5iQpN0qF9Ec\n3S7HEhECgYEA7pZR2vGY0Y8E/P4H8pFAqSAH9cExDUbD1S5HjLLl6QU8UEs8MRdN\nfqM8pfexOT9kJVFlG5e8qJQmqK+5y6m+qNk6hU3vERHNaM4RcQ2qJz3AYzhz0uzn\nkPR/hXsA3nL2I9PqEGGZj3E6LPPJ3XpKr4cPh7L3q5vg7OJzDR6P+3kCgYEA4OB8\nt4+gEu8p5c8QpVxP/zylQJdLY7u5QsPl3+cQ6GWGK9rkF6P8OZHt3cQ8GNvMxAyQ\nh0R0xhQqM0l7vPetE/OEKF+1jc8JaRhBKLq9LXeQEUP+9Sq7hJ7tODhJ5bGikxLu\nhQjH7NyLOFU7N5u0W6jLp4gJHr4XJ3K7R6WuXH8CgYBNwMH3DXBopmX+2yb0xyxP\n0lT3qJQAWuwD3+wF0M0T4w6P8jqKT0v3Q7M3V6o8HJtLw5xP0Y8JfPJKqM3kHnD9\nOqVn2T6o3bE4f9zPMh+T/k4jVLnCbifj/z2q3h3cKHvM7BoWYxKWLZM3+BqPq6Lt\nZq8F+t5pKRz+EVdne4HhsQKBgGiLU0GlMGaFo7bIfOHaKze7QKFP1hK7d3LqQk9h\n0T1J0YfxR1oQ5gPg7XM5D1B0k9c7m1iG6aIqhz7qPJqLVy0gTNpKYFqT1OYo/xo7\ng4JqLXpKXkL9K3x2n2iK5rY2lXxXNJPM/G4rTl6LxKpJ6T8d0I7OifWJGF3g5vN9\nv4HRAoGBALn8qW3o1X3sMi6cH+q4u9/NhEZsT2F7KRd0rQ5nqBKr6z6xLpqEeAQo\nHdLcQ3OVfYT6I8I5Y8JYPQ3hM3qQQxXe5h7c5I4mM2+d8M3f0kvvfj5k9bj6MKQM\nHX8b7HBo0aLfJj7WlQ3I8fvoVz5M5qU8rAQ9PvMh7f5Q2p8mJdWz\n-----END RSA PRIVATE KEY-----\n",
+        "client_email": "test@my-project-id.iam.gserviceaccount.com",
+        "client_id": "123456789",
+        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+        "token_uri": "https://oauth2.googleapis.com/token"
+    })";
+}
+
+/**
+ * @brief Mock HTTP client that returns configurable responses
+ */
+class mock_gcs_http_client : public gcs_http_client_interface {
+public:
+    // Default responses for common operations
+    struct mock_response {
+        int status_code = 200;
+        std::string body;
+    };
+
+    mock_response token_response{200, R"({"access_token":"test_token","expires_in":3600})"};
+    mock_response upload_response{200, R"({"name":"test/hello.txt","etag":"\"abc123\"","size":"5"})"};
+    mock_response download_response{200, ""};
+    mock_response delete_response{204, ""};
+    mock_response list_response{200, R"({"items":[{"name":"file1.txt"},{"name":"file2.txt"}]})"};
+    mock_response metadata_response{200, R"({"name":"test/file.txt","contentType":"text/plain","etag":"\"abc123\"","size":"100"})"};
+    mock_response copy_response{200, R"({"name":"dest/file.txt","etag":"\"copied123\""})"};
+    mock_response compose_response{200, R"({"name":"composed.txt","etag":"\"composed123\""})"};
+
+    auto get(
+        const std::string& url,
+        const std::map<std::string, std::string>& /*query*/,
+        const std::map<std::string, std::string>& /*headers*/)
+        -> result<gcs_http_response> override {
+        gcs_http_response resp;
+
+        if (url.find("/storage/v1/b/") != std::string::npos && url.find("/o/") != std::string::npos) {
+            if (url.find("alt=media") != std::string::npos) {
+                // Download request
+                resp.status_code = download_response.status_code;
+                resp.body = std::vector<uint8_t>(download_response.body.begin(), download_response.body.end());
+            } else if (url.find("prefix=") != std::string::npos) {
+                // List request (has prefix= query param)
+                resp.status_code = list_response.status_code;
+                resp.body = std::vector<uint8_t>(list_response.body.begin(), list_response.body.end());
+            } else {
+                // Metadata request (GET /storage/v1/b/{bucket}/o/{object})
+                resp.status_code = metadata_response.status_code;
+                resp.body = std::vector<uint8_t>(metadata_response.body.begin(), metadata_response.body.end());
+            }
+        } else if (url.find("/storage/v1/b/") != std::string::npos && url.find("/o?") != std::string::npos) {
+            // List objects without prefix
+            resp.status_code = list_response.status_code;
+            resp.body = std::vector<uint8_t>(list_response.body.begin(), list_response.body.end());
+        } else {
+            resp.status_code = 200;
+        }
+
+        return resp;
+    }
+
+    auto post(
+        const std::string& url,
+        const std::vector<uint8_t>& /*body*/,
+        const std::map<std::string, std::string>& /*headers*/)
+        -> result<gcs_http_response> override {
+        gcs_http_response resp;
+
+        if (url.find("/upload/storage/v1/b/") != std::string::npos) {
+            // Upload request
+            resp.status_code = upload_response.status_code;
+            resp.body = std::vector<uint8_t>(upload_response.body.begin(), upload_response.body.end());
+        } else if (url.find("/rewriteTo/") != std::string::npos) {
+            // Copy request
+            resp.status_code = copy_response.status_code;
+            resp.body = std::vector<uint8_t>(copy_response.body.begin(), copy_response.body.end());
+        } else if (url.find("/compose") != std::string::npos) {
+            // Compose request
+            resp.status_code = compose_response.status_code;
+            resp.body = std::vector<uint8_t>(compose_response.body.begin(), compose_response.body.end());
+        } else {
+            resp.status_code = 200;
+        }
+
+        return resp;
+    }
+
+    auto post(
+        const std::string& url,
+        const std::string& /*body*/,
+        const std::map<std::string, std::string>& /*headers*/)
+        -> result<gcs_http_response> override {
+        gcs_http_response resp;
+
+        if (url.find("oauth2.googleapis.com/token") != std::string::npos ||
+            url.find("/token") != std::string::npos) {
+            // Token request
+            resp.status_code = token_response.status_code;
+            resp.body = std::vector<uint8_t>(token_response.body.begin(), token_response.body.end());
+        } else if (url.find("/copyTo/") != std::string::npos) {
+            // Copy request
+            resp.status_code = copy_response.status_code;
+            resp.body = std::vector<uint8_t>(copy_response.body.begin(), copy_response.body.end());
+        } else if (url.find("/compose") != std::string::npos) {
+            // Compose request
+            resp.status_code = compose_response.status_code;
+            resp.body = std::vector<uint8_t>(compose_response.body.begin(), compose_response.body.end());
+        } else {
+            resp.status_code = 200;
+        }
+
+        return resp;
+    }
+
+    auto del(
+        const std::string& /*url*/,
+        const std::map<std::string, std::string>& /*headers*/)
+        -> result<gcs_http_response> override {
+        gcs_http_response resp;
+        resp.status_code = delete_response.status_code;
+        resp.body = std::vector<uint8_t>(delete_response.body.begin(), delete_response.body.end());
+        return resp;
+    }
+};
+
+// ============================================================================
 // GCS Credential Provider Tests
 // ============================================================================
 
@@ -282,16 +419,7 @@ protected:
     void SetUp() override {
         gcs_credentials creds;
         creds.project_id = "my-project-id";
-        creds.service_account_json = R"({
-            "type": "service_account",
-            "project_id": "my-project-id",
-            "private_key_id": "key123",
-            "private_key": "-----BEGIN RSA PRIVATE KEY-----\nMIIBogIBAAJBALRi\n-----END RSA PRIVATE KEY-----\n",
-            "client_email": "test@my-project-id.iam.gserviceaccount.com",
-            "client_id": "123456789",
-            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://oauth2.googleapis.com/token"
-        })";
+        creds.service_account_json = create_test_service_account_json();
         provider_ = gcs_credential_provider::create(creds);
 
         auto config = cloud_config_builder::gcs()
@@ -299,7 +427,9 @@ protected:
             .with_bucket("my-bucket")
             .build_gcs();
 
-        storage_ = gcs_storage::create(config, provider_);
+        // Use mock HTTP client for testing
+        mock_http_client_ = std::make_shared<mock_gcs_http_client>();
+        storage_ = gcs_storage::create(config, provider_, mock_http_client_);
         storage_->connect();
     }
 
@@ -310,6 +440,7 @@ protected:
     }
 
     std::shared_ptr<credential_provider> provider_;
+    std::shared_ptr<mock_gcs_http_client> mock_http_client_;
     std::unique_ptr<gcs_storage> storage_;
 };
 
@@ -438,16 +569,7 @@ protected:
     void SetUp() override {
         gcs_credentials creds;
         creds.project_id = "my-project-id";
-        creds.service_account_json = R"({
-            "type": "service_account",
-            "project_id": "my-project-id",
-            "private_key_id": "key123",
-            "private_key": "-----BEGIN RSA PRIVATE KEY-----\nMIIBogIBAAJBALRi\n-----END RSA PRIVATE KEY-----\n",
-            "client_email": "test@my-project-id.iam.gserviceaccount.com",
-            "client_id": "123456789",
-            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://oauth2.googleapis.com/token"
-        })";
+        creds.service_account_json = create_test_service_account_json();
         provider_ = gcs_credential_provider::create(creds);
 
         auto config = cloud_config_builder::gcs()
@@ -455,11 +577,14 @@ protected:
             .with_bucket("my-bucket")
             .build_gcs();
 
-        storage_ = gcs_storage::create(config, provider_);
+        // Use mock HTTP client for testing
+        mock_http_client_ = std::make_shared<mock_gcs_http_client>();
+        storage_ = gcs_storage::create(config, provider_, mock_http_client_);
         storage_->connect();
     }
 
     std::shared_ptr<credential_provider> provider_;
+    std::shared_ptr<mock_gcs_http_client> mock_http_client_;
     std::unique_ptr<gcs_storage> storage_;
 };
 
@@ -530,16 +655,7 @@ protected:
     void SetUp() override {
         gcs_credentials creds;
         creds.project_id = "my-project-id";
-        creds.service_account_json = R"({
-            "type": "service_account",
-            "project_id": "my-project-id",
-            "private_key_id": "key123",
-            "private_key": "-----BEGIN RSA PRIVATE KEY-----\nMIIBogIBAAJBALRi\n-----END RSA PRIVATE KEY-----\n",
-            "client_email": "test@my-project-id.iam.gserviceaccount.com",
-            "client_id": "123456789",
-            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://oauth2.googleapis.com/token"
-        })";
+        creds.service_account_json = create_test_service_account_json();
         provider_ = gcs_credential_provider::create(creds);
 
         auto config = cloud_config_builder::gcs()
@@ -547,11 +663,14 @@ protected:
             .with_bucket("my-bucket")
             .build_gcs();
 
-        storage_ = gcs_storage::create(config, provider_);
+        // Use mock HTTP client for testing
+        mock_http_client_ = std::make_shared<mock_gcs_http_client>();
+        storage_ = gcs_storage::create(config, provider_, mock_http_client_);
         storage_->connect();
     }
 
     std::shared_ptr<credential_provider> provider_;
+    std::shared_ptr<mock_gcs_http_client> mock_http_client_;
     std::unique_ptr<gcs_storage> storage_;
 };
 
@@ -638,16 +757,7 @@ protected:
     void SetUp() override {
         gcs_credentials creds;
         creds.project_id = "my-project-id";
-        creds.service_account_json = R"({
-            "type": "service_account",
-            "project_id": "my-project-id",
-            "private_key_id": "key123",
-            "private_key": "-----BEGIN RSA PRIVATE KEY-----\nMIIBogIBAAJBALRi\n-----END RSA PRIVATE KEY-----\n",
-            "client_email": "test@my-project-id.iam.gserviceaccount.com",
-            "client_id": "123456789",
-            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://oauth2.googleapis.com/token"
-        })";
+        creds.service_account_json = create_test_service_account_json();
         provider_ = gcs_credential_provider::create(creds);
 
         auto config = cloud_config_builder::gcs()
@@ -655,11 +765,14 @@ protected:
             .with_bucket("my-bucket")
             .build_gcs();
 
-        storage_ = gcs_storage::create(config, provider_);
+        // Use mock HTTP client for testing
+        mock_http_client_ = std::make_shared<mock_gcs_http_client>();
+        storage_ = gcs_storage::create(config, provider_, mock_http_client_);
         storage_->connect();
     }
 
     std::shared_ptr<credential_provider> provider_;
+    std::shared_ptr<mock_gcs_http_client> mock_http_client_;
     std::unique_ptr<gcs_storage> storage_;
 };
 
