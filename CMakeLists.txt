@@ -345,11 +345,12 @@ endif()
 # Ecosystem dependencies
 if(BUILD_WITH_COMMON_SYSTEM AND COMMON_SYSTEM_INCLUDE_DIR)
     target_include_directories(FileTransSystem PUBLIC ${COMMON_SYSTEM_INCLUDE_DIR})
-    # Define legacy macro for compatibility
-    # Note: KCENON_WITH_COMMON_SYSTEM is intentionally NOT defined to maintain
-    # ABI compatibility with network_system which uses its local Result type
+    # Define both legacy and unified macros for ABI compatibility with network_system
+    # network_system uses KCENON_WITH_COMMON_SYSTEM=1 to select common::Result<T>
+    # file_trans_system must match to ensure consistent Result<T> ABI
     target_compile_definitions(FileTransSystem PUBLIC
         BUILD_WITH_COMMON_SYSTEM
+        KCENON_WITH_COMMON_SYSTEM=1
     )
 endif()
 

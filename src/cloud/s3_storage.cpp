@@ -634,7 +634,7 @@ struct s3_upload_stream::impl {
 
             // Send POST request
             auto response = http_client_->post(url, std::string{}, headers);
-            if (response) {
+            if (response.is_ok()) {
                 auto& resp = response.value();
                 if (resp.status_code == 200) {
                     // Parse UploadId from XML response
@@ -692,7 +692,7 @@ struct s3_upload_stream::impl {
 
             // Send PUT request
             auto response = http_client_->put(url, body_str, headers);
-            if (response) {
+            if (response.is_ok()) {
                 auto& resp = response.value();
                 if (resp.status_code == 200) {
                     // Get ETag from response headers
@@ -749,7 +749,7 @@ struct s3_upload_stream::impl {
 
             // Send POST request
             auto response = http_client_->post(url, xml_body, headers);
-            if (response) {
+            if (response.is_ok()) {
                 auto& resp = response.value();
                 if (resp.status_code == 200) {
                     // Parse response
@@ -1277,7 +1277,7 @@ struct s3_storage::impl {
         // Helper lambda to handle response
         auto handle_response = [](kcenon::network::Result<kcenon::network::internal::http_response>&& response)
             -> result<kcenon::network::internal::http_response> {
-            if (!response) {
+            if (response.is_err()) {
                 return unexpected{error{error_code::connection_failed, "HTTP request failed"}};
             }
             return response.value();
