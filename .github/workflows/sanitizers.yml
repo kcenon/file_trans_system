@@ -88,7 +88,12 @@ jobs:
           -DCMAKE_CXX_COMPILER=clang++ \
           -DCMAKE_C_COMPILER=clang \
           -DBUILD_TESTS=OFF \
-          -DBUILD_SAMPLES=OFF
+          -DBUILD_SAMPLES=OFF \
+          -DCOMMON_SYSTEM_INCLUDE_DIR=${{ github.workspace }}/common_system/include \
+          -DTHREAD_SYSTEM_INCLUDE_DIR=${{ github.workspace }}/thread_system/include \
+          -DTHREAD_SYSTEM_LIBRARY=${{ github.workspace }}/thread_system/build/lib/libThreadSystem.a \
+          -DLOGGER_SYSTEM_INCLUDE_DIR=${{ github.workspace }}/logger_system/include \
+          -DLOGGER_SYSTEM_LIBRARY=${{ github.workspace }}/logger_system/build/lib/libLoggerSystem.a
         cmake --build network_system/build
 
     - name: Configure CMake with ASAN
@@ -195,7 +200,12 @@ jobs:
           -DCMAKE_CXX_COMPILER=clang++ \
           -DCMAKE_C_COMPILER=clang \
           -DBUILD_TESTS=OFF \
-          -DBUILD_SAMPLES=OFF
+          -DBUILD_SAMPLES=OFF \
+          -DCOMMON_SYSTEM_INCLUDE_DIR=${{ github.workspace }}/common_system/include \
+          -DTHREAD_SYSTEM_INCLUDE_DIR=${{ github.workspace }}/thread_system/include \
+          -DTHREAD_SYSTEM_LIBRARY=${{ github.workspace }}/thread_system/build/lib/libThreadSystem.a \
+          -DLOGGER_SYSTEM_INCLUDE_DIR=${{ github.workspace }}/logger_system/include \
+          -DLOGGER_SYSTEM_LIBRARY=${{ github.workspace }}/logger_system/build/lib/libLoggerSystem.a
         cmake --build network_system/build
 
     - name: Configure CMake with TSAN
@@ -302,7 +312,12 @@ jobs:
           -DCMAKE_CXX_COMPILER=clang++ \
           -DCMAKE_C_COMPILER=clang \
           -DBUILD_TESTS=OFF \
-          -DBUILD_SAMPLES=OFF
+          -DBUILD_SAMPLES=OFF \
+          -DCOMMON_SYSTEM_INCLUDE_DIR=${{ github.workspace }}/common_system/include \
+          -DTHREAD_SYSTEM_INCLUDE_DIR=${{ github.workspace }}/thread_system/include \
+          -DTHREAD_SYSTEM_LIBRARY=${{ github.workspace }}/thread_system/build/lib/libThreadSystem.a \
+          -DLOGGER_SYSTEM_INCLUDE_DIR=${{ github.workspace }}/logger_system/include \
+          -DLOGGER_SYSTEM_LIBRARY=${{ github.workspace }}/logger_system/build/lib/libLoggerSystem.a
         cmake --build network_system/build
 
     - name: Configure CMake with UBSAN
