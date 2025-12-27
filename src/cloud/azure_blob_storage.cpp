@@ -21,6 +21,11 @@
 #include <thread>
 #include <unordered_map>
 
+// HTTP client integration enabled (see #147, #148)
+#ifdef BUILD_WITH_NETWORK_SYSTEM
+#include <kcenon/network/core/http_client.h>
+#endif
+
 #ifdef FILE_TRANS_ENABLE_ENCRYPTION
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
@@ -756,6 +761,10 @@ struct azure_blob_storage::impl {
     cloud_storage_state state_ = cloud_storage_state::disconnected;
     cloud_storage_statistics stats_;
 
+#ifdef BUILD_WITH_NETWORK_SYSTEM
+    std::shared_ptr<kcenon::network::core::http_client> http_client_;
+#endif
+
     std::function<void(const upload_progress&)> upload_progress_callback_;
     std::function<void(const download_progress&)> download_progress_callback_;
     std::function<void(cloud_storage_state)> state_changed_callback_;
@@ -764,7 +773,12 @@ struct azure_blob_storage::impl {
     std::chrono::steady_clock::time_point connected_at_;
 
     impl(const azure_blob_config& config, std::shared_ptr<credential_provider> credentials)
-        : config_(config), credentials_(std::move(credentials)) {}
+        : config_(config), credentials_(std::move(credentials)) {
+#ifdef BUILD_WITH_NETWORK_SYSTEM
+        http_client_ = std::make_shared<kcenon::network::core::http_client>(
+            std::chrono::milliseconds(30000));  // 30 second timeout
+#endif
+    }
 
     void set_state(cloud_storage_state new_state) {
         state_ = new_state;
