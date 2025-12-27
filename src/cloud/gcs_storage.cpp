@@ -35,6 +35,79 @@
 
 namespace kcenon::file_transfer {
 
+// ============================================================================
+// Real HTTP Client Adapter
+// ============================================================================
+
+#ifdef BUILD_WITH_NETWORK_SYSTEM
+/**
+ * @brief Adapter that wraps the real http_client to implement gcs_http_client_interface
+ */
+class real_gcs_http_client : public gcs_http_client_interface {
+public:
+    explicit real_gcs_http_client(std::chrono::milliseconds timeout = std::chrono::milliseconds(30000))
+        : client_(std::make_shared<kcenon::network::core::http_client>(timeout)) {}
+
+    auto get(
+        const std::string& url,
+        const std::map<std::string, std::string>& query,
+        const std::map<std::string, std::string>& headers)
+        -> result<gcs_http_response> override {
+        auto response = client_->get(url, query, headers);
+        if (!response) {
+            return unexpected{error{error_code::internal_error, "HTTP GET request failed"}};
+        }
+        return convert_response(response.value());
+    }
+
+    auto post(
+        const std::string& url,
+        const std::vector<uint8_t>& body,
+        const std::map<std::string, std::string>& headers)
+        -> result<gcs_http_response> override {
+        auto response = client_->post(url, body, headers);
+        if (!response) {
+            return unexpected{error{error_code::internal_error, "HTTP POST request failed"}};
+        }
+        return convert_response(response.value());
+    }
+
+    auto post(
+        const std::string& url,
+        const std::string& body,
+        const std::map<std::string, std::string>& headers)
+        -> result<gcs_http_response> override {
+        auto response = client_->post(url, body, headers);
+        if (!response) {
+            return unexpected{error{error_code::internal_error, "HTTP POST request failed"}};
+        }
+        return convert_response(response.value());
+    }
+
+    auto del(
+        const std::string& url,
+        const std::map<std::string, std::string>& headers)
+        -> result<gcs_http_response> override {
+        auto response = client_->del(url, headers);
+        if (!response) {
+            return unexpected{error{error_code::internal_error, "HTTP DELETE request failed"}};
+        }
+        return convert_response(response.value());
+    }
+
+private:
+    static auto convert_response(const kcenon::network::internal::http_response& resp) -> gcs_http_response {
+        gcs_http_response result;
+        result.status_code = resp.status_code;
+        result.headers = resp.headers;
+        result.body = resp.body;
+        return result;
+    }
+
+    std::shared_ptr<kcenon::network::core::http_client> client_;
+};
+#endif
+
 namespace {
 
 // ============================================================================
@@ -1011,9 +1084,7 @@ struct gcs_storage::impl {
     cloud_storage_state state_ = cloud_storage_state::disconnected;
     cloud_storage_statistics stats_;
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
-    std::shared_ptr<kcenon::network::core::http_client> http_client_;
-#endif
+    std::shared_ptr<gcs_http_client_interface> http_client_;
 
     // OAuth2 token cache
     std::string access_token_;
@@ -1027,11 +1098,15 @@ struct gcs_storage::impl {
     mutable std::mutex mutex_;
     std::chrono::steady_clock::time_point connected_at_;
 
-    impl(const gcs_config& config, std::shared_ptr<credential_provider> credentials)
-        : config_(config), credentials_(std::move(credentials)) {
+    impl(const gcs_config& config,
+         std::shared_ptr<credential_provider> credentials,
+         std::shared_ptr<gcs_http_client_interface> http_client = nullptr)
+        : config_(config), credentials_(std::move(credentials)), http_client_(std::move(http_client)) {
 #ifdef BUILD_WITH_NETWORK_SYSTEM
-        http_client_ = std::make_shared<kcenon::network::core::http_client>(
-            std::chrono::milliseconds(30000));  // 30 second timeout
+        if (!http_client_) {
+            http_client_ = std::make_shared<real_gcs_http_client>(
+                std::chrono::milliseconds(30000));  // 30 second timeout
+        }
 #endif
     }
 
@@ -1188,6 +1263,12 @@ gcs_storage::gcs_storage(
     std::shared_ptr<credential_provider> credentials)
     : impl_(std::make_unique<impl>(config, std::move(credentials))) {}
 
+gcs_storage::gcs_storage(
+    const gcs_config& config,
+    std::shared_ptr<credential_provider> credentials,
+    std::shared_ptr<gcs_http_client_interface> http_client)
+    : impl_(std::make_unique<impl>(config, std::move(credentials), std::move(http_client))) {}
+
 gcs_storage::~gcs_storage() = default;
 
 gcs_storage::gcs_storage(gcs_storage&&) noexcept = default;
@@ -1205,6 +1286,21 @@ auto gcs_storage::create(
     }
 
     return std::unique_ptr<gcs_storage>(new gcs_storage(config, std::move(credentials)));
+}
+
+auto gcs_storage::create(
+    const gcs_config& config,
+    std::shared_ptr<credential_provider> credentials,
+    std::shared_ptr<gcs_http_client_interface> http_client) -> std::unique_ptr<gcs_storage> {
+    if (config.bucket.empty()) {
+        return nullptr;
+    }
+
+    if (!credentials) {
+        return nullptr;
+    }
+
+    return std::unique_ptr<gcs_storage>(new gcs_storage(config, std::move(credentials), std::move(http_client)));
 }
 
 auto gcs_storage::provider() const -> cloud_provider {
