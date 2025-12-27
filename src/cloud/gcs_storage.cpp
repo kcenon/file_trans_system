@@ -54,7 +54,7 @@ public:
         const std::map<std::string, std::string>& headers)
         -> result<gcs_http_response> override {
         auto response = client_->get(url, query, headers);
-        if (!response) {
+        if (response.is_err()) {
             return unexpected{error{error_code::internal_error, "HTTP GET request failed"}};
         }
         return convert_response(response.value());
@@ -66,7 +66,7 @@ public:
         const std::map<std::string, std::string>& headers)
         -> result<gcs_http_response> override {
         auto response = client_->post(url, body, headers);
-        if (!response) {
+        if (response.is_err()) {
             return unexpected{error{error_code::internal_error, "HTTP POST request failed"}};
         }
         return convert_response(response.value());
@@ -78,7 +78,7 @@ public:
         const std::map<std::string, std::string>& headers)
         -> result<gcs_http_response> override {
         auto response = client_->post(url, body, headers);
-        if (!response) {
+        if (response.is_err()) {
             return unexpected{error{error_code::internal_error, "HTTP POST request failed"}};
         }
         return convert_response(response.value());
@@ -89,7 +89,7 @@ public:
         const std::map<std::string, std::string>& headers)
         -> result<gcs_http_response> override {
         auto response = client_->del(url, headers);
-        if (!response) {
+        if (response.is_err()) {
             return unexpected{error{error_code::internal_error, "HTTP DELETE request failed"}};
         }
         return convert_response(response.value());
