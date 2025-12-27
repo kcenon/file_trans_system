@@ -16,7 +16,6 @@
 #include <iomanip>
 #include <map>
 #include <random>
-#include <regex>
 #include <sstream>
 #include <thread>
 #include <unordered_map>
@@ -568,17 +567,42 @@ auto parse_list_response(const std::string& json)
 }
 
 /**
- * @brief Simple JSON value extraction
+ * @brief Simple JSON value extraction (regex-free for MSVC compatibility)
  */
 auto extract_json_string(const std::string& json, const std::string& key) -> std::optional<std::string> {
-    std::string pattern = "\"" + key + "\"\\s*:\\s*\"([^\"]+)\"";
-    std::regex re(pattern);
-    std::smatch match;
-
-    if (std::regex_search(json, match, re) && match.size() > 1) {
-        return match[1].str();
+    // Find "key" in the JSON
+    std::string search_key = "\"" + key + "\"";
+    auto key_pos = json.find(search_key);
+    if (key_pos == std::string::npos) {
+        return std::nullopt;
     }
-    return std::nullopt;
+
+    // Skip past the key and any whitespace/colon
+    auto pos = key_pos + search_key.length();
+    while (pos < json.length() && (json[pos] == ' ' || json[pos] == '\t' ||
+                                    json[pos] == '\n' || json[pos] == '\r' ||
+                                    json[pos] == ':')) {
+        ++pos;
+    }
+
+    // Expect opening quote
+    if (pos >= json.length() || json[pos] != '"') {
+        return std::nullopt;
+    }
+    ++pos;  // Skip opening quote
+
+    // Find closing quote (not escaped)
+    std::string value;
+    while (pos < json.length() && json[pos] != '"') {
+        value += json[pos];
+        ++pos;
+    }
+
+    if (pos >= json.length()) {
+        return std::nullopt;
+    }
+
+    return value;
 }
 
 /**
@@ -675,32 +699,57 @@ auto parse_service_account_json(const std::string& json) -> service_account_info
     auto client_id = extract_json_string(json, "client_id");
     auto token_uri = extract_json_string(json, "token_uri");
 
-    // Extract private_key (may contain escaped newlines)
-    std::string pk_pattern = "\"private_key\"\\s*:\\s*\"([^\"]+(?:\\\\.[^\"]+)*)\"";
-    std::regex pk_re(pk_pattern);
-    std::smatch pk_match;
-
-    if (std::regex_search(json, pk_match, pk_re) && pk_match.size() > 1) {
-        std::string pk = pk_match[1].str();
-        // Unescape the private key
-        std::string unescaped;
-        for (std::size_t i = 0; i < pk.size(); ++i) {
-            if (pk[i] == '\\' && i + 1 < pk.size()) {
-                char next = pk[i + 1];
-                if (next == 'n') {
-                    unescaped += '\n';
-                    ++i;
-                } else if (next == '\\') {
-                    unescaped += '\\';
-                    ++i;
-                } else {
-                    unescaped += pk[i];
-                }
-            } else {
-                unescaped += pk[i];
-            }
+    // Extract private_key (may contain escaped newlines) - regex-free for MSVC compatibility
+    std::string pk_search = "\"private_key\"";
+    auto pk_key_pos = json.find(pk_search);
+    if (pk_key_pos != std::string::npos) {
+        // Skip past the key and any whitespace/colon
+        auto pk_pos = pk_key_pos + pk_search.length();
+        while (pk_pos < json.length() && (json[pk_pos] == ' ' || json[pk_pos] == '\t' ||
+                                           json[pk_pos] == '\n' || json[pk_pos] == '\r' ||
+                                           json[pk_pos] == ':')) {
+            ++pk_pos;
         }
-        info.private_key = unescaped;
+
+        // Expect opening quote
+        if (pk_pos < json.length() && json[pk_pos] == '"') {
+            ++pk_pos;  // Skip opening quote
+
+            // Extract until closing quote (handling escaped chars)
+            std::string pk;
+            while (pk_pos < json.length()) {
+                if (json[pk_pos] == '\\' && pk_pos + 1 < json.length()) {
+                    // Escape sequence
+                    char next = json[pk_pos + 1];
+                    if (next == '"') {
+                        pk += '"';
+                        pk_pos += 2;
+                    } else if (next == 'n') {
+                        pk += '\n';
+                        pk_pos += 2;
+                    } else if (next == '\\') {
+                        pk += '\\';
+                        pk_pos += 2;
+                    } else if (next == 't') {
+                        pk += '\t';
+                        pk_pos += 2;
+                    } else if (next == 'r') {
+                        pk += '\r';
+                        pk_pos += 2;
+                    } else {
+                        pk += json[pk_pos];
+                        ++pk_pos;
+                    }
+                } else if (json[pk_pos] == '"') {
+                    // End of string
+                    break;
+                } else {
+                    pk += json[pk_pos];
+                    ++pk_pos;
+                }
+            }
+            info.private_key = pk;
+        }
     }
 
     if (project_id) info.project_id = *project_id;
