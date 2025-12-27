@@ -274,6 +274,226 @@ auto generate_upload_id() -> std::string {
     return bytes_to_hex(bytes);
 }
 
+#ifdef FILE_TRANS_ENABLE_ENCRYPTION
+/**
+ * @brief Sign data with RSA-SHA256 (RS256 for JWT)
+ */
+auto rsa_sha256_sign(const std::string& data, const std::string& private_key_pem)
+    -> std::optional<std::vector<uint8_t>> {
+    // Parse PEM private key
+    BIO* bio = BIO_new_mem_buf(private_key_pem.data(),
+                                static_cast<int>(private_key_pem.size()));
+    if (!bio) {
+        return std::nullopt;
+    }
+
+    EVP_PKEY* pkey = PEM_read_bio_PrivateKey(bio, nullptr, nullptr, nullptr);
+    BIO_free(bio);
+
+    if (!pkey) {
+        return std::nullopt;
+    }
+
+    // Create signing context
+    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+    if (!ctx) {
+        EVP_PKEY_free(pkey);
+        return std::nullopt;
+    }
+
+    std::vector<uint8_t> signature;
+    size_t sig_len = 0;
+
+    if (EVP_DigestSignInit(ctx, nullptr, EVP_sha256(), nullptr, pkey) != 1) {
+        EVP_MD_CTX_free(ctx);
+        EVP_PKEY_free(pkey);
+        return std::nullopt;
+    }
+
+    if (EVP_DigestSignUpdate(ctx, data.data(), data.size()) != 1) {
+        EVP_MD_CTX_free(ctx);
+        EVP_PKEY_free(pkey);
+        return std::nullopt;
+    }
+
+    // Get required signature length
+    if (EVP_DigestSignFinal(ctx, nullptr, &sig_len) != 1) {
+        EVP_MD_CTX_free(ctx);
+        EVP_PKEY_free(pkey);
+        return std::nullopt;
+    }
+
+    signature.resize(sig_len);
+
+    // Sign
+    if (EVP_DigestSignFinal(ctx, signature.data(), &sig_len) != 1) {
+        EVP_MD_CTX_free(ctx);
+        EVP_PKEY_free(pkey);
+        return std::nullopt;
+    }
+
+    signature.resize(sig_len);
+    EVP_MD_CTX_free(ctx);
+    EVP_PKEY_free(pkey);
+
+    return signature;
+}
+#endif
+
+/**
+ * @brief Extract JSON string value (supports escaped characters)
+ */
+auto extract_json_value(const std::string& json, const std::string& key)
+    -> std::optional<std::string> {
+    std::string search = "\"" + key + "\"";
+    auto pos = json.find(search);
+    if (pos == std::string::npos) {
+        return std::nullopt;
+    }
+
+    pos = json.find(':', pos + search.length());
+    if (pos == std::string::npos) {
+        return std::nullopt;
+    }
+
+    // Skip whitespace
+    pos = json.find_first_not_of(" \t\n\r", pos + 1);
+    if (pos == std::string::npos) {
+        return std::nullopt;
+    }
+
+    // Check if value is a string (starts with quote)
+    if (json[pos] == '"') {
+        auto end_pos = pos + 1;
+        while (end_pos < json.size()) {
+            if (json[end_pos] == '"' && json[end_pos - 1] != '\\') {
+                break;
+            }
+            ++end_pos;
+        }
+        return json.substr(pos + 1, end_pos - pos - 1);
+    }
+
+    // Check if value is a number
+    auto end_pos = json.find_first_of(",}\n", pos);
+    if (end_pos == std::string::npos) {
+        end_pos = json.size();
+    }
+    return json.substr(pos, end_pos - pos);
+}
+
+/**
+ * @brief Parse GCS object metadata from JSON response
+ */
+auto parse_object_metadata(const std::string& json) -> cloud_object_metadata {
+    cloud_object_metadata metadata;
+
+    auto name = extract_json_value(json, "name");
+    if (name) {
+        metadata.key = *name;
+    }
+
+    auto size_str = extract_json_value(json, "size");
+    if (size_str) {
+        try {
+            metadata.size = std::stoull(*size_str);
+        } catch (...) {
+            metadata.size = 0;
+        }
+    }
+
+    auto content_type = extract_json_value(json, "contentType");
+    if (content_type) {
+        metadata.content_type = *content_type;
+    }
+
+    auto etag = extract_json_value(json, "etag");
+    if (etag) {
+        metadata.etag = *etag;
+    }
+
+    auto updated = extract_json_value(json, "updated");
+    if (updated) {
+        // Parse RFC 3339 timestamp
+        std::tm tm = {};
+        std::istringstream ss(*updated);
+        ss >> std::get_time(&tm, "%Y-%m-%dT%H:%M:%S");
+        if (!ss.fail()) {
+            metadata.last_modified = std::chrono::system_clock::from_time_t(
+                std::mktime(&tm));
+        }
+    }
+
+    auto storage_class = extract_json_value(json, "storageClass");
+    if (storage_class) {
+        metadata.storage_class = *storage_class;
+    }
+
+    return metadata;
+}
+
+/**
+ * @brief Parse list objects response
+ */
+auto parse_list_response(const std::string& json)
+    -> std::pair<std::vector<cloud_object_metadata>, std::optional<std::string>> {
+    std::vector<cloud_object_metadata> objects;
+    std::optional<std::string> next_page_token;
+
+    // Extract nextPageToken if present
+    auto token = extract_json_value(json, "nextPageToken");
+    if (token && !token->empty()) {
+        next_page_token = *token;
+    }
+
+    // Find items array
+    auto items_pos = json.find("\"items\"");
+    if (items_pos == std::string::npos) {
+        return {objects, next_page_token};
+    }
+
+    auto array_start = json.find('[', items_pos);
+    if (array_start == std::string::npos) {
+        return {objects, next_page_token};
+    }
+
+    // Parse each object in the array
+    size_t pos = array_start + 1;
+    while (pos < json.size()) {
+        // Find object start
+        auto obj_start = json.find('{', pos);
+        if (obj_start == std::string::npos) {
+            break;
+        }
+
+        // Find matching closing brace
+        int brace_count = 1;
+        auto obj_end = obj_start + 1;
+        while (obj_end < json.size() && brace_count > 0) {
+            if (json[obj_end] == '{') ++brace_count;
+            else if (json[obj_end] == '}') --brace_count;
+            ++obj_end;
+        }
+
+        if (brace_count == 0) {
+            std::string obj_json = json.substr(obj_start, obj_end - obj_start);
+            objects.push_back(parse_object_metadata(obj_json));
+        }
+
+        pos = obj_end;
+
+        // Check for array end
+        auto next_comma = json.find(',', pos);
+        auto array_end = json.find(']', pos);
+        if (array_end != std::string::npos &&
+            (next_comma == std::string::npos || array_end < next_comma)) {
+            break;
+        }
+    }
+
+    return {objects, next_page_token};
+}
+
 /**
  * @brief Simple JSON value extraction
  */
@@ -426,6 +646,48 @@ auto parse_service_account_json(const std::string& json) -> service_account_info
 
     return info;
 }
+
+#ifdef FILE_TRANS_ENABLE_ENCRYPTION
+/**
+ * @brief Create JWT for GCS service account authentication
+ */
+auto create_jwt(const service_account_info& sa_info,
+                const std::string& scope) -> std::optional<std::string> {
+    auto now = get_unix_timestamp();
+    auto exp = now + 3600;  // Token valid for 1 hour
+
+    // JWT Header
+    std::string header = R"({"alg":"RS256","typ":"JWT"})";
+
+    // JWT Claim
+    std::ostringstream claim_builder;
+    claim_builder << "{";
+    claim_builder << "\"iss\":\"" << sa_info.client_email << "\",";
+    claim_builder << "\"scope\":\"" << scope << "\",";
+    claim_builder << "\"aud\":\"" << sa_info.token_uri << "\",";
+    claim_builder << "\"iat\":" << now << ",";
+    claim_builder << "\"exp\":" << exp;
+    claim_builder << "}";
+    std::string claim = claim_builder.str();
+
+    // Encode header and claim
+    std::string header_encoded = base64url_encode_string(header);
+    std::string claim_encoded = base64url_encode_string(claim);
+
+    // Create signing input
+    std::string signing_input = header_encoded + "." + claim_encoded;
+
+    // Sign with RSA-SHA256
+    auto signature = rsa_sha256_sign(signing_input, sa_info.private_key);
+    if (!signature) {
+        return std::nullopt;
+    }
+
+    std::string signature_encoded = base64url_encode(signature.value());
+
+    return signing_input + "." + signature_encoded;
+}
+#endif
 
 }  // namespace
 
@@ -753,6 +1015,11 @@ struct gcs_storage::impl {
     std::shared_ptr<kcenon::network::core::http_client> http_client_;
 #endif
 
+    // OAuth2 token cache
+    std::string access_token_;
+    std::chrono::system_clock::time_point token_expiry_;
+    mutable std::mutex token_mutex_;
+
     std::function<void(const upload_progress&)> upload_progress_callback_;
     std::function<void(const download_progress&)> download_progress_callback_;
     std::function<void(cloud_storage_state)> state_changed_callback_;
@@ -766,6 +1033,101 @@ struct gcs_storage::impl {
         http_client_ = std::make_shared<kcenon::network::core::http_client>(
             std::chrono::milliseconds(30000));  // 30 second timeout
 #endif
+    }
+
+    /**
+     * @brief Get valid access token, refreshing if needed
+     */
+    auto get_access_token() -> result<std::string> {
+#if defined(BUILD_WITH_NETWORK_SYSTEM) && defined(FILE_TRANS_ENABLE_ENCRYPTION)
+        std::lock_guard<std::mutex> lock(token_mutex_);
+
+        auto now = std::chrono::system_clock::now();
+        // Return cached token if still valid (with 60 second buffer)
+        if (!access_token_.empty() &&
+            now + std::chrono::seconds(60) < token_expiry_) {
+            return access_token_;
+        }
+
+        // Get credentials and parse service account
+        auto creds = credentials_->get_credentials();
+        if (!creds) {
+            return unexpected{error{error_code::internal_error, "No credentials available"}};
+        }
+
+        auto gcs_creds = std::dynamic_pointer_cast<const gcs_credentials>(creds);
+        if (!gcs_creds || !gcs_creds->service_account_json.has_value()) {
+            return unexpected{error{error_code::internal_error, "Invalid GCS credentials"}};
+        }
+
+        auto sa_info = parse_service_account_json(gcs_creds->service_account_json.value());
+        if (!sa_info.valid) {
+            return unexpected{error{error_code::internal_error, "Failed to parse service account JSON"}};
+        }
+
+        // Create JWT
+        std::string scope = "https://www.googleapis.com/auth/devstorage.full_control";
+        auto jwt = create_jwt(sa_info, scope);
+        if (!jwt) {
+            return unexpected{error{error_code::internal_error, "Failed to create JWT"}};
+        }
+
+        // Exchange JWT for access token
+        std::string token_url = sa_info.token_uri;
+        std::string body = "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=" + *jwt;
+
+        std::map<std::string, std::string> headers = {
+            {"Content-Type", "application/x-www-form-urlencoded"}
+        };
+
+        auto response = http_client_->post(token_url, body, headers);
+        if (!response) {
+            return unexpected{error{error_code::internal_error, "Token request failed"}};
+        }
+
+        auto& resp = response.value();
+        if (resp.status_code != 200) {
+            return unexpected{error{error_code::internal_error,
+                "Token request returned status " + std::to_string(resp.status_code)}};
+        }
+
+        std::string response_body = resp.get_body_string();
+        auto token = extract_json_value(response_body, "access_token");
+        if (!token) {
+            return unexpected{error{error_code::internal_error, "No access_token in response"}};
+        }
+
+        auto expires_in = extract_json_value(response_body, "expires_in");
+        int64_t expires_seconds = 3600;  // Default 1 hour
+        if (expires_in) {
+            try {
+                expires_seconds = std::stoll(*expires_in);
+            } catch (...) {}
+        }
+
+        access_token_ = *token;
+        token_expiry_ = std::chrono::system_clock::now() +
+                        std::chrono::seconds(expires_seconds);
+
+        return access_token_;
+#else
+        return unexpected{error{error_code::internal_error,
+            "OAuth2 requires BUILD_WITH_NETWORK_SYSTEM and FILE_TRANS_ENABLE_ENCRYPTION"}};
+#endif
+    }
+
+    /**
+     * @brief Create authorization headers for GCS API requests
+     */
+    auto get_auth_headers() -> result<std::map<std::string, std::string>> {
+        auto token_result = get_access_token();
+        if (!token_result.has_value()) {
+            return unexpected{token_result.error()};
+        }
+
+        return std::map<std::string, std::string>{
+            {"Authorization", "Bearer " + token_result.value()}
+        };
     }
 
     void set_state(cloud_storage_state new_state) {
@@ -931,7 +1293,68 @@ auto gcs_storage::upload(
         return result;
     }
 
-    // Simple upload for small objects
+#ifdef BUILD_WITH_NETWORK_SYSTEM
+    // Simple upload using media upload endpoint
+    auto auth_headers = impl_->get_auth_headers();
+    if (!auth_headers.has_value()) {
+        impl_->update_error_stats();
+        return unexpected{auth_headers.error()};
+    }
+
+    std::string content_type = options.content_type.value_or(detect_content_type(key));
+
+    std::map<std::string, std::string> headers = auth_headers.value();
+    headers["Content-Type"] = content_type;
+    headers["Content-Length"] = std::to_string(data.size());
+
+    // Build upload URL
+    // POST https://storage.googleapis.com/upload/storage/v1/b/{bucket}/o?uploadType=media&name={object}
+    std::string upload_url = impl_->get_storage_endpoint() +
+                             "/upload/storage/v1/b/" + impl_->config_.bucket +
+                             "/o?uploadType=media&name=" + url_encode(key);
+
+    // Convert span to vector for HTTP client
+    std::vector<uint8_t> body_data(data.size());
+    std::memcpy(body_data.data(), data.data(), data.size());
+
+    auto response = impl_->http_client_->post(upload_url, body_data, headers);
+    if (!response) {
+        impl_->update_error_stats();
+        return unexpected{error{error_code::internal_error, "Upload request failed"}};
+    }
+
+    auto& resp = response.value();
+    if (resp.status_code != 200) {
+        impl_->update_error_stats();
+        std::string error_msg = "Upload failed with status " +
+                                std::to_string(resp.status_code);
+        auto error_body = resp.get_body_string();
+        if (!error_body.empty()) {
+            auto error_message = extract_json_value(error_body, "message");
+            if (error_message) {
+                error_msg += ": " + *error_message;
+            }
+        }
+        return unexpected{error{error_code::internal_error, error_msg}};
+    }
+
+    // Parse response
+    std::string response_body = resp.get_body_string();
+    auto metadata = parse_object_metadata(response_body);
+
+    upload_result result;
+    result.key = key;
+    result.etag = metadata.etag;
+    result.bytes_uploaded = data.size();
+
+    auto end_time = std::chrono::steady_clock::now();
+    result.duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+        end_time - start_time);
+
+    impl_->update_upload_stats(data.size());
+    return result;
+#else
+    // Fallback: stub implementation when network system is not available
     auto content_hash = sha256_bytes(data);
     std::string payload_hash = bytes_to_hex(content_hash);
 
@@ -946,6 +1369,7 @@ auto gcs_storage::upload(
 
     impl_->update_upload_stats(data.size());
     return result;
+#endif
 }
 
 auto gcs_storage::upload_file(
@@ -982,8 +1406,55 @@ auto gcs_storage::download(const std::string& key) -> result<std::vector<std::by
         return unexpected{error{error_code::not_initialized, "Not connected"}};
     }
 
+#ifdef BUILD_WITH_NETWORK_SYSTEM
+    auto auth_headers = impl_->get_auth_headers();
+    if (!auth_headers.has_value()) {
+        impl_->update_error_stats();
+        return unexpected{auth_headers.error()};
+    }
+
+    // GET https://storage.googleapis.com/storage/v1/b/{bucket}/o/{object}?alt=media
+    std::string download_url = impl_->get_storage_endpoint() +
+                               "/storage/v1/b/" + impl_->config_.bucket +
+                               "/o/" + url_encode(key) + "?alt=media";
+
+    auto response = impl_->http_client_->get(download_url, {}, auth_headers.value());
+    if (!response) {
+        impl_->update_error_stats();
+        return unexpected{error{error_code::internal_error, "Download request failed"}};
+    }
+
+    auto& resp = response.value();
+    if (resp.status_code == 404) {
+        impl_->update_error_stats();
+        return unexpected{error{error_code::file_not_found, "Object not found: " + key}};
+    }
+
+    if (resp.status_code != 200) {
+        impl_->update_error_stats();
+        std::string error_msg = "Download failed with status " +
+                                std::to_string(resp.status_code);
+        auto error_body = resp.get_body_string();
+        if (!error_body.empty()) {
+            auto error_message = extract_json_value(error_body, "message");
+            if (error_message) {
+                error_msg += ": " + *error_message;
+            }
+        }
+        return unexpected{error{error_code::internal_error, error_msg}};
+    }
+
+    // Convert response body to vector<byte>
+    std::vector<std::byte> data(resp.body.size());
+    std::memcpy(data.data(), resp.body.data(), resp.body.size());
+
+    impl_->update_download_stats(data.size());
+    return data;
+#else
+    // Stub implementation when network system is not available
     impl_->update_download_stats(0);
     return std::vector<std::byte>{};
+#endif
 }
 
 auto gcs_storage::download_file(
@@ -1036,11 +1507,57 @@ auto gcs_storage::delete_object(const std::string& key) -> result<delete_result>
         return unexpected{error{error_code::not_initialized, "Not connected"}};
     }
 
+#ifdef BUILD_WITH_NETWORK_SYSTEM
+    auto auth_headers = impl_->get_auth_headers();
+    if (!auth_headers.has_value()) {
+        impl_->update_error_stats();
+        return unexpected{auth_headers.error()};
+    }
+
+    // DELETE https://storage.googleapis.com/storage/v1/b/{bucket}/o/{object}
+    std::string delete_url = impl_->get_storage_endpoint() +
+                             "/storage/v1/b/" + impl_->config_.bucket +
+                             "/o/" + url_encode(key);
+
+    auto response = impl_->http_client_->del(delete_url, auth_headers.value());
+    if (!response) {
+        impl_->update_error_stats();
+        return unexpected{error{error_code::internal_error, "Delete request failed"}};
+    }
+
+    auto& resp = response.value();
+    // 204 No Content is success, 404 means object doesn't exist
+    if (resp.status_code == 404) {
+        impl_->update_error_stats();
+        return unexpected{error{error_code::file_not_found, "Object not found: " + key}};
+    }
+
+    if (resp.status_code != 204 && resp.status_code != 200) {
+        impl_->update_error_stats();
+        std::string error_msg = "Delete failed with status " +
+                                std::to_string(resp.status_code);
+        auto error_body = resp.get_body_string();
+        if (!error_body.empty()) {
+            auto error_message = extract_json_value(error_body, "message");
+            if (error_message) {
+                error_msg += ": " + *error_message;
+            }
+        }
+        return unexpected{error{error_code::internal_error, error_msg}};
+    }
+
     delete_result result;
     result.key = key;
 
     impl_->update_delete_stats();
     return result;
+#else
+    delete_result result;
+    result.key = key;
+
+    impl_->update_delete_stats();
+    return result;
+#endif
 }
 
 auto gcs_storage::delete_objects(
@@ -1067,7 +1584,40 @@ auto gcs_storage::exists(const std::string& key) -> result<bool> {
         return unexpected{error{error_code::not_initialized, "Not connected"}};
     }
 
+#ifdef BUILD_WITH_NETWORK_SYSTEM
+    auto auth_headers = impl_->get_auth_headers();
+    if (!auth_headers.has_value()) {
+        impl_->update_error_stats();
+        return unexpected{auth_headers.error()};
+    }
+
+    // HEAD-like request using GET with fields parameter to minimize data transfer
+    // GET https://storage.googleapis.com/storage/v1/b/{bucket}/o/{object}?fields=name
+    std::string url = impl_->get_storage_endpoint() +
+                      "/storage/v1/b/" + impl_->config_.bucket +
+                      "/o/" + url_encode(key) + "?fields=name";
+
+    auto response = impl_->http_client_->get(url, {}, auth_headers.value());
+    if (!response) {
+        impl_->update_error_stats();
+        return unexpected{error{error_code::internal_error, "Exists check failed"}};
+    }
+
+    auto& resp = response.value();
+    if (resp.status_code == 404) {
+        return false;
+    }
+
+    if (resp.status_code == 200) {
+        return true;
+    }
+
+    impl_->update_error_stats();
+    return unexpected{error{error_code::internal_error,
+        "Exists check returned status " + std::to_string(resp.status_code)}};
+#else
     return false;
+#endif
 }
 
 auto gcs_storage::get_metadata(const std::string& key) -> result<cloud_object_metadata> {
@@ -1075,11 +1625,46 @@ auto gcs_storage::get_metadata(const std::string& key) -> result<cloud_object_me
         return unexpected{error{error_code::not_initialized, "Not connected"}};
     }
 
+#ifdef BUILD_WITH_NETWORK_SYSTEM
+    auto auth_headers = impl_->get_auth_headers();
+    if (!auth_headers.has_value()) {
+        impl_->update_error_stats();
+        return unexpected{auth_headers.error()};
+    }
+
+    // GET https://storage.googleapis.com/storage/v1/b/{bucket}/o/{object}
+    std::string url = impl_->get_storage_endpoint() +
+                      "/storage/v1/b/" + impl_->config_.bucket +
+                      "/o/" + url_encode(key);
+
+    auto response = impl_->http_client_->get(url, {}, auth_headers.value());
+    if (!response) {
+        impl_->update_error_stats();
+        return unexpected{error{error_code::internal_error, "Get metadata request failed"}};
+    }
+
+    auto& resp = response.value();
+    if (resp.status_code == 404) {
+        impl_->update_error_stats();
+        return unexpected{error{error_code::file_not_found, "Object not found: " + key}};
+    }
+
+    if (resp.status_code != 200) {
+        impl_->update_error_stats();
+        std::string error_msg = "Get metadata failed with status " +
+                                std::to_string(resp.status_code);
+        return unexpected{error{error_code::internal_error, error_msg}};
+    }
+
+    std::string response_body = resp.get_body_string();
+    return parse_object_metadata(response_body);
+#else
     cloud_object_metadata metadata;
     metadata.key = key;
     metadata.content_type = detect_content_type(key);
 
     return metadata;
+#endif
 }
 
 auto gcs_storage::list_objects(
@@ -1088,12 +1673,107 @@ auto gcs_storage::list_objects(
         return unexpected{error{error_code::not_initialized, "Not connected"}};
     }
 
+#ifdef BUILD_WITH_NETWORK_SYSTEM
+    auto auth_headers = impl_->get_auth_headers();
+    if (!auth_headers.has_value()) {
+        impl_->update_error_stats();
+        return unexpected{auth_headers.error()};
+    }
+
+    // Build URL with query parameters
+    // GET https://storage.googleapis.com/storage/v1/b/{bucket}/o
+    std::ostringstream url_builder;
+    url_builder << impl_->get_storage_endpoint()
+                << "/storage/v1/b/" << impl_->config_.bucket << "/o?";
+
+    bool first_param = true;
+    auto add_param = [&](const std::string& key, const std::string& value) {
+        if (!first_param) url_builder << "&";
+        url_builder << key << "=" << url_encode(value);
+        first_param = false;
+    };
+
+    if (options.prefix.has_value() && !options.prefix->empty()) {
+        add_param("prefix", *options.prefix);
+    }
+
+    if (options.delimiter.has_value() && !options.delimiter->empty()) {
+        add_param("delimiter", *options.delimiter);
+    }
+
+    if (options.max_keys > 0) {
+        add_param("maxResults", std::to_string(options.max_keys));
+    }
+
+    if (options.continuation_token.has_value() && !options.continuation_token->empty()) {
+        add_param("pageToken", *options.continuation_token);
+    }
+
+    std::string url = url_builder.str();
+
+    auto response = impl_->http_client_->get(url, {}, auth_headers.value());
+    if (!response) {
+        impl_->update_error_stats();
+        return unexpected{error{error_code::internal_error, "List objects request failed"}};
+    }
+
+    auto& resp = response.value();
+    if (resp.status_code != 200) {
+        impl_->update_error_stats();
+        std::string error_msg = "List objects failed with status " +
+                                std::to_string(resp.status_code);
+        auto error_body = resp.get_body_string();
+        if (!error_body.empty()) {
+            auto error_message = extract_json_value(error_body, "message");
+            if (error_message) {
+                error_msg += ": " + *error_message;
+            }
+        }
+        return unexpected{error{error_code::internal_error, error_msg}};
+    }
+
+    std::string response_body = resp.get_body_string();
+    auto [objects, next_token] = parse_list_response(response_body);
+
+    list_objects_result result;
+    result.objects = std::move(objects);
+    result.is_truncated = next_token.has_value();
+    result.continuation_token = next_token;
+
+    // Parse common prefixes for delimiter support
+    auto prefixes_pos = response_body.find("\"prefixes\"");
+    if (prefixes_pos != std::string::npos) {
+        auto array_start = response_body.find('[', prefixes_pos);
+        if (array_start != std::string::npos) {
+            auto array_end = response_body.find(']', array_start);
+            if (array_end != std::string::npos) {
+                std::string prefixes_str = response_body.substr(
+                    array_start + 1, array_end - array_start - 1);
+                // Parse prefixes array
+                size_t pos = 0;
+                while (pos < prefixes_str.size()) {
+                    auto quote_start = prefixes_str.find('"', pos);
+                    if (quote_start == std::string::npos) break;
+                    auto quote_end = prefixes_str.find('"', quote_start + 1);
+                    if (quote_end == std::string::npos) break;
+                    result.common_prefixes.push_back(
+                        prefixes_str.substr(quote_start + 1, quote_end - quote_start - 1));
+                    pos = quote_end + 1;
+                }
+            }
+        }
+    }
+
+    impl_->update_list_stats();
+    return result;
+#else
     impl_->update_list_stats();
 
     list_objects_result result;
     result.is_truncated = false;
 
     return result;
+#endif
 }
 
 auto gcs_storage::copy_object(
@@ -1104,6 +1784,58 @@ auto gcs_storage::copy_object(
         return unexpected{error{error_code::not_initialized, "Not connected"}};
     }
 
+#ifdef BUILD_WITH_NETWORK_SYSTEM
+    auto auth_headers = impl_->get_auth_headers();
+    if (!auth_headers.has_value()) {
+        impl_->update_error_stats();
+        return unexpected{auth_headers.error()};
+    }
+
+    // POST https://storage.googleapis.com/storage/v1/b/{srcBucket}/o/{srcObject}/copyTo/b/{destBucket}/o/{destObject}
+    std::string copy_url = impl_->get_storage_endpoint() +
+                           "/storage/v1/b/" + impl_->config_.bucket +
+                           "/o/" + url_encode(source_key) +
+                           "/copyTo/b/" + impl_->config_.bucket +
+                           "/o/" + url_encode(dest_key);
+
+    std::map<std::string, std::string> headers = auth_headers.value();
+    headers["Content-Type"] = "application/json";
+
+    // Build metadata JSON if content type specified
+    std::string body = "{}";
+    if (options.content_type.has_value()) {
+        body = "{\"contentType\":\"" + *options.content_type + "\"}";
+    }
+
+    auto response = impl_->http_client_->post(copy_url, body, headers);
+    if (!response) {
+        impl_->update_error_stats();
+        return unexpected{error{error_code::internal_error, "Copy request failed"}};
+    }
+
+    auto& resp = response.value();
+    if (resp.status_code == 404) {
+        impl_->update_error_stats();
+        return unexpected{error{error_code::file_not_found, "Source object not found: " + source_key}};
+    }
+
+    if (resp.status_code != 200) {
+        impl_->update_error_stats();
+        std::string error_msg = "Copy failed with status " +
+                                std::to_string(resp.status_code);
+        auto error_body = resp.get_body_string();
+        if (!error_body.empty()) {
+            auto error_message = extract_json_value(error_body, "message");
+            if (error_message) {
+                error_msg += ": " + *error_message;
+            }
+        }
+        return unexpected{error{error_code::internal_error, error_msg}};
+    }
+
+    std::string response_body = resp.get_body_string();
+    return parse_object_metadata(response_body);
+#else
     (void)source_key;
     (void)options;
 
@@ -1111,6 +1843,7 @@ auto gcs_storage::copy_object(
     metadata.key = dest_key;
 
     return metadata;
+#endif
 }
 
 auto gcs_storage::upload_async(
@@ -1323,12 +2056,65 @@ auto gcs_storage::compose_objects(
         return unexpected{error{error_code::internal_error, "Maximum 32 objects can be composed"}};
     }
 
+#ifdef BUILD_WITH_NETWORK_SYSTEM
+    auto auth_headers = impl_->get_auth_headers();
+    if (!auth_headers.has_value()) {
+        impl_->update_error_stats();
+        return unexpected{auth_headers.error()};
+    }
+
+    // POST https://storage.googleapis.com/storage/v1/b/{bucket}/o/{dest}/compose
+    std::string compose_url = impl_->get_storage_endpoint() +
+                              "/storage/v1/b/" + impl_->config_.bucket +
+                              "/o/" + url_encode(dest_key) + "/compose";
+
+    // Build compose request JSON
+    std::ostringstream body_builder;
+    body_builder << "{\"sourceObjects\":[";
+    for (size_t i = 0; i < source_keys.size(); ++i) {
+        if (i > 0) body_builder << ",";
+        body_builder << "{\"name\":\"" << source_keys[i] << "\"}";
+    }
+    body_builder << "],\"destination\":{";
+    if (options.content_type.has_value()) {
+        body_builder << "\"contentType\":\"" << *options.content_type << "\"";
+    }
+    body_builder << "}}";
+
+    std::map<std::string, std::string> headers = auth_headers.value();
+    headers["Content-Type"] = "application/json";
+
+    auto response = impl_->http_client_->post(compose_url, body_builder.str(), headers);
+    if (!response) {
+        impl_->update_error_stats();
+        return unexpected{error{error_code::internal_error, "Compose request failed"}};
+    }
+
+    auto& resp = response.value();
+    if (resp.status_code != 200) {
+        impl_->update_error_stats();
+        std::string error_msg = "Compose failed with status " +
+                                std::to_string(resp.status_code);
+        auto error_body = resp.get_body_string();
+        if (!error_body.empty()) {
+            auto error_message = extract_json_value(error_body, "message");
+            if (error_message) {
+                error_msg += ": " + *error_message;
+            }
+        }
+        return unexpected{error{error_code::internal_error, error_msg}};
+    }
+
+    std::string response_body = resp.get_body_string();
+    return parse_object_metadata(response_body);
+#else
     (void)options;
 
     cloud_object_metadata metadata;
     metadata.key = dest_key;
 
     return metadata;
+#endif
 }
 
 // ============================================================================
