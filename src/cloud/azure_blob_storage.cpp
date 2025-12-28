@@ -34,6 +34,93 @@
 
 namespace kcenon::file_transfer {
 
+// ============================================================================
+// Real HTTP Client Implementation
+// ============================================================================
+
+#ifdef BUILD_WITH_NETWORK_SYSTEM
+
+/**
+ * @brief Real HTTP client that uses the network system
+ */
+class real_azure_http_client : public azure_http_client_interface {
+public:
+    explicit real_azure_http_client(std::chrono::milliseconds timeout = std::chrono::milliseconds(30000))
+        : client_(std::make_shared<kcenon::network::core::http_client>(timeout)) {}
+
+    auto get(
+        const std::string& url,
+        const std::map<std::string, std::string>& /*query*/,
+        const std::map<std::string, std::string>& headers)
+        -> result<azure_http_response> override {
+        auto response = client_->get(url, {}, headers);
+        if (response.is_err()) {
+            return unexpected{error{error_code::internal_error, "HTTP GET request failed"}};
+        }
+        return convert_response(response.value());
+    }
+
+    auto put(
+        const std::string& url,
+        const std::string& body,
+        const std::map<std::string, std::string>& headers)
+        -> result<azure_http_response> override {
+        auto response = client_->put(url, body, headers);
+        if (response.is_err()) {
+            return unexpected{error{error_code::internal_error, "HTTP PUT request failed"}};
+        }
+        return convert_response(response.value());
+    }
+
+    auto put(
+        const std::string& url,
+        const std::vector<uint8_t>& body,
+        const std::map<std::string, std::string>& headers)
+        -> result<azure_http_response> override {
+        std::string body_str(body.begin(), body.end());
+        return put(url, body_str, headers);
+    }
+
+    auto del(
+        const std::string& url,
+        const std::map<std::string, std::string>& headers)
+        -> result<azure_http_response> override {
+        auto response = client_->del(url, headers);
+        if (response.is_err()) {
+            return unexpected{error{error_code::internal_error, "HTTP DELETE request failed"}};
+        }
+        return convert_response(response.value());
+    }
+
+    auto head(
+        const std::string& url,
+        const std::map<std::string, std::string>& headers)
+        -> result<azure_http_response> override {
+        auto response = client_->head(url, headers);
+        if (response.is_err()) {
+            return unexpected{error{error_code::internal_error, "HTTP HEAD request failed"}};
+        }
+        return convert_response(response.value());
+    }
+
+private:
+    auto convert_response(const kcenon::network::internal::http_response& resp) -> azure_http_response {
+        azure_http_response result;
+        result.status_code = resp.status_code;
+        for (const auto& [key, value] : resp.headers) {
+            result.headers[key] = value;
+        }
+        if (!resp.body.empty()) {
+            result.body = std::vector<uint8_t>(resp.body.begin(), resp.body.end());
+        }
+        return result;
+    }
+
+    std::shared_ptr<kcenon::network::core::http_client> client_;
+};
+
+#endif  // BUILD_WITH_NETWORK_SYSTEM
+
 namespace {
 
 // ============================================================================
@@ -441,6 +528,7 @@ struct azure_blob_upload_stream::impl {
     azure_blob_config config;
     std::shared_ptr<credential_provider> credentials;
     cloud_transfer_options options;
+    std::shared_ptr<azure_http_client_interface> http_client_;
 
     std::vector<std::string> block_ids;
     int current_block_number = 0;
@@ -459,12 +547,16 @@ struct azure_blob_upload_stream::impl {
     impl(const std::string& name,
          const azure_blob_config& cfg,
          std::shared_ptr<credential_provider> creds,
-         const cloud_transfer_options& opts)
-        : blob_name(name), config(cfg), credentials(std::move(creds)), options(opts) {
+         const cloud_transfer_options& opts,
+         std::shared_ptr<azure_http_client_interface> http_client = nullptr)
+        : blob_name(name), config(cfg), credentials(std::move(creds)), options(opts),
+          http_client_(std::move(http_client)) {
         block_buffer.reserve(config.multipart.part_size);
 #ifdef BUILD_WITH_NETWORK_SYSTEM
-        http_client_ = std::make_shared<kcenon::network::core::http_client>(
-            std::chrono::milliseconds(30000));  // 30 second timeout
+        if (!http_client_) {
+            http_client_ = std::make_shared<real_azure_http_client>(
+                std::chrono::milliseconds(30000));  // 30 second timeout
+        }
 #endif
     }
 
@@ -572,7 +664,7 @@ struct azure_blob_upload_stream::impl {
         std::memcpy(body.data(), data.data(), data.size());
 
         auto response = http_client_->put(url, std::string(reinterpret_cast<const char*>(body.data()), body.size()), headers);
-        if (response.is_err()) {
+        if (!response.has_value()) {
             return unexpected{error{error_code::internal_error, "Failed to upload block: " + response.error().message}};
         }
 
@@ -669,12 +761,7 @@ struct azure_blob_upload_stream::impl {
 #endif
     }
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
-    std::shared_ptr<kcenon::network::core::http_client> http_client_;
-#endif
-
     auto commit_block_list() -> result<upload_result> {
-#ifdef BUILD_WITH_NETWORK_SYSTEM
         if (!http_client_) {
             return unexpected{error{error_code::not_initialized, "HTTP client not initialized"}};
         }
@@ -710,7 +797,7 @@ struct azure_blob_upload_stream::impl {
         }
 
         auto response = http_client_->put(url, body, headers);
-        if (response.is_err()) {
+        if (!response.has_value()) {
             return unexpected{error{error_code::internal_error,
                 "Failed to commit block list: " + response.error().message}};
         }
@@ -739,22 +826,6 @@ struct azure_blob_upload_stream::impl {
         }
 
         return result;
-#else
-        // Fallback: local simulation when network system is not available
-        upload_result result;
-        result.key = blob_name;
-        result.bytes_uploaded = bytes_written_;
-
-        // Build composite ETag from block IDs
-        std::ostringstream etag_builder;
-        for (const auto& block_id : block_ids) {
-            etag_builder << block_id;
-        }
-        auto hash = sha256(etag_builder.str());
-        result.etag = "\"" + bytes_to_hex(hash) + "\"";
-
-        return result;
-#endif
     }
 };
 
@@ -762,8 +833,9 @@ azure_blob_upload_stream::azure_blob_upload_stream(
     const std::string& blob_name,
     const azure_blob_config& config,
     std::shared_ptr<credential_provider> credentials,
-    const cloud_transfer_options& options)
-    : impl_(std::make_unique<impl>(blob_name, config, std::move(credentials), options)) {}
+    const cloud_transfer_options& options,
+    std::shared_ptr<azure_http_client_interface> http_client)
+    : impl_(std::make_unique<impl>(blob_name, config, std::move(credentials), options, std::move(http_client))) {}
 
 azure_blob_upload_stream::~azure_blob_upload_stream() = default;
 
@@ -1166,9 +1238,7 @@ struct azure_blob_storage::impl {
     cloud_storage_state state_ = cloud_storage_state::disconnected;
     cloud_storage_statistics stats_;
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
-    std::shared_ptr<kcenon::network::core::http_client> http_client_;
-#endif
+    std::shared_ptr<azure_http_client_interface> http_client_;
 
     std::function<void(const upload_progress&)> upload_progress_callback_;
     std::function<void(const download_progress&)> download_progress_callback_;
@@ -1177,11 +1247,15 @@ struct azure_blob_storage::impl {
     mutable std::mutex mutex_;
     std::chrono::steady_clock::time_point connected_at_;
 
-    impl(const azure_blob_config& config, std::shared_ptr<credential_provider> credentials)
-        : config_(config), credentials_(std::move(credentials)) {
+    impl(const azure_blob_config& config,
+         std::shared_ptr<credential_provider> credentials,
+         std::shared_ptr<azure_http_client_interface> http_client = nullptr)
+        : config_(config), credentials_(std::move(credentials)), http_client_(std::move(http_client)) {
 #ifdef BUILD_WITH_NETWORK_SYSTEM
-        http_client_ = std::make_shared<kcenon::network::core::http_client>(
-            std::chrono::milliseconds(30000));  // 30 second timeout
+        if (!http_client_) {
+            http_client_ = std::make_shared<real_azure_http_client>(
+                std::chrono::milliseconds(30000));  // 30 second timeout
+        }
 #endif
     }
 
@@ -1307,7 +1381,7 @@ struct azure_blob_storage::impl {
 azure_blob_storage::azure_blob_storage(
     const azure_blob_config& config,
     std::shared_ptr<credential_provider> credentials)
-    : impl_(std::make_unique<impl>(config, std::move(credentials))) {}
+    : impl_(std::make_unique<impl>(config, std::move(credentials), nullptr)) {}
 
 azure_blob_storage::~azure_blob_storage() = default;
 
@@ -1317,6 +1391,13 @@ auto azure_blob_storage::operator=(azure_blob_storage&&) noexcept -> azure_blob_
 auto azure_blob_storage::create(
     const azure_blob_config& config,
     std::shared_ptr<credential_provider> credentials) -> std::unique_ptr<azure_blob_storage> {
+    return create(config, std::move(credentials), nullptr);
+}
+
+auto azure_blob_storage::create(
+    const azure_blob_config& config,
+    std::shared_ptr<credential_provider> credentials,
+    std::shared_ptr<azure_http_client_interface> http_client) -> std::unique_ptr<azure_blob_storage> {
     if (config.container.empty()) {
         return nullptr;
     }
@@ -1329,7 +1410,11 @@ auto azure_blob_storage::create(
         return nullptr;
     }
 
-    return std::unique_ptr<azure_blob_storage>(new azure_blob_storage(config, std::move(credentials)));
+    auto storage = std::unique_ptr<azure_blob_storage>(new azure_blob_storage(config, credentials));
+    if (http_client) {
+        storage->impl_->http_client_ = std::move(http_client);
+    }
+    return storage;
 }
 
 auto azure_blob_storage::provider() const -> cloud_provider {
@@ -1488,7 +1573,7 @@ auto azure_blob_storage::download(const std::string& key) -> result<std::vector<
     }
 
     auto response = impl_->http_client_->get(url, {}, headers);
-    if (response.is_err()) {
+    if (!response.has_value()) {
         impl_->update_error_stats();
         return unexpected{error{error_code::internal_error,
             "Failed to download blob: " + response.error().message}};
@@ -1584,7 +1669,7 @@ auto azure_blob_storage::delete_object(const std::string& key) -> result<delete_
     }
 
     auto response = impl_->http_client_->del(url, headers);
-    if (response.is_err()) {
+    if (!response.has_value()) {
         impl_->update_error_stats();
         return unexpected{error{error_code::internal_error,
             "Failed to delete blob: " + response.error().message}};
@@ -1657,7 +1742,7 @@ auto azure_blob_storage::exists(const std::string& key) -> result<bool> {
     }
 
     auto response = impl_->http_client_->head(url, headers);
-    if (response.is_err()) {
+    if (!response.has_value()) {
         impl_->update_error_stats();
         return unexpected{error{error_code::internal_error,
             "Failed to check blob existence: " + response.error().message}};
@@ -1693,7 +1778,7 @@ auto azure_blob_storage::get_metadata(const std::string& key) -> result<cloud_ob
     }
 
     auto response = impl_->http_client_->head(url, headers);
-    if (response.is_err()) {
+    if (!response.has_value()) {
         impl_->update_error_stats();
         return unexpected{error{error_code::internal_error,
             "Failed to get blob metadata: " + response.error().message}};
@@ -1796,7 +1881,7 @@ auto azure_blob_storage::list_objects(
     }
 
     auto response = impl_->http_client_->get(url, {}, headers);
-    if (response.is_err()) {
+    if (!response.has_value()) {
         impl_->update_error_stats();
         return unexpected{error{error_code::internal_error,
             "Failed to list blobs: " + response.error().message}};
@@ -1963,7 +2048,7 @@ auto azure_blob_storage::create_upload_stream(
     }
 
     return std::unique_ptr<cloud_upload_stream>(
-        new azure_blob_upload_stream(key, impl_->config_, impl_->credentials_, options));
+        new azure_blob_upload_stream(key, impl_->config_, impl_->credentials_, options, impl_->http_client_));
 }
 
 auto azure_blob_storage::create_download_stream(

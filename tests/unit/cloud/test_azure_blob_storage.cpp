@@ -11,6 +11,90 @@ namespace kcenon::file_transfer {
 namespace {
 
 // ============================================================================
+// Mock HTTP Client for Testing
+// ============================================================================
+
+/**
+ * @brief Mock HTTP client that returns configurable responses
+ */
+class mock_azure_http_client : public azure_http_client_interface {
+public:
+    // Default responses for common operations
+    struct mock_response {
+        int status_code = 200;
+        std::string body;
+        std::map<std::string, std::string> headers;
+    };
+
+    mock_response put_block_response{201, ""};
+    mock_response commit_response{201, "", {{"ETag", "\"test-etag\""}}};
+    mock_response delete_response{202, ""};
+    mock_response head_response{200, "", {{"Content-Length", "100"}, {"Content-Type", "text/plain"}, {"ETag", "\"abc123\""}}};
+    mock_response get_response{200, R"(<?xml version="1.0" encoding="utf-8"?><EnumerationResults><Blobs><Blob><Name>test/file1.txt</Name></Blob></Blobs></EnumerationResults>)"};
+
+    auto get(
+        const std::string& url,
+        const std::map<std::string, std::string>& /*query*/,
+        const std::map<std::string, std::string>& /*headers*/)
+        -> result<azure_http_response> override {
+        azure_http_response resp;
+        resp.status_code = get_response.status_code;
+        resp.body = std::vector<uint8_t>(get_response.body.begin(), get_response.body.end());
+        resp.headers = get_response.headers;
+        (void)url;
+        return resp;
+    }
+
+    auto put(
+        const std::string& url,
+        const std::string& /*body*/,
+        const std::map<std::string, std::string>& /*headers*/)
+        -> result<azure_http_response> override {
+        azure_http_response resp;
+        if (url.find("comp=blocklist") != std::string::npos) {
+            resp.status_code = commit_response.status_code;
+            resp.body = std::vector<uint8_t>(commit_response.body.begin(), commit_response.body.end());
+            resp.headers = commit_response.headers;
+        } else {
+            resp.status_code = put_block_response.status_code;
+            resp.body = std::vector<uint8_t>(put_block_response.body.begin(), put_block_response.body.end());
+            resp.headers = put_block_response.headers;
+        }
+        return resp;
+    }
+
+    auto put(
+        const std::string& url,
+        const std::vector<uint8_t>& body,
+        const std::map<std::string, std::string>& headers)
+        -> result<azure_http_response> override {
+        return put(url, std::string(body.begin(), body.end()), headers);
+    }
+
+    auto del(
+        const std::string& /*url*/,
+        const std::map<std::string, std::string>& /*headers*/)
+        -> result<azure_http_response> override {
+        azure_http_response resp;
+        resp.status_code = delete_response.status_code;
+        resp.body = std::vector<uint8_t>(delete_response.body.begin(), delete_response.body.end());
+        resp.headers = delete_response.headers;
+        return resp;
+    }
+
+    auto head(
+        const std::string& /*url*/,
+        const std::map<std::string, std::string>& /*headers*/)
+        -> result<azure_http_response> override {
+        azure_http_response resp;
+        resp.status_code = head_response.status_code;
+        resp.body = std::vector<uint8_t>(head_response.body.begin(), head_response.body.end());
+        resp.headers = head_response.headers;
+        return resp;
+    }
+};
+
+// ============================================================================
 // Azure Blob Credential Provider Tests
 // ============================================================================
 
@@ -423,11 +507,13 @@ protected:
             .with_bucket("test-container")
             .build_azure_blob();
 
-        storage_ = azure_blob_storage::create(config, provider_);
+        mock_http_client_ = std::make_shared<mock_azure_http_client>();
+        storage_ = azure_blob_storage::create(config, provider_, mock_http_client_);
         storage_->connect();
     }
 
     std::shared_ptr<credential_provider> provider_;
+    std::shared_ptr<mock_azure_http_client> mock_http_client_;
     std::unique_ptr<azure_blob_storage> storage_;
 };
 
@@ -693,11 +779,13 @@ protected:
             .with_bucket("test-container")
             .build_azure_blob();
 
-        storage_ = azure_blob_storage::create(config, provider_);
+        mock_http_client_ = std::make_shared<mock_azure_http_client>();
+        storage_ = azure_blob_storage::create(config, provider_, mock_http_client_);
         storage_->connect();
     }
 
     std::shared_ptr<credential_provider> provider_;
+    std::shared_ptr<mock_azure_http_client> mock_http_client_;
     std::unique_ptr<azure_blob_storage> storage_;
 };
 
