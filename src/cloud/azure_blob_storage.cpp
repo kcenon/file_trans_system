@@ -462,6 +462,10 @@ struct azure_blob_upload_stream::impl {
          const cloud_transfer_options& opts)
         : blob_name(name), config(cfg), credentials(std::move(creds)), options(opts) {
         block_buffer.reserve(config.multipart.part_size);
+#ifdef BUILD_WITH_NETWORK_SYSTEM
+        http_client_ = std::make_shared<kcenon::network::core::http_client>(
+            std::chrono::milliseconds(30000));  // 30 second timeout
+#endif
     }
 
     auto get_active_upload_count() -> std::size_t {
@@ -538,15 +542,205 @@ struct azure_blob_upload_stream::impl {
     }
 
     auto upload_block(const std::string& block_id, std::span<const std::byte> data) -> result<void> {
-        // Local block upload simulation
-        // Uses SHA-256 hash for verification
+#ifdef BUILD_WITH_NETWORK_SYSTEM
+        if (!http_client_) {
+            return unexpected{error{error_code::not_initialized, "HTTP client not initialized"}};
+        }
+
+        // Build PUT Block URL: /{container}/{blob}?comp=block&blockid={block_id}
+        std::string url = get_blob_endpoint() + "/" + config.container + "/" +
+                          url_encode(blob_name, false) +
+                          "?comp=block&blockid=" + url_encode(block_id);
+
+        // Build request headers
+        std::map<std::string, std::string> headers;
+        headers["x-ms-version"] = config.api_version;
+        headers["x-ms-date"] = get_rfc1123_time();
+        headers["Content-Length"] = std::to_string(data.size());
+        headers["Content-Type"] = "application/octet-stream";
+
+        // Add authorization header
+        std::string resource = "/" + config.container + "/" + blob_name;
+        std::string auth = create_authorization_header("PUT", resource, headers,
+                                                        std::to_string(data.size()));
+        if (!auth.empty()) {
+            headers["Authorization"] = auth;
+        }
+
+        // Convert data to vector for HTTP client
+        std::vector<uint8_t> body(data.size());
+        std::memcpy(body.data(), data.data(), data.size());
+
+        auto response = http_client_->put(url, std::string(reinterpret_cast<const char*>(body.data()), body.size()), headers);
+        if (response.is_err()) {
+            return unexpected{error{error_code::internal_error, "Failed to upload block: " + response.error().message}};
+        }
+
+        if (response.value().status_code != 201) {
+            return unexpected{error{error_code::internal_error,
+                "Failed to upload block, status: " + std::to_string(response.value().status_code)}};
+        }
+
+        return result<void>{};
+#else
+        // Fallback: local simulation when network system is not available
         (void)block_id;
         (void)sha256_bytes(data);
         return result<void>{};
+#endif
     }
 
+    auto get_blob_endpoint() const -> std::string {
+        if (config.endpoint.has_value()) {
+            return config.endpoint.value();
+        }
+        std::string protocol = config.use_ssl ? "https" : "http";
+        return protocol + "://" + config.account_name + ".blob.core.windows.net";
+    }
+
+    auto create_authorization_header(
+        const std::string& method,
+        const std::string& resource,
+        const std::map<std::string, std::string>& headers,
+        const std::string& content_length = "") const -> std::string {
+#ifdef FILE_TRANS_ENABLE_ENCRYPTION
+        auto creds = credentials->get_credentials();
+        if (!creds) {
+            return "";
+        }
+
+        auto azure_creds = std::dynamic_pointer_cast<const azure_credentials>(creds);
+        if (!azure_creds || !azure_creds->account_key.has_value()) {
+            return "";
+        }
+
+        // Build the string to sign for SharedKey authentication
+        std::ostringstream string_to_sign;
+        string_to_sign << method << "\n";
+
+        // Content headers
+        auto get_header = [&headers](const std::string& name) -> std::string {
+            auto it = headers.find(name);
+            return (it != headers.end()) ? it->second : "";
+        };
+
+        string_to_sign << get_header("Content-Encoding") << "\n";
+        string_to_sign << get_header("Content-Language") << "\n";
+        string_to_sign << content_length << "\n";
+        string_to_sign << get_header("Content-MD5") << "\n";
+        string_to_sign << get_header("Content-Type") << "\n";
+        string_to_sign << get_header("Date") << "\n";
+        string_to_sign << get_header("If-Modified-Since") << "\n";
+        string_to_sign << get_header("If-Match") << "\n";
+        string_to_sign << get_header("If-None-Match") << "\n";
+        string_to_sign << get_header("If-Unmodified-Since") << "\n";
+        string_to_sign << get_header("Range") << "\n";
+
+        // Canonicalized headers (x-ms-*)
+        std::map<std::string, std::string> ms_headers;
+        for (const auto& [key, value] : headers) {
+            std::string lower_key = key;
+            std::transform(lower_key.begin(), lower_key.end(), lower_key.begin(),
+                           [](unsigned char c) { return std::tolower(c); });
+            if (lower_key.starts_with("x-ms-")) {
+                ms_headers[lower_key] = value;
+            }
+        }
+
+        for (const auto& [key, value] : ms_headers) {
+            string_to_sign << key << ":" << value << "\n";
+        }
+
+        // Canonicalized resource
+        string_to_sign << "/" << config.account_name << resource;
+
+        // Sign
+        auto key_bytes = base64_decode(azure_creds->account_key.value());
+        auto signature = hmac_sha256(key_bytes, string_to_sign.str());
+        std::string signature_b64 = base64_encode(signature);
+
+        return "SharedKey " + config.account_name + ":" + signature_b64;
+#else
+        (void)method;
+        (void)resource;
+        (void)headers;
+        (void)content_length;
+        return "";
+#endif
+    }
+
+#ifdef BUILD_WITH_NETWORK_SYSTEM
+    std::shared_ptr<kcenon::network::core::http_client> http_client_;
+#endif
+
     auto commit_block_list() -> result<upload_result> {
-        // Local commit simulation
+#ifdef BUILD_WITH_NETWORK_SYSTEM
+        if (!http_client_) {
+            return unexpected{error{error_code::not_initialized, "HTTP client not initialized"}};
+        }
+
+        // Build PUT Block List URL: /{container}/{blob}?comp=blocklist
+        std::string url = get_blob_endpoint() + "/" + config.container + "/" +
+                          url_encode(blob_name, false) + "?comp=blocklist";
+
+        // Build XML body with block IDs
+        std::ostringstream xml_body;
+        xml_body << "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n";
+        xml_body << "<BlockList>\n";
+        for (const auto& block_id : block_ids) {
+            xml_body << "  <Latest>" << block_id << "</Latest>\n";
+        }
+        xml_body << "</BlockList>";
+        std::string body = xml_body.str();
+
+        // Build request headers
+        std::map<std::string, std::string> headers;
+        headers["x-ms-version"] = config.api_version;
+        headers["x-ms-date"] = get_rfc1123_time();
+        headers["Content-Type"] = "application/xml";
+        headers["Content-Length"] = std::to_string(body.size());
+        headers["x-ms-blob-content-type"] = detect_content_type(blob_name);
+
+        // Add authorization header
+        std::string resource = "/" + config.container + "/" + blob_name;
+        std::string auth = create_authorization_header("PUT", resource, headers,
+                                                        std::to_string(body.size()));
+        if (!auth.empty()) {
+            headers["Authorization"] = auth;
+        }
+
+        auto response = http_client_->put(url, body, headers);
+        if (response.is_err()) {
+            return unexpected{error{error_code::internal_error,
+                "Failed to commit block list: " + response.error().message}};
+        }
+
+        if (response.value().status_code != 201) {
+            return unexpected{error{error_code::internal_error,
+                "Failed to commit block list, status: " + std::to_string(response.value().status_code)}};
+        }
+
+        upload_result result;
+        result.key = blob_name;
+        result.bytes_uploaded = bytes_written_;
+
+        // Extract ETag from response
+        auto etag = response.value().get_header("ETag");
+        if (etag.has_value()) {
+            result.etag = etag.value();
+        } else {
+            // Generate ETag from block IDs as fallback
+            std::ostringstream etag_builder;
+            for (const auto& block_id : block_ids) {
+                etag_builder << block_id;
+            }
+            auto hash = sha256(etag_builder.str());
+            result.etag = "\"" + bytes_to_hex(hash) + "\"";
+        }
+
+        return result;
+#else
+        // Fallback: local simulation when network system is not available
         upload_result result;
         result.key = blob_name;
         result.bytes_uploaded = bytes_written_;
@@ -560,6 +754,7 @@ struct azure_blob_upload_stream::impl {
         result.etag = "\"" + bytes_to_hex(hash) + "\"";
 
         return result;
+#endif
     }
 };
 
@@ -693,23 +888,211 @@ struct azure_blob_download_stream::impl {
     std::size_t buffer_pos = 0;
     bool initialized = false;
 
+#ifdef BUILD_WITH_NETWORK_SYSTEM
+    std::shared_ptr<kcenon::network::core::http_client> http_client_;
+#endif
+
     impl(const std::string& name,
          const azure_blob_config& cfg,
          std::shared_ptr<credential_provider> creds)
-        : blob_name(name), config(cfg), credentials(std::move(creds)) {}
+        : blob_name(name), config(cfg), credentials(std::move(creds)) {
+#ifdef BUILD_WITH_NETWORK_SYSTEM
+        http_client_ = std::make_shared<kcenon::network::core::http_client>(
+            std::chrono::milliseconds(30000));  // 30 second timeout
+#endif
+    }
+
+    auto get_blob_endpoint() const -> std::string {
+        if (config.endpoint.has_value()) {
+            return config.endpoint.value();
+        }
+        std::string protocol = config.use_ssl ? "https" : "http";
+        return protocol + "://" + config.account_name + ".blob.core.windows.net";
+    }
+
+    auto create_authorization_header(
+        const std::string& method,
+        const std::string& resource,
+        const std::map<std::string, std::string>& headers,
+        const std::string& content_length = "") const -> std::string {
+#ifdef FILE_TRANS_ENABLE_ENCRYPTION
+        auto creds = credentials->get_credentials();
+        if (!creds) {
+            return "";
+        }
+
+        auto azure_creds = std::dynamic_pointer_cast<const azure_credentials>(creds);
+        if (!azure_creds || !azure_creds->account_key.has_value()) {
+            return "";
+        }
+
+        std::ostringstream string_to_sign;
+        string_to_sign << method << "\n";
+
+        auto get_header = [&headers](const std::string& name) -> std::string {
+            auto it = headers.find(name);
+            return (it != headers.end()) ? it->second : "";
+        };
+
+        string_to_sign << get_header("Content-Encoding") << "\n";
+        string_to_sign << get_header("Content-Language") << "\n";
+        string_to_sign << content_length << "\n";
+        string_to_sign << get_header("Content-MD5") << "\n";
+        string_to_sign << get_header("Content-Type") << "\n";
+        string_to_sign << get_header("Date") << "\n";
+        string_to_sign << get_header("If-Modified-Since") << "\n";
+        string_to_sign << get_header("If-Match") << "\n";
+        string_to_sign << get_header("If-None-Match") << "\n";
+        string_to_sign << get_header("If-Unmodified-Since") << "\n";
+        string_to_sign << get_header("Range") << "\n";
+
+        std::map<std::string, std::string> ms_headers;
+        for (const auto& [key, value] : headers) {
+            std::string lower_key = key;
+            std::transform(lower_key.begin(), lower_key.end(), lower_key.begin(),
+                           [](unsigned char c) { return std::tolower(c); });
+            if (lower_key.starts_with("x-ms-")) {
+                ms_headers[lower_key] = value;
+            }
+        }
+
+        for (const auto& [key, value] : ms_headers) {
+            string_to_sign << key << ":" << value << "\n";
+        }
+
+        string_to_sign << "/" << config.account_name << resource;
+
+        auto key_bytes = base64_decode(azure_creds->account_key.value());
+        auto signature = hmac_sha256(key_bytes, string_to_sign.str());
+        std::string signature_b64 = base64_encode(signature);
+
+        return "SharedKey " + config.account_name + ":" + signature_b64;
+#else
+        (void)method;
+        (void)resource;
+        (void)headers;
+        (void)content_length;
+        return "";
+#endif
+    }
 
     auto initialize() -> result<void> {
+#ifdef BUILD_WITH_NETWORK_SYSTEM
+        if (!http_client_) {
+            return unexpected{error{error_code::not_initialized, "HTTP client not initialized"}};
+        }
+
+        // Use HEAD request to get blob metadata
+        std::string url = get_blob_endpoint() + "/" + config.container + "/" +
+                          url_encode(blob_name, false);
+
+        std::map<std::string, std::string> headers;
+        headers["x-ms-version"] = config.api_version;
+        headers["x-ms-date"] = get_rfc1123_time();
+
+        std::string resource = "/" + config.container + "/" + blob_name;
+        std::string auth = create_authorization_header("HEAD", resource, headers, "");
+        if (!auth.empty()) {
+            headers["Authorization"] = auth;
+        }
+
+        auto response = http_client_->head(url, headers);
+        if (response.is_err()) {
+            return unexpected{error{error_code::internal_error,
+                "Failed to get blob metadata: " + response.error().message}};
+        }
+
+        if (response.value().status_code != 200) {
+            return unexpected{error{error_code::file_not_found,
+                "Blob not found, status: " + std::to_string(response.value().status_code)}};
+        }
+
+        metadata_.key = blob_name;
+
+        // Extract Content-Length
+        auto content_length = response.value().get_header("Content-Length");
+        if (content_length.has_value()) {
+            total_size_ = std::stoull(content_length.value());
+            metadata_.size = total_size_;
+        }
+
+        // Extract Content-Type
+        auto content_type = response.value().get_header("Content-Type");
+        if (content_type.has_value()) {
+            metadata_.content_type = content_type.value();
+        } else {
+            metadata_.content_type = detect_content_type(blob_name);
+        }
+
+        // Extract ETag
+        auto etag = response.value().get_header("ETag");
+        if (etag.has_value()) {
+            metadata_.etag = etag.value();
+        }
+
+        // Extract Last-Modified
+        auto last_modified = response.value().get_header("Last-Modified");
+        if (last_modified.has_value()) {
+            // Parse RFC 1123 date format to system_clock time_point
+            std::tm tm = {};
+            std::istringstream ss(last_modified.value());
+            ss >> std::get_time(&tm, "%a, %d %b %Y %H:%M:%S");
+            if (!ss.fail()) {
+                auto time_t = std::mktime(&tm);
+                metadata_.last_modified = std::chrono::system_clock::from_time_t(time_t);
+            }
+        }
+
+        initialized = true;
+        return result<void>{};
+#else
         metadata_.key = blob_name;
         metadata_.size = 0;
         metadata_.content_type = detect_content_type(blob_name);
         initialized = true;
         return result<void>{};
+#endif
     }
 
     auto fetch_range(uint64_t start, uint64_t end) -> result<std::vector<std::byte>> {
+#ifdef BUILD_WITH_NETWORK_SYSTEM
+        if (!http_client_) {
+            return unexpected{error{error_code::not_initialized, "HTTP client not initialized"}};
+        }
+
+        std::string url = get_blob_endpoint() + "/" + config.container + "/" +
+                          url_encode(blob_name, false);
+
+        std::map<std::string, std::string> headers;
+        headers["x-ms-version"] = config.api_version;
+        headers["x-ms-date"] = get_rfc1123_time();
+        headers["Range"] = "bytes=" + std::to_string(start) + "-" + std::to_string(end);
+
+        std::string resource = "/" + config.container + "/" + blob_name;
+        std::string auth = create_authorization_header("GET", resource, headers, "");
+        if (!auth.empty()) {
+            headers["Authorization"] = auth;
+        }
+
+        auto response = http_client_->get(url, {}, headers);
+        if (response.is_err()) {
+            return unexpected{error{error_code::internal_error,
+                "Failed to download blob range: " + response.error().message}};
+        }
+
+        if (response.value().status_code != 200 && response.value().status_code != 206) {
+            return unexpected{error{error_code::internal_error,
+                "Failed to download blob, status: " + std::to_string(response.value().status_code)}};
+        }
+
+        std::vector<std::byte> data(response.value().body.size());
+        std::memcpy(data.data(), response.value().body.data(), response.value().body.size());
+        return data;
+#else
         (void)start;
         (void)end;
         return std::vector<std::byte>{};
+#endif
     }
 };
 
@@ -731,7 +1114,29 @@ auto azure_blob_download_stream::read(std::span<std::byte> buffer) -> result<std
         return unexpected{error{error_code::not_initialized, "Stream not initialized"}};
     }
 
-    return 0;
+    if (!impl_->initialized) {
+        return unexpected{error{error_code::not_initialized, "Stream not initialized"}};
+    }
+
+    if (impl_->bytes_read_ >= impl_->total_size_) {
+        return 0;  // EOF
+    }
+
+    // Calculate range to fetch
+    uint64_t start = impl_->bytes_read_;
+    uint64_t end = std::min(start + buffer.size() - 1, impl_->total_size_ - 1);
+
+    auto data_result = impl_->fetch_range(start, end);
+    if (!data_result.has_value()) {
+        return unexpected{data_result.error()};
+    }
+
+    auto& data = data_result.value();
+    std::size_t bytes_to_copy = std::min(data.size(), buffer.size());
+    std::memcpy(buffer.data(), data.data(), bytes_to_copy);
+
+    impl_->bytes_read_ += bytes_to_copy;
+    return bytes_to_copy;
 }
 
 auto azure_blob_download_stream::has_more() const -> bool {
@@ -1064,8 +1469,50 @@ auto azure_blob_storage::download(const std::string& key) -> result<std::vector<
         return unexpected{error{error_code::not_initialized, "Not connected"}};
     }
 
+#ifdef BUILD_WITH_NETWORK_SYSTEM
+    if (!impl_->http_client_) {
+        return unexpected{error{error_code::not_initialized, "HTTP client not initialized"}};
+    }
+
+    std::string url = impl_->get_blob_endpoint() + "/" + impl_->config_.container + "/" +
+                      url_encode(key, false);
+
+    std::map<std::string, std::string> headers;
+    headers["x-ms-version"] = impl_->config_.api_version;
+    headers["x-ms-date"] = get_rfc1123_time();
+
+    std::string resource = "/" + impl_->config_.container + "/" + key;
+    std::string auth = impl_->create_authorization_header("GET", resource, headers, "");
+    if (!auth.empty()) {
+        headers["Authorization"] = auth;
+    }
+
+    auto response = impl_->http_client_->get(url, {}, headers);
+    if (response.is_err()) {
+        impl_->update_error_stats();
+        return unexpected{error{error_code::internal_error,
+            "Failed to download blob: " + response.error().message}};
+    }
+
+    if (response.value().status_code == 404) {
+        return unexpected{error{error_code::file_not_found, "Blob not found: " + key}};
+    }
+
+    if (response.value().status_code != 200) {
+        impl_->update_error_stats();
+        return unexpected{error{error_code::internal_error,
+            "Failed to download blob, status: " + std::to_string(response.value().status_code)}};
+    }
+
+    std::vector<std::byte> data(response.value().body.size());
+    std::memcpy(data.data(), response.value().body.data(), response.value().body.size());
+
+    impl_->update_download_stats(data.size());
+    return data;
+#else
     impl_->update_download_stats(0);
     return std::vector<std::byte>{};
+#endif
 }
 
 auto azure_blob_storage::download_file(
@@ -1118,11 +1565,53 @@ auto azure_blob_storage::delete_object(const std::string& key) -> result<delete_
         return unexpected{error{error_code::not_initialized, "Not connected"}};
     }
 
+#ifdef BUILD_WITH_NETWORK_SYSTEM
+    if (!impl_->http_client_) {
+        return unexpected{error{error_code::not_initialized, "HTTP client not initialized"}};
+    }
+
+    std::string url = impl_->get_blob_endpoint() + "/" + impl_->config_.container + "/" +
+                      url_encode(key, false);
+
+    std::map<std::string, std::string> headers;
+    headers["x-ms-version"] = impl_->config_.api_version;
+    headers["x-ms-date"] = get_rfc1123_time();
+
+    std::string resource = "/" + impl_->config_.container + "/" + key;
+    std::string auth = impl_->create_authorization_header("DELETE", resource, headers, "");
+    if (!auth.empty()) {
+        headers["Authorization"] = auth;
+    }
+
+    auto response = impl_->http_client_->del(url, headers);
+    if (response.is_err()) {
+        impl_->update_error_stats();
+        return unexpected{error{error_code::internal_error,
+            "Failed to delete blob: " + response.error().message}};
+    }
+
+    // 202 Accepted or 404 Not Found are both valid responses for delete
+    if (response.value().status_code != 202 && response.value().status_code != 404) {
+        impl_->update_error_stats();
+        return unexpected{error{error_code::internal_error,
+            "Failed to delete blob, status: " + std::to_string(response.value().status_code)}};
+    }
+
     delete_result result;
     result.key = key;
+    // delete_marker set to false for non-versioned blobs (Azure returns 202 for successful delete)
+    result.delete_marker = false;
 
     impl_->update_delete_stats();
     return result;
+#else
+    delete_result result;
+    result.key = key;
+    result.delete_marker = false;
+
+    impl_->update_delete_stats();
+    return result;
+#endif
 }
 
 auto azure_blob_storage::delete_objects(
@@ -1149,7 +1638,35 @@ auto azure_blob_storage::exists(const std::string& key) -> result<bool> {
         return unexpected{error{error_code::not_initialized, "Not connected"}};
     }
 
+#ifdef BUILD_WITH_NETWORK_SYSTEM
+    if (!impl_->http_client_) {
+        return unexpected{error{error_code::not_initialized, "HTTP client not initialized"}};
+    }
+
+    std::string url = impl_->get_blob_endpoint() + "/" + impl_->config_.container + "/" +
+                      url_encode(key, false);
+
+    std::map<std::string, std::string> headers;
+    headers["x-ms-version"] = impl_->config_.api_version;
+    headers["x-ms-date"] = get_rfc1123_time();
+
+    std::string resource = "/" + impl_->config_.container + "/" + key;
+    std::string auth = impl_->create_authorization_header("HEAD", resource, headers, "");
+    if (!auth.empty()) {
+        headers["Authorization"] = auth;
+    }
+
+    auto response = impl_->http_client_->head(url, headers);
+    if (response.is_err()) {
+        impl_->update_error_stats();
+        return unexpected{error{error_code::internal_error,
+            "Failed to check blob existence: " + response.error().message}};
+    }
+
+    return response.value().status_code == 200;
+#else
     return false;
+#endif
 }
 
 auto azure_blob_storage::get_metadata(const std::string& key) -> result<cloud_object_metadata> {
@@ -1157,11 +1674,84 @@ auto azure_blob_storage::get_metadata(const std::string& key) -> result<cloud_ob
         return unexpected{error{error_code::not_initialized, "Not connected"}};
     }
 
+#ifdef BUILD_WITH_NETWORK_SYSTEM
+    if (!impl_->http_client_) {
+        return unexpected{error{error_code::not_initialized, "HTTP client not initialized"}};
+    }
+
+    std::string url = impl_->get_blob_endpoint() + "/" + impl_->config_.container + "/" +
+                      url_encode(key, false);
+
+    std::map<std::string, std::string> headers;
+    headers["x-ms-version"] = impl_->config_.api_version;
+    headers["x-ms-date"] = get_rfc1123_time();
+
+    std::string resource = "/" + impl_->config_.container + "/" + key;
+    std::string auth = impl_->create_authorization_header("HEAD", resource, headers, "");
+    if (!auth.empty()) {
+        headers["Authorization"] = auth;
+    }
+
+    auto response = impl_->http_client_->head(url, headers);
+    if (response.is_err()) {
+        impl_->update_error_stats();
+        return unexpected{error{error_code::internal_error,
+            "Failed to get blob metadata: " + response.error().message}};
+    }
+
+    if (response.value().status_code == 404) {
+        return unexpected{error{error_code::file_not_found, "Blob not found: " + key}};
+    }
+
+    if (response.value().status_code != 200) {
+        impl_->update_error_stats();
+        return unexpected{error{error_code::internal_error,
+            "Failed to get blob metadata, status: " + std::to_string(response.value().status_code)}};
+    }
+
+    cloud_object_metadata metadata;
+    metadata.key = key;
+
+    // Extract Content-Length
+    auto content_length = response.value().get_header("Content-Length");
+    if (content_length.has_value()) {
+        metadata.size = std::stoull(content_length.value());
+    }
+
+    // Extract Content-Type
+    auto content_type = response.value().get_header("Content-Type");
+    if (content_type.has_value()) {
+        metadata.content_type = content_type.value();
+    } else {
+        metadata.content_type = detect_content_type(key);
+    }
+
+    // Extract ETag
+    auto etag = response.value().get_header("ETag");
+    if (etag.has_value()) {
+        metadata.etag = etag.value();
+    }
+
+    // Extract Last-Modified
+    auto last_modified = response.value().get_header("Last-Modified");
+    if (last_modified.has_value()) {
+        std::tm tm = {};
+        std::istringstream ss(last_modified.value());
+        ss >> std::get_time(&tm, "%a, %d %b %Y %H:%M:%S");
+        if (!ss.fail()) {
+            auto time_t = std::mktime(&tm);
+            metadata.last_modified = std::chrono::system_clock::from_time_t(time_t);
+        }
+    }
+
+    return metadata;
+#else
     cloud_object_metadata metadata;
     metadata.key = key;
     metadata.content_type = detect_content_type(key);
 
     return metadata;
+#endif
 }
 
 auto azure_blob_storage::list_objects(
@@ -1170,12 +1760,149 @@ auto azure_blob_storage::list_objects(
         return unexpected{error{error_code::not_initialized, "Not connected"}};
     }
 
+#ifdef BUILD_WITH_NETWORK_SYSTEM
+    if (!impl_->http_client_) {
+        return unexpected{error{error_code::not_initialized, "HTTP client not initialized"}};
+    }
+
+    // Build List Blobs URL
+    std::ostringstream url_stream;
+    url_stream << impl_->get_blob_endpoint() << "/" << impl_->config_.container
+               << "?restype=container&comp=list";
+
+    if (options.prefix.has_value() && !options.prefix.value().empty()) {
+        url_stream << "&prefix=" << url_encode(options.prefix.value());
+    }
+    if (options.max_keys > 0) {
+        url_stream << "&maxresults=" << options.max_keys;
+    }
+    if (options.continuation_token.has_value() && !options.continuation_token.value().empty()) {
+        url_stream << "&marker=" << url_encode(options.continuation_token.value());
+    }
+    if (options.delimiter.has_value() && !options.delimiter.value().empty()) {
+        url_stream << "&delimiter=" << url_encode(options.delimiter.value());
+    }
+
+    std::string url = url_stream.str();
+
+    std::map<std::string, std::string> headers;
+    headers["x-ms-version"] = impl_->config_.api_version;
+    headers["x-ms-date"] = get_rfc1123_time();
+
+    std::string resource = "/" + impl_->config_.container;
+    std::string auth = impl_->create_authorization_header("GET", resource, headers, "");
+    if (!auth.empty()) {
+        headers["Authorization"] = auth;
+    }
+
+    auto response = impl_->http_client_->get(url, {}, headers);
+    if (response.is_err()) {
+        impl_->update_error_stats();
+        return unexpected{error{error_code::internal_error,
+            "Failed to list blobs: " + response.error().message}};
+    }
+
+    if (response.value().status_code != 200) {
+        impl_->update_error_stats();
+        return unexpected{error{error_code::internal_error,
+            "Failed to list blobs, status: " + std::to_string(response.value().status_code)}};
+    }
+
+    // Parse XML response
+    std::string xml_response = response.value().get_body_string();
+    list_objects_result result;
+
+    // Parse <Blob> elements
+    std::string blob_start = "<Blob>";
+    std::string blob_end = "</Blob>";
+    std::size_t pos = 0;
+
+    while ((pos = xml_response.find(blob_start, pos)) != std::string::npos) {
+        auto end_pos = xml_response.find(blob_end, pos);
+        if (end_pos == std::string::npos) break;
+
+        std::string blob_xml = xml_response.substr(pos, end_pos - pos + blob_end.length());
+
+        cloud_object_metadata metadata;
+
+        // Extract Name
+        auto name = extract_xml_element(blob_xml, "Name");
+        if (name.has_value()) {
+            metadata.key = name.value();
+        }
+
+        // Extract Content-Length from Properties
+        auto content_length = extract_xml_element(blob_xml, "Content-Length");
+        if (content_length.has_value()) {
+            metadata.size = std::stoull(content_length.value());
+        }
+
+        // Extract Content-Type
+        auto content_type = extract_xml_element(blob_xml, "Content-Type");
+        if (content_type.has_value()) {
+            metadata.content_type = content_type.value();
+        }
+
+        // Extract ETag
+        auto etag = extract_xml_element(blob_xml, "Etag");
+        if (etag.has_value()) {
+            metadata.etag = etag.value();
+        }
+
+        // Extract Last-Modified
+        auto last_modified = extract_xml_element(blob_xml, "Last-Modified");
+        if (last_modified.has_value()) {
+            std::tm tm = {};
+            std::istringstream ss(last_modified.value());
+            ss >> std::get_time(&tm, "%a, %d %b %Y %H:%M:%S");
+            if (!ss.fail()) {
+                auto time_t = std::mktime(&tm);
+                metadata.last_modified = std::chrono::system_clock::from_time_t(time_t);
+            }
+        }
+
+        result.objects.push_back(std::move(metadata));
+        pos = end_pos + blob_end.length();
+    }
+
+    // Parse <BlobPrefix> elements (common prefixes for delimiter mode)
+    std::string prefix_start = "<BlobPrefix>";
+    std::string prefix_end = "</BlobPrefix>";
+    pos = 0;
+
+    while ((pos = xml_response.find(prefix_start, pos)) != std::string::npos) {
+        auto end_pos = xml_response.find(prefix_end, pos);
+        if (end_pos == std::string::npos) break;
+
+        std::string prefix_xml = xml_response.substr(pos, end_pos - pos + prefix_end.length());
+
+        auto name = extract_xml_element(prefix_xml, "Name");
+        if (name.has_value()) {
+            result.common_prefixes.push_back(name.value());
+        }
+
+        pos = end_pos + prefix_end.length();
+    }
+
+    // Check for NextMarker (pagination)
+    auto next_marker = extract_xml_element(xml_response, "NextMarker");
+    if (next_marker.has_value() && !next_marker.value().empty()) {
+        result.is_truncated = true;
+        result.continuation_token = next_marker.value();
+    } else {
+        result.is_truncated = false;
+    }
+
+    impl_->update_list_stats();
+    return result;
+#else
     impl_->update_list_stats();
 
     list_objects_result result;
     result.is_truncated = false;
 
     return result;
+#endif
 }
 
 auto azure_blob_storage::copy_object(
