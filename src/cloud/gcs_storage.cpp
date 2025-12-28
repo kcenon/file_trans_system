@@ -5,6 +5,7 @@
  */
 
 #include "kcenon/file_transfer/cloud/gcs_storage.h"
+#include "kcenon/file_transfer/cloud/cloud_http_client.h"
 #include "kcenon/file_transfer/cloud/cloud_utils.h"
 
 #include <algorithm>
@@ -19,11 +20,6 @@
 #include <random>
 #include <sstream>
 #include <thread>
-
-// HTTP client integration enabled (see #147, #148)
-#ifdef BUILD_WITH_NETWORK_SYSTEM
-#include <kcenon/network/core/http_client.h>
-#endif
 
 #ifdef FILE_TRANS_ENABLE_ENCRYPTION
 #include <openssl/evp.h>
@@ -49,17 +45,20 @@ using cloud_utils::detect_content_type;
 using cloud_utils::calculate_retry_delay;
 
 // ============================================================================
-// Real HTTP Client Adapter
+// Real HTTP Client Adapter (uses unified cloud_http_client)
 // ============================================================================
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
 /**
- * @brief Adapter that wraps the real http_client to implement gcs_http_client_interface
+ * @brief Adapter that wraps cloud_http_client to implement gcs_http_client_interface
+ *
+ * This adapter uses the unified cloud_http_client internally, reducing code
+ * duplication while maintaining the existing gcs_http_client_interface for
+ * backwards compatibility.
  */
 class real_gcs_http_client : public gcs_http_client_interface {
 public:
     explicit real_gcs_http_client(std::chrono::milliseconds timeout = std::chrono::milliseconds(30000))
-        : client_(std::make_shared<kcenon::network::core::http_client>(timeout)) {}
+        : client_(make_cloud_http_client(timeout)) {}
 
     auto get(
         const std::string& url,
@@ -67,8 +66,8 @@ public:
         const std::map<std::string, std::string>& headers)
         -> result<gcs_http_response> override {
         auto response = client_->get(url, query, headers);
-        if (response.is_err()) {
-            return unexpected{error{error_code::internal_error, "HTTP GET request failed"}};
+        if (!response.has_value()) {
+            return unexpected{response.error()};
         }
         return convert_response(response.value());
     }
@@ -79,8 +78,8 @@ public:
         const std::map<std::string, std::string>& headers)
         -> result<gcs_http_response> override {
         auto response = client_->post(url, body, headers);
-        if (response.is_err()) {
-            return unexpected{error{error_code::internal_error, "HTTP POST request failed"}};
+        if (!response.has_value()) {
+            return unexpected{response.error()};
         }
         return convert_response(response.value());
     }
@@ -91,8 +90,8 @@ public:
         const std::map<std::string, std::string>& headers)
         -> result<gcs_http_response> override {
         auto response = client_->post(url, body, headers);
-        if (response.is_err()) {
-            return unexpected{error{error_code::internal_error, "HTTP POST request failed"}};
+        if (!response.has_value()) {
+            return unexpected{response.error()};
         }
         return convert_response(response.value());
     }
@@ -102,14 +101,14 @@ public:
         const std::map<std::string, std::string>& headers)
         -> result<gcs_http_response> override {
         auto response = client_->del(url, headers);
-        if (response.is_err()) {
-            return unexpected{error{error_code::internal_error, "HTTP DELETE request failed"}};
+        if (!response.has_value()) {
+            return unexpected{response.error()};
         }
         return convert_response(response.value());
     }
 
 private:
-    static auto convert_response(const kcenon::network::internal::http_response& resp) -> gcs_http_response {
+    static auto convert_response(const http_response_base& resp) -> gcs_http_response {
         gcs_http_response result;
         result.status_code = resp.status_code;
         result.headers = resp.headers;
@@ -117,9 +116,8 @@ private:
         return result;
     }
 
-    std::shared_ptr<kcenon::network::core::http_client> client_;
+    std::shared_ptr<cloud_http_client> client_;
 };
-#endif
 
 namespace {
 
