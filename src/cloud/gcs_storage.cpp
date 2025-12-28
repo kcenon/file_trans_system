@@ -5,6 +5,7 @@
  */
 
 #include "kcenon/file_transfer/cloud/gcs_storage.h"
+#include "kcenon/file_transfer/cloud/cloud_utils.h"
 
 #include <algorithm>
 #include <array>
@@ -18,7 +19,6 @@
 #include <random>
 #include <sstream>
 #include <thread>
-#include <unordered_map>
 
 // HTTP client integration enabled (see #147, #148)
 #ifdef BUILD_WITH_NETWORK_SYSTEM
@@ -27,12 +27,26 @@
 
 #ifdef FILE_TRANS_ENABLE_ENCRYPTION
 #include <openssl/evp.h>
-#include <openssl/hmac.h>
 #include <openssl/pem.h>
-#include <openssl/sha.h>
 #endif
 
 namespace kcenon::file_transfer {
+
+// Import cloud utilities
+using cloud_utils::bytes_to_hex;
+using cloud_utils::base64_encode;
+using cloud_utils::base64_decode;
+using cloud_utils::base64url_encode;
+using cloud_utils::sha256;
+using cloud_utils::sha256_bytes;
+using cloud_utils::url_encode;
+using cloud_utils::get_rfc3339_time;
+using cloud_utils::get_unix_timestamp;
+using cloud_utils::get_future_rfc3339_time;
+using cloud_utils::generate_random_bytes;
+using cloud_utils::extract_json_value;
+using cloud_utils::detect_content_type;
+using cloud_utils::calculate_retry_delay;
 
 // ============================================================================
 // Real HTTP Client Adapter
@@ -110,240 +124,14 @@ private:
 namespace {
 
 // ============================================================================
-// GCS Authentication Utilities
+// GCS-Specific Utilities
 // ============================================================================
-
-/**
- * @brief Convert bytes to hexadecimal string
- */
-auto bytes_to_hex(const std::vector<uint8_t>& bytes) -> std::string {
-    std::ostringstream oss;
-    for (auto byte : bytes) {
-        oss << std::hex << std::setfill('0') << std::setw(2)
-            << static_cast<int>(byte);
-    }
-    return oss.str();
-}
-
-/**
- * @brief Base64 encode
- */
-auto base64_encode(const std::vector<uint8_t>& data) -> std::string {
-    static const char* chars =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-    std::string result;
-    result.reserve(((data.size() + 2) / 3) * 4);
-
-    for (std::size_t i = 0; i < data.size(); i += 3) {
-        uint32_t n = static_cast<uint32_t>(data[i]) << 16;
-        if (i + 1 < data.size()) n |= static_cast<uint32_t>(data[i + 1]) << 8;
-        if (i + 2 < data.size()) n |= static_cast<uint32_t>(data[i + 2]);
-
-        result += chars[(n >> 18) & 0x3F];
-        result += chars[(n >> 12) & 0x3F];
-        result += (i + 1 < data.size()) ? chars[(n >> 6) & 0x3F] : '=';
-        result += (i + 2 < data.size()) ? chars[n & 0x3F] : '=';
-    }
-
-    return result;
-}
-
-/**
- * @brief Base64 URL-safe encode (for JWT)
- */
-auto base64url_encode(const std::vector<uint8_t>& data) -> std::string {
-    std::string result = base64_encode(data);
-
-    // Replace + with -, / with _, and remove padding
-    for (auto& c : result) {
-        if (c == '+') c = '-';
-        else if (c == '/') c = '_';
-    }
-
-    // Remove padding
-    while (!result.empty() && result.back() == '=') {
-        result.pop_back();
-    }
-
-    return result;
-}
-
-/**
- * @brief Base64 URL-safe encode string
- */
-auto base64url_encode_string(const std::string& data) -> std::string {
-    std::vector<uint8_t> bytes(data.begin(), data.end());
-    return base64url_encode(bytes);
-}
-
-/**
- * @brief Base64 decode
- */
-auto base64_decode(const std::string& encoded) -> std::vector<uint8_t> {
-    static const int decode_table[256] = {
-        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,62,-1,-1,-1,63,
-        52,53,54,55,56,57,58,59,60,61,-1,-1,-1,-1,-1,-1,
-        -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,
-        15,16,17,18,19,20,21,22,23,24,25,-1,-1,-1,-1,-1,
-        -1,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,
-        41,42,43,44,45,46,47,48,49,50,51,-1,-1,-1,-1,-1,
-        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1
-    };
-
-    std::vector<uint8_t> result;
-    result.reserve((encoded.size() / 4) * 3);
-
-    int bits = 0;
-    int bit_count = 0;
-
-    for (char c : encoded) {
-        if (c == '=') break;
-        int val = decode_table[static_cast<unsigned char>(c)];
-        if (val < 0) continue;
-
-        bits = (bits << 6) | val;
-        bit_count += 6;
-
-        if (bit_count >= 8) {
-            bit_count -= 8;
-            result.push_back(static_cast<uint8_t>((bits >> bit_count) & 0xFF));
-        }
-    }
-
-    return result;
-}
-
-/**
- * @brief SHA256 hash function
- */
-auto sha256(const std::string& data) -> std::vector<uint8_t> {
-#ifdef FILE_TRANS_ENABLE_ENCRYPTION
-    std::vector<uint8_t> hash(SHA256_DIGEST_LENGTH);
-    SHA256(reinterpret_cast<const unsigned char*>(data.data()),
-           data.size(),
-           hash.data());
-    return hash;
-#else
-    return std::vector<uint8_t>(32, 0);
-#endif
-}
-
-/**
- * @brief SHA256 hash of bytes
- */
-auto sha256_bytes(std::span<const std::byte> data) -> std::vector<uint8_t> {
-#ifdef FILE_TRANS_ENABLE_ENCRYPTION
-    std::vector<uint8_t> hash(SHA256_DIGEST_LENGTH);
-    SHA256(reinterpret_cast<const unsigned char*>(data.data()),
-           data.size(),
-           hash.data());
-    return hash;
-#else
-    return std::vector<uint8_t>(32, 0);
-#endif
-}
-
-/**
- * @brief URL encode a string
- */
-auto url_encode(const std::string& value, bool encode_slash = true) -> std::string {
-    std::ostringstream escaped;
-    escaped.fill('0');
-    escaped << std::hex;
-
-    for (char c : value) {
-        if (std::isalnum(static_cast<unsigned char>(c)) ||
-            c == '-' || c == '_' || c == '.' || c == '~') {
-            escaped << c;
-        } else if (c == '/' && !encode_slash) {
-            escaped << c;
-        } else {
-            escaped << '%' << std::setw(2) << std::uppercase
-                    << static_cast<int>(static_cast<unsigned char>(c));
-        }
-    }
-
-    return escaped.str();
-}
-
-/**
- * @brief Get current UTC time in RFC 3339 format
- */
-auto get_rfc3339_time() -> std::string {
-    auto now = std::chrono::system_clock::now();
-    auto time_t = std::chrono::system_clock::to_time_t(now);
-    std::tm tm{};
-#ifdef _WIN32
-    gmtime_s(&tm, &time_t);
-#else
-    gmtime_r(&time_t, &tm);
-#endif
-
-    std::ostringstream oss;
-    oss << std::put_time(&tm, "%Y-%m-%dT%H:%M:%SZ");
-    return oss.str();
-}
-
-/**
- * @brief Get current UTC timestamp in seconds
- */
-auto get_unix_timestamp() -> int64_t {
-    auto now = std::chrono::system_clock::now();
-    return std::chrono::duration_cast<std::chrono::seconds>(
-        now.time_since_epoch()).count();
-}
-
-/**
- * @brief Get future UTC time in RFC 3339 format
- */
-auto get_future_rfc3339_time(std::chrono::seconds duration) -> std::string {
-    auto now = std::chrono::system_clock::now();
-    auto future = now + duration;
-    auto time_t = std::chrono::system_clock::to_time_t(future);
-    std::tm tm{};
-#ifdef _WIN32
-    gmtime_s(&tm, &time_t);
-#else
-    gmtime_r(&time_t, &tm);
-#endif
-
-    std::ostringstream oss;
-    oss << std::put_time(&tm, "%Y-%m-%dT%H:%M:%SZ");
-    return oss.str();
-}
-
-/**
- * @brief Generate random bytes
- */
-auto generate_random_bytes(std::size_t count) -> std::vector<uint8_t> {
-    std::vector<uint8_t> bytes(count);
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<> dis(0, 255);
-
-    for (std::size_t i = 0; i < count; ++i) {
-        bytes[i] = static_cast<uint8_t>(dis(gen));
-    }
-
-    return bytes;
-}
 
 /**
  * @brief Generate upload ID for resumable uploads
  */
 auto generate_upload_id() -> std::string {
-    auto bytes = generate_random_bytes(16);
-    return bytes_to_hex(bytes);
+    return cloud_utils::generate_random_hex(16);
 }
 
 #ifdef FILE_TRANS_ENABLE_ENCRYPTION
@@ -411,48 +199,6 @@ auto rsa_sha256_sign(const std::string& data, const std::string& private_key_pem
     return signature;
 }
 #endif
-
-/**
- * @brief Extract JSON string value (supports escaped characters)
- */
-auto extract_json_value(const std::string& json, const std::string& key)
-    -> std::optional<std::string> {
-    std::string search = "\"" + key + "\"";
-    auto pos = json.find(search);
-    if (pos == std::string::npos) {
-        return std::nullopt;
-    }
-
-    pos = json.find(':', pos + search.length());
-    if (pos == std::string::npos) {
-        return std::nullopt;
-    }
-
-    // Skip whitespace
-    pos = json.find_first_not_of(" \t\n\r", pos + 1);
-    if (pos == std::string::npos) {
-        return std::nullopt;
-    }
-
-    // Check if value is a string (starts with quote)
-    if (json[pos] == '"') {
-        auto end_pos = pos + 1;
-        while (end_pos < json.size()) {
-            if (json[end_pos] == '"' && json[end_pos - 1] != '\\') {
-                break;
-            }
-            ++end_pos;
-        }
-        return json.substr(pos + 1, end_pos - pos - 1);
-    }
-
-    // Check if value is a number
-    auto end_pos = json.find_first_of(",}\n", pos);
-    if (end_pos == std::string::npos) {
-        end_pos = json.size();
-    }
-    return json.substr(pos, end_pos - pos);
-}
 
 /**
  * @brief Parse GCS object metadata from JSON response
@@ -606,78 +352,6 @@ auto extract_json_string(const std::string& json, const std::string& key) -> std
 }
 
 /**
- * @brief Content type detection based on file extension
- */
-auto detect_content_type(const std::string& key) -> std::string {
-    static const std::unordered_map<std::string, std::string> mime_types = {
-        {".txt", "text/plain"},
-        {".html", "text/html"},
-        {".htm", "text/html"},
-        {".css", "text/css"},
-        {".js", "application/javascript"},
-        {".json", "application/json"},
-        {".xml", "application/xml"},
-        {".pdf", "application/pdf"},
-        {".zip", "application/zip"},
-        {".gz", "application/gzip"},
-        {".tar", "application/x-tar"},
-        {".png", "image/png"},
-        {".jpg", "image/jpeg"},
-        {".jpeg", "image/jpeg"},
-        {".gif", "image/gif"},
-        {".svg", "image/svg+xml"},
-        {".webp", "image/webp"},
-        {".ico", "image/x-icon"},
-        {".mp3", "audio/mpeg"},
-        {".mp4", "video/mp4"},
-        {".webm", "video/webm"},
-        {".woff", "font/woff"},
-        {".woff2", "font/woff2"},
-        {".ttf", "font/ttf"},
-        {".otf", "font/otf"},
-    };
-
-    auto dot_pos = key.rfind('.');
-    if (dot_pos == std::string::npos) {
-        return "application/octet-stream";
-    }
-
-    std::string ext = key.substr(dot_pos);
-    std::transform(ext.begin(), ext.end(), ext.begin(),
-                   [](unsigned char c) { return std::tolower(c); });
-
-    auto it = mime_types.find(ext);
-    if (it != mime_types.end()) {
-        return it->second;
-    }
-
-    return "application/octet-stream";
-}
-
-/**
- * @brief Calculate delay with exponential backoff and jitter
- */
-auto calculate_retry_delay(const cloud_retry_policy& policy,
-                           std::size_t attempt) -> std::chrono::milliseconds {
-    auto delay = static_cast<double>(policy.initial_delay.count());
-
-    for (std::size_t i = 1; i < attempt; ++i) {
-        delay *= policy.backoff_multiplier;
-    }
-
-    delay = std::min(delay, static_cast<double>(policy.max_delay.count()));
-
-    if (policy.use_jitter) {
-        std::random_device rd;
-        std::mt19937 gen(rd());
-        std::uniform_real_distribution<> dis(0.5, 1.5);
-        delay *= dis(gen);
-    }
-
-    return std::chrono::milliseconds(static_cast<int64_t>(delay));
-}
-
-/**
  * @brief Parse service account JSON
  */
 struct service_account_info {
@@ -793,8 +467,8 @@ auto create_jwt(const service_account_info& sa_info,
     std::string claim = claim_builder.str();
 
     // Encode header and claim
-    std::string header_encoded = base64url_encode_string(header);
-    std::string claim_encoded = base64url_encode_string(claim);
+    std::string header_encoded = base64url_encode(header);
+    std::string claim_encoded = base64url_encode(claim);
 
     // Create signing input
     std::string signing_input = header_encoded + "." + claim_encoded;
