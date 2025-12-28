@@ -12,6 +12,7 @@
 
 #include <atomic>
 #include <future>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -22,6 +23,85 @@
 #include "cloud_storage_interface.h"
 
 namespace kcenon::file_transfer {
+
+// ============================================================================
+// Azure HTTP Client Interface (for dependency injection and testing)
+// ============================================================================
+
+/**
+ * @brief HTTP response structure for Azure operations
+ */
+struct azure_http_response {
+    int status_code = 0;
+    std::map<std::string, std::string> headers;
+    std::vector<uint8_t> body;
+
+    [[nodiscard]] auto get_body_string() const -> std::string {
+        return std::string(body.begin(), body.end());
+    }
+
+    [[nodiscard]] auto get_header(const std::string& name) const -> std::optional<std::string> {
+        auto it = headers.find(name);
+        if (it != headers.end()) {
+            return it->second;
+        }
+        return std::nullopt;
+    }
+};
+
+/**
+ * @brief HTTP client interface for Azure operations
+ *
+ * This interface allows for dependency injection of HTTP clients,
+ * enabling mock implementations for testing.
+ */
+class azure_http_client_interface {
+public:
+    virtual ~azure_http_client_interface() = default;
+
+    /**
+     * @brief Perform HTTP GET request
+     */
+    [[nodiscard]] virtual auto get(
+        const std::string& url,
+        const std::map<std::string, std::string>& query,
+        const std::map<std::string, std::string>& headers)
+        -> result<azure_http_response> = 0;
+
+    /**
+     * @brief Perform HTTP PUT request with string body
+     */
+    [[nodiscard]] virtual auto put(
+        const std::string& url,
+        const std::string& body,
+        const std::map<std::string, std::string>& headers)
+        -> result<azure_http_response> = 0;
+
+    /**
+     * @brief Perform HTTP PUT request with binary body
+     */
+    [[nodiscard]] virtual auto put(
+        const std::string& url,
+        const std::vector<uint8_t>& body,
+        const std::map<std::string, std::string>& headers)
+        -> result<azure_http_response> = 0;
+
+    /**
+     * @brief Perform HTTP DELETE request
+     */
+    [[nodiscard]] virtual auto del(
+        const std::string& url,
+        const std::map<std::string, std::string>& headers)
+        -> result<azure_http_response> = 0;
+
+    /**
+     * @brief Perform HTTP HEAD request
+     */
+    [[nodiscard]] virtual auto head(
+        const std::string& url,
+        const std::map<std::string, std::string>& headers)
+        -> result<azure_http_response> = 0;
+};
 
 /**
  * @brief Azure Blob upload stream implementation for block blobs
@@ -56,7 +136,8 @@ private:
         const std::string& blob_name,
         const azure_blob_config& config,
         std::shared_ptr<credential_provider> credentials,
-        const cloud_transfer_options& options);
+        const cloud_transfer_options& options,
+        std::shared_ptr<azure_http_client_interface> http_client = nullptr);
 
     struct impl;
     std::unique_ptr<impl> impl_;
@@ -146,6 +227,18 @@ public:
     [[nodiscard]] static auto create(
         const azure_blob_config& config,
         std::shared_ptr<credential_provider> credentials) -> std::unique_ptr<azure_blob_storage>;
+
+    /**
+     * @brief Create an Azure Blob storage instance with custom HTTP client
+     * @param config Azure Blob configuration
+     * @param credentials Credential provider
+     * @param http_client Custom HTTP client (for testing)
+     * @return Unique pointer to storage instance, or nullptr on failure
+     */
+    [[nodiscard]] static auto create(
+        const azure_blob_config& config,
+        std::shared_ptr<credential_provider> credentials,
+        std::shared_ptr<azure_http_client_interface> http_client) -> std::unique_ptr<azure_blob_storage>;
 
     ~azure_blob_storage() override;
 
