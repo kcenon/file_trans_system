@@ -5,6 +5,7 @@
  */
 
 #include "kcenon/file_transfer/cloud/azure_blob_storage.h"
+#include "kcenon/file_transfer/cloud/cloud_http_client.h"
 #include "kcenon/file_transfer/cloud/cloud_utils.h"
 
 #include <algorithm>
@@ -19,11 +20,6 @@
 #include <regex>
 #include <sstream>
 #include <thread>
-
-// HTTP client integration enabled (see #147, #148)
-#ifdef BUILD_WITH_NETWORK_SYSTEM
-#include <kcenon/network/core/http_client.h>
-#endif
 
 namespace kcenon::file_transfer {
 
@@ -44,18 +40,20 @@ using cloud_utils::detect_content_type;
 using cloud_utils::calculate_retry_delay;
 
 // ============================================================================
-// Real HTTP Client Implementation
+// Real HTTP Client Implementation (uses unified cloud_http_client)
 // ============================================================================
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
-
 /**
- * @brief Real HTTP client that uses the network system
+ * @brief Adapter that wraps cloud_http_client to implement azure_http_client_interface
+ *
+ * This adapter uses the unified cloud_http_client internally, reducing code
+ * duplication while maintaining the existing azure_http_client_interface for
+ * backwards compatibility.
  */
 class real_azure_http_client : public azure_http_client_interface {
 public:
     explicit real_azure_http_client(std::chrono::milliseconds timeout = std::chrono::milliseconds(30000))
-        : client_(std::make_shared<kcenon::network::core::http_client>(timeout)) {}
+        : client_(make_cloud_http_client(timeout)) {}
 
     auto get(
         const std::string& url,
@@ -63,8 +61,8 @@ public:
         const std::map<std::string, std::string>& headers)
         -> result<azure_http_response> override {
         auto response = client_->get(url, {}, headers);
-        if (response.is_err()) {
-            return unexpected{error{error_code::internal_error, "HTTP GET request failed"}};
+        if (!response.has_value()) {
+            return unexpected{response.error()};
         }
         return convert_response(response.value());
     }
@@ -75,8 +73,8 @@ public:
         const std::map<std::string, std::string>& headers)
         -> result<azure_http_response> override {
         auto response = client_->put(url, body, headers);
-        if (response.is_err()) {
-            return unexpected{error{error_code::internal_error, "HTTP PUT request failed"}};
+        if (!response.has_value()) {
+            return unexpected{response.error()};
         }
         return convert_response(response.value());
     }
@@ -95,8 +93,8 @@ public:
         const std::map<std::string, std::string>& headers)
         -> result<azure_http_response> override {
         auto response = client_->del(url, headers);
-        if (response.is_err()) {
-            return unexpected{error{error_code::internal_error, "HTTP DELETE request failed"}};
+        if (!response.has_value()) {
+            return unexpected{response.error()};
         }
         return convert_response(response.value());
     }
@@ -106,29 +104,23 @@ public:
         const std::map<std::string, std::string>& headers)
         -> result<azure_http_response> override {
         auto response = client_->head(url, headers);
-        if (response.is_err()) {
-            return unexpected{error{error_code::internal_error, "HTTP HEAD request failed"}};
+        if (!response.has_value()) {
+            return unexpected{response.error()};
         }
         return convert_response(response.value());
     }
 
 private:
-    auto convert_response(const kcenon::network::internal::http_response& resp) -> azure_http_response {
+    static auto convert_response(const http_response_base& resp) -> azure_http_response {
         azure_http_response result;
         result.status_code = resp.status_code;
-        for (const auto& [key, value] : resp.headers) {
-            result.headers[key] = value;
-        }
-        if (!resp.body.empty()) {
-            result.body = std::vector<uint8_t>(resp.body.begin(), resp.body.end());
-        }
+        result.headers = resp.headers;
+        result.body = resp.body;
         return result;
     }
 
-    std::shared_ptr<kcenon::network::core::http_client> client_;
+    std::shared_ptr<cloud_http_client> client_;
 };
-
-#endif  // BUILD_WITH_NETWORK_SYSTEM
 
 namespace {
 
@@ -644,18 +636,13 @@ struct azure_blob_download_stream::impl {
     std::size_t buffer_pos = 0;
     bool initialized = false;
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
-    std::shared_ptr<kcenon::network::core::http_client> http_client_;
-#endif
+    std::shared_ptr<cloud_http_client> http_client_;
 
     impl(const std::string& name,
          const azure_blob_config& cfg,
          std::shared_ptr<credential_provider> creds)
-        : blob_name(name), config(cfg), credentials(std::move(creds)) {
-#ifdef BUILD_WITH_NETWORK_SYSTEM
-        http_client_ = std::make_shared<kcenon::network::core::http_client>(
-            std::chrono::milliseconds(30000));  // 30 second timeout
-#endif
+        : blob_name(name), config(cfg), credentials(std::move(creds)),
+          http_client_(make_cloud_http_client(std::chrono::milliseconds(30000))) {
     }
 
     auto get_blob_endpoint() const -> std::string {
@@ -753,7 +740,7 @@ struct azure_blob_download_stream::impl {
         }
 
         auto response = http_client_->head(url, headers);
-        if (response.is_err()) {
+        if (!response.has_value()) {
             return unexpected{error{error_code::internal_error,
                 "Failed to get blob metadata: " + response.error().message}};
         }
@@ -831,7 +818,7 @@ struct azure_blob_download_stream::impl {
         }
 
         auto response = http_client_->get(url, {}, headers);
-        if (response.is_err()) {
+        if (!response.has_value()) {
             return unexpected{error{error_code::internal_error,
                 "Failed to download blob range: " + response.error().message}};
         }
