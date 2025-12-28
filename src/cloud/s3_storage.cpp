@@ -5,6 +5,7 @@
  */
 
 #include "kcenon/file_transfer/cloud/s3_storage.h"
+#include "kcenon/file_transfer/cloud/cloud_utils.h"
 
 #include <algorithm>
 #include <array>
@@ -15,181 +16,36 @@
 #include <future>
 #include <iomanip>
 #include <map>
-#include <random>
 #include <regex>
 #include <sstream>
 #include <thread>
-#include <unordered_map>
 
 // HTTP client integration enabled (see #147, #148)
 #ifdef BUILD_WITH_NETWORK_SYSTEM
 #include <kcenon/network/core/http_client.h>
 #endif
 
-#ifdef FILE_TRANS_ENABLE_ENCRYPTION
-#include <openssl/evp.h>
-#include <openssl/hmac.h>
-#include <openssl/sha.h>
-#endif
-
 namespace kcenon::file_transfer {
+
+// Import cloud utilities
+using cloud_utils::bytes_to_hex;
+using cloud_utils::sha256;
+using cloud_utils::sha256_bytes;
+using cloud_utils::hmac_sha256;
+using cloud_utils::url_encode;
+using cloud_utils::get_iso8601_time;
+using cloud_utils::get_date_stamp;
+using cloud_utils::generate_random_bytes;
+using cloud_utils::extract_xml_element;
+using cloud_utils::calculate_retry_delay;
+using cloud_utils::is_retryable_status;
+using cloud_utils::detect_content_type;
 
 namespace {
 
 // ============================================================================
-// AWS Signature V4 Utilities
+// S3-Specific Utilities
 // ============================================================================
-
-/**
- * @brief Convert bytes to hexadecimal string
- */
-auto bytes_to_hex(const std::vector<uint8_t>& bytes) -> std::string {
-    std::ostringstream oss;
-    for (auto byte : bytes) {
-        oss << std::hex << std::setfill('0') << std::setw(2)
-            << static_cast<int>(byte);
-    }
-    return oss.str();
-}
-
-/**
- * @brief SHA256 hash function
- */
-auto sha256(const std::string& data) -> std::vector<uint8_t> {
-#ifdef FILE_TRANS_ENABLE_ENCRYPTION
-    std::vector<uint8_t> hash(SHA256_DIGEST_LENGTH);
-    SHA256(reinterpret_cast<const unsigned char*>(data.data()),
-           data.size(),
-           hash.data());
-    return hash;
-#else
-    // Return empty hash when encryption is disabled
-    return std::vector<uint8_t>(32, 0);
-#endif
-}
-
-/**
- * @brief SHA256 hash of bytes
- */
-auto sha256_bytes(std::span<const std::byte> data) -> std::vector<uint8_t> {
-#ifdef FILE_TRANS_ENABLE_ENCRYPTION
-    std::vector<uint8_t> hash(SHA256_DIGEST_LENGTH);
-    SHA256(reinterpret_cast<const unsigned char*>(data.data()),
-           data.size(),
-           hash.data());
-    return hash;
-#else
-    return std::vector<uint8_t>(32, 0);
-#endif
-}
-
-/**
- * @brief HMAC-SHA256
- */
-auto hmac_sha256(const std::vector<uint8_t>& key,
-                 const std::string& data) -> std::vector<uint8_t> {
-#ifdef FILE_TRANS_ENABLE_ENCRYPTION
-    std::vector<uint8_t> result(EVP_MAX_MD_SIZE);
-    unsigned int len = 0;
-
-    HMAC(EVP_sha256(),
-         key.data(),
-         static_cast<int>(key.size()),
-         reinterpret_cast<const unsigned char*>(data.data()),
-         data.size(),
-         result.data(),
-         &len);
-
-    result.resize(len);
-    return result;
-#else
-    return std::vector<uint8_t>(32, 0);
-#endif
-}
-
-/**
- * @brief HMAC-SHA256 with string key
- */
-auto hmac_sha256(const std::string& key,
-                 const std::string& data) -> std::vector<uint8_t> {
-    std::vector<uint8_t> key_bytes(key.begin(), key.end());
-    return hmac_sha256(key_bytes, data);
-}
-
-/**
- * @brief URL encode a string (RFC 3986)
- */
-auto url_encode(const std::string& value, bool encode_slash = true) -> std::string {
-    std::ostringstream escaped;
-    escaped.fill('0');
-    escaped << std::hex;
-
-    for (char c : value) {
-        if (std::isalnum(static_cast<unsigned char>(c)) ||
-            c == '-' || c == '_' || c == '.' || c == '~') {
-            escaped << c;
-        } else if (c == '/' && !encode_slash) {
-            escaped << c;
-        } else {
-            escaped << '%' << std::setw(2)
-                    << static_cast<int>(static_cast<unsigned char>(c));
-        }
-    }
-
-    return escaped.str();
-}
-
-/**
- * @brief Get current UTC time as ISO 8601 string (YYYYMMDD'T'HHMMSS'Z')
- */
-auto get_iso8601_time() -> std::string {
-    auto now = std::chrono::system_clock::now();
-    auto time_t = std::chrono::system_clock::to_time_t(now);
-    std::tm tm{};
-#ifdef _WIN32
-    gmtime_s(&tm, &time_t);
-#else
-    gmtime_r(&time_t, &tm);
-#endif
-
-    std::ostringstream oss;
-    oss << std::put_time(&tm, "%Y%m%dT%H%M%SZ");
-    return oss.str();
-}
-
-/**
- * @brief Get current UTC date as YYYYMMDD string
- */
-auto get_date_stamp() -> std::string {
-    auto now = std::chrono::system_clock::now();
-    auto time_t = std::chrono::system_clock::to_time_t(now);
-    std::tm tm{};
-#ifdef _WIN32
-    gmtime_s(&tm, &time_t);
-#else
-    gmtime_r(&time_t, &tm);
-#endif
-
-    std::ostringstream oss;
-    oss << std::put_time(&tm, "%Y%m%d");
-    return oss.str();
-}
-
-/**
- * @brief Generate random bytes
- */
-auto generate_random_bytes(std::size_t count) -> std::vector<uint8_t> {
-    std::vector<uint8_t> bytes(count);
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<> dis(0, 255);
-
-    for (std::size_t i = 0; i < count; ++i) {
-        bytes[i] = static_cast<uint8_t>(dis(gen));
-    }
-
-    return bytes;
-}
 
 /**
  * @brief Parse S3 endpoint URL
@@ -245,69 +101,6 @@ auto parse_endpoint(const std::string& endpoint) -> s3_endpoint_info {
 }
 
 /**
- * @brief Extract XML element value
- */
-auto extract_xml_element(const std::string& xml,
-                         const std::string& tag) -> std::optional<std::string> {
-    std::string open_tag = "<" + tag + ">";
-    std::string close_tag = "</" + tag + ">";
-
-    auto start_pos = xml.find(open_tag);
-    if (start_pos == std::string::npos) {
-        return std::nullopt;
-    }
-    start_pos += open_tag.length();
-
-    auto end_pos = xml.find(close_tag, start_pos);
-    if (end_pos == std::string::npos) {
-        return std::nullopt;
-    }
-
-    return xml.substr(start_pos, end_pos - start_pos);
-}
-
-/**
- * @brief Calculate delay with exponential backoff and jitter
- */
-auto calculate_retry_delay(const cloud_retry_policy& policy,
-                           std::size_t attempt) -> std::chrono::milliseconds {
-    auto delay = static_cast<double>(policy.initial_delay.count());
-
-    for (std::size_t i = 1; i < attempt; ++i) {
-        delay *= policy.backoff_multiplier;
-    }
-
-    delay = std::min(delay, static_cast<double>(policy.max_delay.count()));
-
-    if (policy.use_jitter) {
-        std::random_device rd;
-        std::mt19937 gen(rd());
-        std::uniform_real_distribution<> dis(0.5, 1.5);
-        delay *= dis(gen);
-    }
-
-    return std::chrono::milliseconds(static_cast<int64_t>(delay));
-}
-
-/**
- * @brief Check if HTTP status code indicates a retryable error
- */
-auto is_retryable_status(int status_code,
-                         const cloud_retry_policy& policy) -> bool {
-    // Rate limiting
-    if (policy.retry_on_rate_limit && (status_code == 429 || status_code == 503)) {
-        return true;
-    }
-
-    // Server errors
-    if (policy.retry_on_server_error && status_code >= 500 && status_code < 600) {
-        return true;
-    }
-
-    return false;
-}
-
-/**
  * @brief Build XML for completing multipart upload
  */
 auto build_complete_multipart_xml(
@@ -325,56 +118,6 @@ auto build_complete_multipart_xml(
 
     xml << "</CompleteMultipartUpload>";
     return xml.str();
-}
-
-/**
- * @brief Content type detection based on file extension
- */
-auto detect_content_type(const std::string& key) -> std::string {
-    static const std::unordered_map<std::string, std::string> mime_types = {
-        {".txt", "text/plain"},
-        {".html", "text/html"},
-        {".htm", "text/html"},
-        {".css", "text/css"},
-        {".js", "application/javascript"},
-        {".json", "application/json"},
-        {".xml", "application/xml"},
-        {".pdf", "application/pdf"},
-        {".zip", "application/zip"},
-        {".gz", "application/gzip"},
-        {".tar", "application/x-tar"},
-        {".png", "image/png"},
-        {".jpg", "image/jpeg"},
-        {".jpeg", "image/jpeg"},
-        {".gif", "image/gif"},
-        {".svg", "image/svg+xml"},
-        {".webp", "image/webp"},
-        {".ico", "image/x-icon"},
-        {".mp3", "audio/mpeg"},
-        {".mp4", "video/mp4"},
-        {".webm", "video/webm"},
-        {".woff", "font/woff"},
-        {".woff2", "font/woff2"},
-        {".ttf", "font/ttf"},
-        {".otf", "font/otf"},
-    };
-
-    // Find the last dot in the key
-    auto dot_pos = key.rfind('.');
-    if (dot_pos == std::string::npos) {
-        return "application/octet-stream";
-    }
-
-    std::string ext = key.substr(dot_pos);
-    std::transform(ext.begin(), ext.end(), ext.begin(),
-                   [](unsigned char c) { return std::tolower(c); });
-
-    auto it = mime_types.find(ext);
-    if (it != mime_types.end()) {
-        return it->second;
-    }
-
-    return "application/octet-stream";
 }
 
 }  // namespace
