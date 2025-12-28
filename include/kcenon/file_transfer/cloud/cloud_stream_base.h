@@ -16,11 +16,14 @@
 #include "cloud_error.h"
 #include "kcenon/file_transfer/core/types.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <future>
+#include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <thread>
