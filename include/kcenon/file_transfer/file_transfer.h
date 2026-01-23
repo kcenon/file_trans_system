@@ -39,6 +39,11 @@
 #include "kcenon/file_transfer/client/client_types.h"
 #include "kcenon/file_transfer/client/file_transfer_client.h"
 
+// Adapters
+#include "kcenon/file_transfer/adapters/logger_adapter.h"
+#include "kcenon/file_transfer/adapters/monitoring_adapter.h"
+#include "kcenon/file_transfer/adapters/monitorable_adapter.h"
+
 namespace kcenon::file_transfer {
 
 /**
