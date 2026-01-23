@@ -26,6 +26,11 @@
 // This provides FILE_TRANS_HAS_* and KCENON_WITH_* macros
 #include <kcenon/file_transfer/config/feature_flags.h>
 
+// Include source_location for automatic source location capture
+#if KCENON_WITH_COMMON_SYSTEM
+#include <kcenon/common/utils/source_location.h>
+#endif
+
 #if FILE_TRANSFER_USE_LOGGER_SYSTEM
 #include <kcenon/logger/core/logger.h>
 #include <kcenon/logger/core/logger_builder.h>
@@ -33,6 +38,55 @@
 #endif
 
 namespace kcenon::file_transfer {
+
+//==============================================================================
+// Source Location Type Alias
+//==============================================================================
+
+#if KCENON_WITH_COMMON_SYSTEM
+/**
+ * @brief Source location type for automatic capture of file, line, and function.
+ *
+ * When common_system is available, uses kcenon::common::source_location which
+ * provides C++17/C++20 compatible source location capture. When used as a
+ * default parameter, it automatically captures the call site's location.
+ *
+ * @see kcenon::common::source_location
+ */
+using source_location = kcenon::common::source_location;
+#else
+/**
+ * @brief Fallback source location struct when common_system is not available.
+ *
+ * Provides a minimal source_location-like interface using compiler builtins
+ * for basic source location capture.
+ */
+struct source_location {
+    constexpr source_location(
+        const char* file = __builtin_FILE(),
+        const char* function = __builtin_FUNCTION(),
+        int line = __builtin_LINE()
+    ) noexcept
+        : file_(file), function_(function), line_(line) {}
+
+    constexpr const char* file_name() const noexcept { return file_; }
+    constexpr const char* function_name() const noexcept { return function_; }
+    constexpr int line() const noexcept { return line_; }
+
+    static constexpr source_location current(
+        const char* file = __builtin_FILE(),
+        const char* function = __builtin_FUNCTION(),
+        int line = __builtin_LINE()
+    ) noexcept {
+        return source_location(file, function, line);
+    }
+
+private:
+    const char* file_;
+    const char* function_;
+    int line_;
+};
+#endif
 
 /**
  * @brief Log categories for file transfer system
@@ -609,7 +663,24 @@ public:
     }
 
     /**
-     * @brief Set the source file location
+     * @brief Set the source file location using source_location
+     *
+     * Preferred method for setting source location. Accepts a source_location
+     * object which automatically captures file, line, and function information.
+     *
+     * @param loc Source location (typically from source_location::current())
+     */
+    auto with_source_location(const source_location& loc) -> log_entry_builder& {
+        if (loc.file_name()) entry_.source_file = loc.file_name();
+        if (loc.line() > 0) entry_.source_line = loc.line();
+        if (loc.function_name()) entry_.function_name = loc.function_name();
+        return *this;
+    }
+
+    /**
+     * @brief Set the source file location (legacy overload)
+     *
+     * @deprecated Use with_source_location(const source_location&) instead.
      */
     auto with_source_location(const char* file, int line, const char* function) -> log_entry_builder& {
         if (file) entry_.source_file = file;
@@ -1119,15 +1190,23 @@ public:
     }
 
     /**
-     * @brief Log a message
+     * @brief Log a message with automatic source location capture
+     *
+     * This is the primary logging method. The source_location parameter has a
+     * default value of source_location::current(), which automatically captures
+     * the file, line, and function at the call site.
+     *
+     * @param level    Log level (trace, debug, info, warn, error, fatal)
+     * @param category Log category (e.g., log_category::server)
+     * @param message  Log message
+     * @param context  Optional transfer context for structured logging
+     * @param loc      Source location (automatically captured at call site)
      */
     void log(log_level level,
              std::string_view category,
              std::string_view message,
              const transfer_log_context* context = nullptr,
-             [[maybe_unused]] const char* file = nullptr,
-             [[maybe_unused]] int line = 0,
-             [[maybe_unused]] const char* function = nullptr) {
+             const source_location& loc = source_location::current()) {
 
         if (!is_enabled_for(level, category)) return;
 
@@ -1154,6 +1233,11 @@ public:
         if (destination == log_output_destination::none) {
             return;
         }
+
+        // Extract source location details
+        const char* file = loc.file_name();
+        int line = loc.line();
+        const char* function = loc.function_name();
 
         if (format == log_output_format::json) {
             log_json(level, category, message, context, file, line, function, current_masker, destination);
@@ -1495,15 +1579,39 @@ inline file_transfer_logger& get_logger() {
     return instance;
 }
 
-// Logging macros for convenience
+//==============================================================================
+// Logging Macros
+//==============================================================================
+//
+// These macros provide convenient logging with automatic source location
+// capture. The source_location is automatically captured at the call site
+// via the default parameter in the log() method.
+//
+// Before (manual source location):
+//   FT_LOG(level, cat, msg) -> log(level, cat, msg, nullptr, __FILE__, __LINE__, __FUNCTION__)
+//
+// After (automatic source location):
+//   FT_LOG(level, cat, msg) -> log(level, cat, msg)
+//                              source_location captured automatically via default parameter
+//
+
+/**
+ * @brief Log a message at specified level
+ *
+ * Source location is automatically captured at the call site.
+ */
 #define FT_LOG(level, category, message) \
-    kcenon::file_transfer::get_logger().log( \
-        level, category, message, nullptr, __FILE__, __LINE__, __FUNCTION__)
+    kcenon::file_transfer::get_logger().log(level, category, message)
 
+/**
+ * @brief Log a message with transfer context at specified level
+ *
+ * Source location is automatically captured at the call site.
+ */
 #define FT_LOG_CTX(level, category, message, context) \
-    kcenon::file_transfer::get_logger().log( \
-        level, category, message, &context, __FILE__, __LINE__, __FUNCTION__)
+    kcenon::file_transfer::get_logger().log(level, category, message, &(context))
 
+// Level-specific convenience macros
 #define FT_LOG_TRACE(category, message) \
     FT_LOG(kcenon::file_transfer::log_level::trace, category, message)
 
@@ -1522,6 +1630,7 @@ inline file_transfer_logger& get_logger() {
 #define FT_LOG_FATAL(category, message) \
     FT_LOG(kcenon::file_transfer::log_level::fatal, category, message)
 
+// Level-specific convenience macros with context
 #define FT_LOG_TRACE_CTX(category, message, ctx) \
     FT_LOG_CTX(kcenon::file_transfer::log_level::trace, category, message, ctx)
 
