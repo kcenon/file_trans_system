@@ -7,6 +7,7 @@
 #include "kcenon/file_transfer/cloud/gcs_storage.h"
 #include "kcenon/file_transfer/cloud/cloud_http_client.h"
 #include "kcenon/file_transfer/cloud/cloud_utils.h"
+#include "kcenon/file_transfer/config/feature_flags.h"
 
 #include <algorithm>
 #include <array>
@@ -823,7 +824,7 @@ struct gcs_storage::impl {
          std::shared_ptr<credential_provider> credentials,
          std::shared_ptr<gcs_http_client_interface> http_client = nullptr)
         : config_(config), credentials_(std::move(credentials)), http_client_(std::move(http_client)) {
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
         if (!http_client_) {
             http_client_ = std::make_shared<real_gcs_http_client>(
                 std::chrono::milliseconds(30000));  // 30 second timeout
@@ -835,7 +836,7 @@ struct gcs_storage::impl {
      * @brief Get valid access token, refreshing if needed
      */
     auto get_access_token() -> result<std::string> {
-#if defined(BUILD_WITH_NETWORK_SYSTEM) && defined(FILE_TRANS_ENABLE_ENCRYPTION)
+#if KCENON_WITH_NETWORK_SYSTEM && defined(FILE_TRANS_ENABLE_ENCRYPTION)
         std::lock_guard<std::mutex> lock(token_mutex_);
 
         auto now = std::chrono::system_clock::now();
@@ -908,7 +909,7 @@ struct gcs_storage::impl {
         return access_token_;
 #else
         return unexpected{error{error_code::internal_error,
-            "OAuth2 requires BUILD_WITH_NETWORK_SYSTEM and FILE_TRANS_ENABLE_ENCRYPTION"}};
+            "OAuth2 requires KCENON_WITH_NETWORK_SYSTEM and FILE_TRANS_ENABLE_ENCRYPTION"}};
 #endif
     }
 
@@ -1110,7 +1111,7 @@ auto gcs_storage::upload(
         return result;
     }
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
     // Simple upload using media upload endpoint
     auto auth_headers = impl_->get_auth_headers();
     if (!auth_headers.has_value()) {
@@ -1223,7 +1224,7 @@ auto gcs_storage::download(const std::string& key) -> result<std::vector<std::by
         return unexpected{error{error_code::not_initialized, "Not connected"}};
     }
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
     auto auth_headers = impl_->get_auth_headers();
     if (!auth_headers.has_value()) {
         impl_->update_error_stats();
@@ -1324,7 +1325,7 @@ auto gcs_storage::delete_object(const std::string& key) -> result<delete_result>
         return unexpected{error{error_code::not_initialized, "Not connected"}};
     }
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
     auto auth_headers = impl_->get_auth_headers();
     if (!auth_headers.has_value()) {
         impl_->update_error_stats();
@@ -1401,7 +1402,7 @@ auto gcs_storage::exists(const std::string& key) -> result<bool> {
         return unexpected{error{error_code::not_initialized, "Not connected"}};
     }
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
     auto auth_headers = impl_->get_auth_headers();
     if (!auth_headers.has_value()) {
         impl_->update_error_stats();
@@ -1442,7 +1443,7 @@ auto gcs_storage::get_metadata(const std::string& key) -> result<cloud_object_me
         return unexpected{error{error_code::not_initialized, "Not connected"}};
     }
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
     auto auth_headers = impl_->get_auth_headers();
     if (!auth_headers.has_value()) {
         impl_->update_error_stats();
@@ -1490,7 +1491,7 @@ auto gcs_storage::list_objects(
         return unexpected{error{error_code::not_initialized, "Not connected"}};
     }
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
     auto auth_headers = impl_->get_auth_headers();
     if (!auth_headers.has_value()) {
         impl_->update_error_stats();
@@ -1601,7 +1602,7 @@ auto gcs_storage::copy_object(
         return unexpected{error{error_code::not_initialized, "Not connected"}};
     }
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
     auto auth_headers = impl_->get_auth_headers();
     if (!auth_headers.has_value()) {
         impl_->update_error_stats();
@@ -1873,7 +1874,7 @@ auto gcs_storage::compose_objects(
         return unexpected{error{error_code::internal_error, "Maximum 32 objects can be composed"}};
     }
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
     auto auth_headers = impl_->get_auth_headers();
     if (!auth_headers.has_value()) {
         impl_->update_error_stats();

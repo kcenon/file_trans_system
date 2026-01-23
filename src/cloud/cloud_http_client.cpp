@@ -10,7 +10,9 @@
 #include <random>
 #include <thread>
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#include "kcenon/file_transfer/config/feature_flags.h"
+
+#if KCENON_WITH_NETWORK_SYSTEM
 #include <kcenon/network/core/http_client.h>
 #endif
 
@@ -21,13 +23,13 @@ namespace kcenon::file_transfer {
 // ============================================================================
 
 struct cloud_http_client::impl {
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
     std::shared_ptr<kcenon::network::core::http_client> client;
 #endif
     bool available = false;
 
     explicit impl(std::chrono::milliseconds timeout) {
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
         client = std::make_shared<kcenon::network::core::http_client>(timeout);
         available = true;
 #else
@@ -36,7 +38,7 @@ struct cloud_http_client::impl {
 #endif
     }
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
     static auto convert_response(
         const kcenon::network::internal::http_response& resp) -> http_response_base {
         http_response_base result;
@@ -70,7 +72,7 @@ auto cloud_http_client::get(
     const std::map<std::string, std::string>& query,
     const std::map<std::string, std::string>& headers)
     -> result<http_response_base> {
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
     if (!impl_->client) {
         return unexpected{error{error_code::internal_error,
             "HTTP client not initialized"}};
@@ -87,7 +89,7 @@ auto cloud_http_client::get(
     (void)query;
     (void)headers;
     return unexpected{error{error_code::internal_error,
-        "HTTP client not available (BUILD_WITH_NETWORK_SYSTEM not defined)"}};
+        "HTTP client not available (KCENON_WITH_NETWORK_SYSTEM not defined)"}};
 #endif
 }
 
@@ -96,7 +98,7 @@ auto cloud_http_client::post(
     const std::string& body,
     const std::map<std::string, std::string>& headers)
     -> result<http_response_base> {
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
     if (!impl_->client) {
         return unexpected{error{error_code::internal_error,
             "HTTP client not initialized"}};
@@ -113,7 +115,7 @@ auto cloud_http_client::post(
     (void)body;
     (void)headers;
     return unexpected{error{error_code::internal_error,
-        "HTTP client not available (BUILD_WITH_NETWORK_SYSTEM not defined)"}};
+        "HTTP client not available (KCENON_WITH_NETWORK_SYSTEM not defined)"}};
 #endif
 }
 
@@ -122,7 +124,7 @@ auto cloud_http_client::post(
     const std::vector<uint8_t>& body,
     const std::map<std::string, std::string>& headers)
     -> result<http_response_base> {
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
     if (!impl_->client) {
         return unexpected{error{error_code::internal_error,
             "HTTP client not initialized"}};
@@ -139,7 +141,7 @@ auto cloud_http_client::post(
     (void)body;
     (void)headers;
     return unexpected{error{error_code::internal_error,
-        "HTTP client not available (BUILD_WITH_NETWORK_SYSTEM not defined)"}};
+        "HTTP client not available (KCENON_WITH_NETWORK_SYSTEM not defined)"}};
 #endif
 }
 
@@ -148,7 +150,7 @@ auto cloud_http_client::put(
     const std::string& body,
     const std::map<std::string, std::string>& headers)
     -> result<http_response_base> {
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
     if (!impl_->client) {
         return unexpected{error{error_code::internal_error,
             "HTTP client not initialized"}};
@@ -165,7 +167,7 @@ auto cloud_http_client::put(
     (void)body;
     (void)headers;
     return unexpected{error{error_code::internal_error,
-        "HTTP client not available (BUILD_WITH_NETWORK_SYSTEM not defined)"}};
+        "HTTP client not available (KCENON_WITH_NETWORK_SYSTEM not defined)"}};
 #endif
 }
 
@@ -182,7 +184,7 @@ auto cloud_http_client::del(
     const std::string& url,
     const std::map<std::string, std::string>& headers)
     -> result<http_response_base> {
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
     if (!impl_->client) {
         return unexpected{error{error_code::internal_error,
             "HTTP client not initialized"}};
@@ -198,7 +200,7 @@ auto cloud_http_client::del(
     (void)url;
     (void)headers;
     return unexpected{error{error_code::internal_error,
-        "HTTP client not available (BUILD_WITH_NETWORK_SYSTEM not defined)"}};
+        "HTTP client not available (KCENON_WITH_NETWORK_SYSTEM not defined)"}};
 #endif
 }
 
@@ -206,7 +208,7 @@ auto cloud_http_client::head(
     const std::string& url,
     const std::map<std::string, std::string>& headers)
     -> result<http_response_base> {
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
     if (!impl_->client) {
         return unexpected{error{error_code::internal_error,
             "HTTP client not initialized"}};
@@ -222,7 +224,7 @@ auto cloud_http_client::head(
     (void)url;
     (void)headers;
     return unexpected{error{error_code::internal_error,
-        "HTTP client not available (BUILD_WITH_NETWORK_SYSTEM not defined)"}};
+        "HTTP client not available (KCENON_WITH_NETWORK_SYSTEM not defined)"}};
 #endif
 }
 

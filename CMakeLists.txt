@@ -53,34 +53,47 @@ option(FILE_TRANS_ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
 #     - LZ4 (compression)
 #
 # Note: network_system is a mandatory dependency as of v0.3.0.
-# The BUILD_WITH_NETWORK_SYSTEM option has been removed.
+#
+# Migration Note (Phase 10 - Issue #167):
+# The BUILD_WITH_* macros are deprecated. Use KCENON_WITH_* instead.
+# Legacy BUILD_WITH_* options are kept for backward compatibility but will
+# be removed in a future version.
 ##################################################
 
-option(BUILD_WITH_COMMON_SYSTEM "Build with common_system integration (REQUIRED)" ON)
-option(BUILD_WITH_THREAD_SYSTEM "Build with thread_system integration (REQUIRED)" ON)
-option(BUILD_WITH_CONTAINER_SYSTEM "Build with container_system integration (REQUIRED)" ON)
-option(BUILD_WITH_LOGGER_SYSTEM "Build with logger_system integration (structured logging)" ON)
+# Dependency options (using KCENON_WITH_* naming convention)
+option(KCENON_WITH_COMMON_SYSTEM "Build with common_system integration (REQUIRED)" ON)
+option(KCENON_WITH_THREAD_SYSTEM "Build with thread_system integration (REQUIRED)" ON)
+option(KCENON_WITH_CONTAINER_SYSTEM "Build with container_system integration (REQUIRED)" ON)
+option(KCENON_WITH_LOGGER_SYSTEM "Build with logger_system integration (structured logging)" ON)
 
 # network_system is now mandatory - always enabled
 # Use FILE_TRANS_ALLOW_MISSING_DEPS=ON in CI environments where deps are unavailable
 option(FILE_TRANS_ALLOW_MISSING_DEPS "Allow missing dependencies (CI mode)" OFF)
-set(BUILD_WITH_NETWORK_SYSTEM ON CACHE INTERNAL "network_system is mandatory" FORCE)
+set(KCENON_WITH_NETWORK_SYSTEM ON CACHE INTERNAL "network_system is mandatory" FORCE)
+
+# Legacy aliases for backward compatibility (DEPRECATED)
+# These will be removed in a future version
+set(BUILD_WITH_COMMON_SYSTEM ${KCENON_WITH_COMMON_SYSTEM})
+set(BUILD_WITH_THREAD_SYSTEM ${KCENON_WITH_THREAD_SYSTEM})
+set(BUILD_WITH_CONTAINER_SYSTEM ${KCENON_WITH_CONTAINER_SYSTEM})
+set(BUILD_WITH_LOGGER_SYSTEM ${KCENON_WITH_LOGGER_SYSTEM})
+set(BUILD_WITH_NETWORK_SYSTEM ${KCENON_WITH_NETWORK_SYSTEM})
 
 ##################################################
 # Dependency Validation
 ##################################################
 
-if(NOT BUILD_WITH_COMMON_SYSTEM)
+if(NOT KCENON_WITH_COMMON_SYSTEM)
     message(WARNING "common_system is disabled - some features may be unavailable")
 endif()
 
-if(NOT BUILD_WITH_THREAD_SYSTEM)
+if(NOT KCENON_WITH_THREAD_SYSTEM)
     message(WARNING "thread_system is disabled - some features may be unavailable")
 endif()
 
 # network_system is mandatory - validation happens in FileTransDependencies.cmake
 
-if(NOT BUILD_WITH_CONTAINER_SYSTEM)
+if(NOT KCENON_WITH_CONTAINER_SYSTEM)
     message(WARNING "container_system is disabled - some features may be unavailable")
 endif()
 
@@ -349,22 +362,21 @@ if(FILE_TRANS_ENABLE_ENCRYPTION AND OpenSSL_FOUND)
 endif()
 
 # Ecosystem dependencies
-if(BUILD_WITH_COMMON_SYSTEM AND COMMON_SYSTEM_INCLUDE_DIR)
+# Note: Using unified KCENON_WITH_* macros only (Phase 10 - Issue #167)
+# Legacy BUILD_WITH_* macros are deprecated and provided via feature_flags.h for compatibility
+
+if(KCENON_WITH_COMMON_SYSTEM AND COMMON_SYSTEM_INCLUDE_DIR)
     target_include_directories(FileTransSystem PUBLIC ${COMMON_SYSTEM_INCLUDE_DIR})
-    # Define both legacy and unified macros for ABI compatibility with network_system
+    # KCENON_WITH_COMMON_SYSTEM=1 is required for ABI compatibility with network_system
     # network_system uses KCENON_WITH_COMMON_SYSTEM=1 to select common::Result<T>
-    # file_trans_system must match to ensure consistent Result<T> ABI
     target_compile_definitions(FileTransSystem PUBLIC
-        BUILD_WITH_COMMON_SYSTEM
         KCENON_WITH_COMMON_SYSTEM=1
     )
 endif()
 
-if(BUILD_WITH_THREAD_SYSTEM AND THREAD_SYSTEM_INCLUDE_DIR)
+if(KCENON_WITH_THREAD_SYSTEM AND THREAD_SYSTEM_INCLUDE_DIR)
     target_include_directories(FileTransSystem PUBLIC ${THREAD_SYSTEM_INCLUDE_DIR})
-    # Define both legacy and new unified macros for compatibility
     target_compile_definitions(FileTransSystem PUBLIC
-        BUILD_WITH_THREAD_SYSTEM
         KCENON_WITH_THREAD_SYSTEM=1
     )
 
@@ -374,14 +386,12 @@ if(BUILD_WITH_THREAD_SYSTEM AND THREAD_SYSTEM_INCLUDE_DIR)
     endif()
 endif()
 
-if(BUILD_WITH_NETWORK_SYSTEM AND NETWORK_SYSTEM_INCLUDE_DIR)
+if(KCENON_WITH_NETWORK_SYSTEM AND NETWORK_SYSTEM_INCLUDE_DIR)
     target_include_directories(FileTransSystem PUBLIC ${NETWORK_SYSTEM_INCLUDE_DIR})
-    # Define both legacy and new unified macros for compatibility
     # KCENON_WITH_COMMON_SYSTEM=1 is required for ABI compatibility with network_system
     # when linking against the library file (not CMake target). network_system's
     # Result<T> type changes based on this flag, so both must use the same setting.
     target_compile_definitions(FileTransSystem PUBLIC
-        BUILD_WITH_NETWORK_SYSTEM
         KCENON_WITH_NETWORK_SYSTEM=1
         KCENON_WITH_COMMON_SYSTEM=1
     )
@@ -417,20 +427,16 @@ if(BUILD_WITH_NETWORK_SYSTEM AND NETWORK_SYSTEM_INCLUDE_DIR)
     endif()
 endif()
 
-if(BUILD_WITH_CONTAINER_SYSTEM AND CONTAINER_SYSTEM_INCLUDE_DIR)
+if(KCENON_WITH_CONTAINER_SYSTEM AND CONTAINER_SYSTEM_INCLUDE_DIR)
     target_include_directories(FileTransSystem PUBLIC ${CONTAINER_SYSTEM_INCLUDE_DIR})
-    # Define both legacy and new unified macros for compatibility
     target_compile_definitions(FileTransSystem PUBLIC
-        BUILD_WITH_CONTAINER_SYSTEM
         KCENON_WITH_CONTAINER_SYSTEM=1
     )
 endif()
 
-if(BUILD_WITH_LOGGER_SYSTEM AND LOGGER_SYSTEM_INCLUDE_DIR)
+if(KCENON_WITH_LOGGER_SYSTEM AND LOGGER_SYSTEM_INCLUDE_DIR)
     target_include_directories(FileTransSystem PUBLIC ${LOGGER_SYSTEM_INCLUDE_DIR})
-    # Define both legacy and new unified macros for compatibility
     target_compile_definitions(FileTransSystem PUBLIC
-        BUILD_WITH_LOGGER_SYSTEM
         KCENON_WITH_LOGGER_SYSTEM=1
     )
 
@@ -510,11 +516,11 @@ message(STATUS "  ENABLE_ASAN: ${FILE_TRANS_ENABLE_ASAN}")
 message(STATUS "  ENABLE_TSAN: ${FILE_TRANS_ENABLE_TSAN}")
 message(STATUS "  ENABLE_UBSAN: ${FILE_TRANS_ENABLE_UBSAN}")
 message(STATUS "")
-message(STATUS "Dependencies:")
-message(STATUS "  common_system: ${BUILD_WITH_COMMON_SYSTEM}")
-message(STATUS "  thread_system: ${BUILD_WITH_THREAD_SYSTEM}")
-message(STATUS "  network_system: ${BUILD_WITH_NETWORK_SYSTEM}")
-message(STATUS "  container_system: ${BUILD_WITH_CONTAINER_SYSTEM}")
-message(STATUS "  logger_system: ${BUILD_WITH_LOGGER_SYSTEM}")
+message(STATUS "Dependencies (KCENON_WITH_* unified macros):")
+message(STATUS "  common_system: ${KCENON_WITH_COMMON_SYSTEM}")
+message(STATUS "  thread_system: ${KCENON_WITH_THREAD_SYSTEM}")
+message(STATUS "  network_system: ${KCENON_WITH_NETWORK_SYSTEM}")
+message(STATUS "  container_system: ${KCENON_WITH_CONTAINER_SYSTEM}")
+message(STATUS "  logger_system: ${KCENON_WITH_LOGGER_SYSTEM}")
 message(STATUS "========================================")
 message(STATUS "")

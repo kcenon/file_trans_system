@@ -6,6 +6,7 @@
 
 #include "kcenon/file_transfer/cloud/s3_storage.h"
 #include "kcenon/file_transfer/cloud/cloud_utils.h"
+#include "kcenon/file_transfer/config/feature_flags.h"
 
 #include <algorithm>
 #include <array>
@@ -21,7 +22,7 @@
 #include <thread>
 
 // HTTP client integration enabled (see #147, #148)
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
 #include <kcenon/network/core/http_client.h>
 #endif
 
@@ -141,7 +142,7 @@ struct s3_upload_stream::impl {
     bool aborted = false;
     bool initialized = false;
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
     std::shared_ptr<kcenon::network::core::http_client> http_client_;
 #endif
 
@@ -159,7 +160,7 @@ struct s3_upload_stream::impl {
          const cloud_transfer_options& opts)
         : key(k), config(cfg), credentials(std::move(creds)), options(opts) {
         part_buffer.reserve(config.multipart.part_size);
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
         // Only initialize HTTP client when a custom endpoint is configured
         if (config.endpoint.has_value()) {
             http_client_ = std::make_shared<kcenon::network::core::http_client>(
@@ -351,7 +352,7 @@ struct s3_upload_stream::impl {
     }
 
     auto initiate_multipart_upload() -> result<std::string> {
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
         if (http_client_) {
             std::string path = get_path(key);
             std::string query = "uploads=";
@@ -407,7 +408,7 @@ struct s3_upload_stream::impl {
         auto hash = sha256_bytes(data);
         std::string payload_hash = bytes_to_hex(hash);
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
         if (http_client_) {
             std::string path = get_path(key);
             std::string query = "partNumber=" + std::to_string(part_number) + "&uploadId=" + upload_id_;
@@ -462,7 +463,7 @@ struct s3_upload_stream::impl {
         std::sort(completed_parts.begin(), completed_parts.end(),
                   [](const auto& a, const auto& b) { return a.first < b.first; });
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
         if (http_client_) {
             // Build XML body
             std::string xml_body = build_complete_multipart_xml(completed_parts);
@@ -542,7 +543,7 @@ struct s3_upload_stream::impl {
     }
 
     auto abort_multipart_upload() -> result<void> {
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
         if (!http_client_ || upload_id_.empty()) {
             aborted = true;
             return result<void>{};
@@ -802,7 +803,7 @@ struct s3_storage::impl {
     cloud_storage_state state_ = cloud_storage_state::disconnected;
     cloud_storage_statistics stats_;
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
     std::shared_ptr<kcenon::network::core::http_client> http_client_;
 #endif
 
@@ -815,7 +816,7 @@ struct s3_storage::impl {
 
     impl(const s3_config& config, std::shared_ptr<credential_provider> credentials)
         : config_(config), credentials_(std::move(credentials)) {
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
         // Only initialize HTTP client when a custom endpoint is configured
         // (e.g., MinIO, LocalStack) to enable real API calls.
         // For standard AWS S3 without custom endpoint, use simulation mode
@@ -966,7 +967,7 @@ struct s3_storage::impl {
         stats_.errors++;
     }
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
     /**
      * @brief Send HTTP request to S3
      */
@@ -1094,7 +1095,7 @@ auto s3_storage::connect() -> result<void> {
         return unexpected{error{error_code::internal_error, "Invalid credentials"}};
     }
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
     // Try to perform HEAD request on bucket to validate access
     // If the request fails (e.g., no network), fall back to local simulation mode
     std::string path = impl_->config_.use_path_style ?
@@ -1195,7 +1196,7 @@ auto s3_storage::upload(
     auto content_hash = sha256_bytes(data);
     std::string payload_hash = bytes_to_hex(content_hash);
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
     std::string path = impl_->get_path(key);
     std::map<std::string, std::string> extra_headers;
     extra_headers["Content-Type"] = detect_content_type(key);
@@ -1275,7 +1276,7 @@ auto s3_storage::download(const std::string& key) -> result<std::vector<std::byt
         return unexpected{error{error_code::not_initialized, "Not connected"}};
     }
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
     std::string path = impl_->get_path(key);
 
     auto response = impl_->send_request("GET", path, "", {});
@@ -1360,7 +1361,7 @@ auto s3_storage::delete_object(const std::string& key) -> result<delete_result> 
         return unexpected{error{error_code::not_initialized, "Not connected"}};
     }
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
     std::string path = impl_->get_path(key);
 
     auto response = impl_->send_request("DELETE", path, "", {});
@@ -1418,7 +1419,7 @@ auto s3_storage::exists(const std::string& key) -> result<bool> {
         return unexpected{error{error_code::not_initialized, "Not connected"}};
     }
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
     std::string path = impl_->get_path(key);
 
     auto response = impl_->send_request("HEAD", path, "", {});
@@ -1448,7 +1449,7 @@ auto s3_storage::get_metadata(const std::string& key) -> result<cloud_object_met
         return unexpected{error{error_code::not_initialized, "Not connected"}};
     }
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
     std::string path = impl_->get_path(key);
 
     auto response = impl_->send_request("HEAD", path, "", {});
@@ -1519,7 +1520,7 @@ auto s3_storage::list_objects(
         return unexpected{error{error_code::not_initialized, "Not connected"}};
     }
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
     // Build query string for ListObjectsV2
     std::ostringstream query_builder;
     query_builder << "list-type=2";
@@ -1655,7 +1656,7 @@ auto s3_storage::copy_object(
         return unexpected{error{error_code::not_initialized, "Not connected"}};
     }
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
     std::string path = impl_->get_path(dest_key);
 
     // Build copy source header
