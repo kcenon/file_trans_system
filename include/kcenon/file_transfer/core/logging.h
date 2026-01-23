@@ -22,21 +22,11 @@
 #include <unordered_map>
 #include <fstream>
 
-// Include unified feature flags from common_system if available
-#if __has_include(<kcenon/common/config/feature_flags.h>)
-#include <kcenon/common/config/feature_flags.h>
-#endif
+// Include unified feature flags for file_trans_system
+// This provides FILE_TRANS_HAS_* and KCENON_WITH_* macros
+#include <kcenon/file_transfer/config/feature_flags.h>
 
-// logger_system integration detection
-// Uses KCENON_WITH_LOGGER_SYSTEM from unified feature flags (preferred)
-// Falls back to BUILD_WITH_* macros for backward compatibility
-#if defined(KCENON_WITH_LOGGER_SYSTEM) && KCENON_WITH_LOGGER_SYSTEM
-#define FILE_TRANSFER_USE_LOGGER_SYSTEM 1
-#elif defined(BUILD_WITH_LOGGER_SYSTEM) && defined(BUILD_WITH_COMMON_SYSTEM)
-#define FILE_TRANSFER_USE_LOGGER_SYSTEM 1
-#endif
-
-#ifdef FILE_TRANSFER_USE_LOGGER_SYSTEM
+#if FILE_TRANSFER_USE_LOGGER_SYSTEM
 #include <kcenon/logger/core/logger.h>
 #include <kcenon/logger/core/logger_builder.h>
 #include <kcenon/logger/writers/console_writer.h>
@@ -776,7 +766,7 @@ public:
             return;  // Already initialized
         }
 
-#ifdef FILE_TRANSFER_USE_LOGGER_SYSTEM
+#if FILE_TRANSFER_USE_LOGGER_SYSTEM
         auto result = kcenon::logger::logger_builder()
             .with_async(true)
             .with_min_level(kcenon::logger::log_level::info)
@@ -793,7 +783,7 @@ public:
      * @brief Shutdown the logger
      */
     void shutdown() {
-#ifdef FILE_TRANSFER_USE_LOGGER_SYSTEM
+#if FILE_TRANSFER_USE_LOGGER_SYSTEM
         if (logger_) {
             logger_->flush();
             logger_->stop();
@@ -818,9 +808,9 @@ public:
      */
     void set_level(log_level level) {
         min_level_.store(level);
-#ifdef FILE_TRANSFER_USE_LOGGER_SYSTEM
+#if FILE_TRANSFER_USE_LOGGER_SYSTEM
         if (logger_) {
-            logger_->set_min_level(to_logger_level(level));
+            logger_->set_level(to_logger_level(level));
         }
 #endif
     }
@@ -1202,7 +1192,7 @@ public:
             return;
         }
 
-#ifdef FILE_TRANSFER_USE_LOGGER_SYSTEM
+#if FILE_TRANSFER_USE_LOGGER_SYSTEM
         if (logger_) {
             if (entry.source_file && entry.source_line && entry.function_name) {
                 logger_->log(to_logger_level(entry.level), json_str,
@@ -1226,7 +1216,7 @@ public:
      * @brief Flush pending logs
      */
     void flush() {
-#ifdef FILE_TRANSFER_USE_LOGGER_SYSTEM
+#if FILE_TRANSFER_USE_LOGGER_SYSTEM
         if (logger_) {
             logger_->flush();
         }
@@ -1268,7 +1258,7 @@ private:
             }
         }
 
-#ifdef FILE_TRANSFER_USE_LOGGER_SYSTEM
+#if FILE_TRANSFER_USE_LOGGER_SYSTEM
         if (logger_) {
             if (file && line > 0 && function) {
                 logger_->log(to_logger_level(level), json_str, file, line, function);
@@ -1296,7 +1286,7 @@ private:
                   const sensitive_info_masker& masker,
                   [[maybe_unused]] log_output_destination destination) {
 
-#ifdef FILE_TRANSFER_USE_LOGGER_SYSTEM
+#if FILE_TRANSFER_USE_LOGGER_SYSTEM
         if (logger_) {
             std::string full_message = format_message(category, message, context, &masker);
             if (file && line > 0 && function) {
@@ -1428,7 +1418,7 @@ private:
         return oss.str();
     }
 
-#ifdef FILE_TRANSFER_USE_LOGGER_SYSTEM
+#if FILE_TRANSFER_USE_LOGGER_SYSTEM
     static auto to_logger_level(log_level level) -> kcenon::logger::log_level {
         switch (level) {
             case log_level::trace: return kcenon::logger::log_level::trace;
