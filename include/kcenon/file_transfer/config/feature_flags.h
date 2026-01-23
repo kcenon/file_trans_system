@@ -112,47 +112,27 @@
 
 // thread_system integration (typed_thread_pool for pipeline)
 #ifndef KCENON_WITH_THREAD_SYSTEM
-    #if defined(BUILD_WITH_THREAD_SYSTEM)
-        #define KCENON_WITH_THREAD_SYSTEM 1
-    #else
-        #define KCENON_WITH_THREAD_SYSTEM 0
-    #endif
+    #define KCENON_WITH_THREAD_SYSTEM 0
 #endif
 
 // logger_system integration (structured logging)
 #ifndef KCENON_WITH_LOGGER_SYSTEM
-    #if defined(BUILD_WITH_LOGGER_SYSTEM)
-        #define KCENON_WITH_LOGGER_SYSTEM 1
-    #else
-        #define KCENON_WITH_LOGGER_SYSTEM 0
-    #endif
+    #define KCENON_WITH_LOGGER_SYSTEM 0
 #endif
 
 // network_system integration (TCP/TLS transport layer)
 #ifndef KCENON_WITH_NETWORK_SYSTEM
-    #if defined(BUILD_WITH_NETWORK_SYSTEM)
-        #define KCENON_WITH_NETWORK_SYSTEM 1
-    #else
-        #define KCENON_WITH_NETWORK_SYSTEM 0
-    #endif
+    #define KCENON_WITH_NETWORK_SYSTEM 0
 #endif
 
 // container_system integration (bounded_queue for backpressure)
 #ifndef KCENON_WITH_CONTAINER_SYSTEM
-    #if defined(BUILD_WITH_CONTAINER_SYSTEM)
-        #define KCENON_WITH_CONTAINER_SYSTEM 1
-    #else
-        #define KCENON_WITH_CONTAINER_SYSTEM 0
-    #endif
+    #define KCENON_WITH_CONTAINER_SYSTEM 0
 #endif
 
 // monitoring_system integration (metrics and health checks)
 #ifndef KCENON_WITH_MONITORING_SYSTEM
-    #if defined(BUILD_WITH_MONITORING_SYSTEM)
-        #define KCENON_WITH_MONITORING_SYSTEM 1
-    #else
-        #define KCENON_WITH_MONITORING_SYSTEM 0
-    #endif
+    #define KCENON_WITH_MONITORING_SYSTEM 0
 #endif
 
 //==============================================================================
@@ -163,13 +143,10 @@
  * @brief Unified flag for logger_system usage in file_transfer
  *
  * This macro indicates whether the logger_system integration is active.
- * It considers both the KCENON_WITH_LOGGER_SYSTEM flag and the legacy
- * BUILD_WITH_LOGGER_SYSTEM macro for backward compatibility.
+ * Requires both logger_system and common_system to be available.
  */
 #ifndef FILE_TRANSFER_USE_LOGGER_SYSTEM
     #if KCENON_WITH_LOGGER_SYSTEM && KCENON_WITH_COMMON_SYSTEM
-        #define FILE_TRANSFER_USE_LOGGER_SYSTEM 1
-    #elif defined(BUILD_WITH_LOGGER_SYSTEM) && defined(BUILD_WITH_COMMON_SYSTEM)
         #define FILE_TRANSFER_USE_LOGGER_SYSTEM 1
     #else
         #define FILE_TRANSFER_USE_LOGGER_SYSTEM 0
@@ -177,49 +154,63 @@
 #endif
 
 //==============================================================================
-// Legacy Alias Support (for backward compatibility)
+// Legacy Alias Support (DEPRECATED)
 //==============================================================================
 
 /**
- * @brief Legacy BUILD_WITH_* macro aliases
+ * @brief Legacy BUILD_WITH_* macro aliases (DEPRECATED)
  *
  * These aliases map KCENON_WITH_* flags back to BUILD_WITH_* macros
  * for backward compatibility with code that uses the old naming convention.
  *
- * @note Legacy aliases are planned for deprecation in a future version.
- *       New code should use KCENON_WITH_* macros directly.
+ * @deprecated BUILD_WITH_* macros are deprecated and will be removed in a
+ *             future version. Use KCENON_WITH_* macros directly instead.
+ *
+ * To disable these aliases and prepare for migration, define:
+ *   FILE_TRANS_DISABLE_LEGACY_ALIASES
  */
 #ifndef FILE_TRANS_DISABLE_LEGACY_ALIASES
 
-// BUILD_WITH_COMMON_SYSTEM <- KCENON_WITH_COMMON_SYSTEM
+// Deprecation warning helper macro
+#if defined(__clang__) || defined(__GNUC__)
+    #define FILE_TRANS_DEPRECATION_WARNING(macro) \
+        _Pragma("GCC warning \"" macro " is deprecated, use KCENON_WITH_* instead\"")
+#elif defined(_MSC_VER)
+    #define FILE_TRANS_DEPRECATION_WARNING(macro) \
+        __pragma(message(__FILE__ ": warning: " macro " is deprecated, use KCENON_WITH_* instead"))
+#else
+    #define FILE_TRANS_DEPRECATION_WARNING(macro)
+#endif
+
+// BUILD_WITH_COMMON_SYSTEM <- KCENON_WITH_COMMON_SYSTEM (DEPRECATED)
 #ifndef BUILD_WITH_COMMON_SYSTEM
     #if KCENON_WITH_COMMON_SYSTEM
         #define BUILD_WITH_COMMON_SYSTEM 1
     #endif
 #endif
 
-// BUILD_WITH_THREAD_SYSTEM <- KCENON_WITH_THREAD_SYSTEM
+// BUILD_WITH_THREAD_SYSTEM <- KCENON_WITH_THREAD_SYSTEM (DEPRECATED)
 #ifndef BUILD_WITH_THREAD_SYSTEM
     #if KCENON_WITH_THREAD_SYSTEM
         #define BUILD_WITH_THREAD_SYSTEM 1
     #endif
 #endif
 
-// BUILD_WITH_LOGGER_SYSTEM <- KCENON_WITH_LOGGER_SYSTEM
+// BUILD_WITH_LOGGER_SYSTEM <- KCENON_WITH_LOGGER_SYSTEM (DEPRECATED)
 #ifndef BUILD_WITH_LOGGER_SYSTEM
     #if KCENON_WITH_LOGGER_SYSTEM
         #define BUILD_WITH_LOGGER_SYSTEM 1
     #endif
 #endif
 
-// BUILD_WITH_NETWORK_SYSTEM <- KCENON_WITH_NETWORK_SYSTEM
+// BUILD_WITH_NETWORK_SYSTEM <- KCENON_WITH_NETWORK_SYSTEM (DEPRECATED)
 #ifndef BUILD_WITH_NETWORK_SYSTEM
     #if KCENON_WITH_NETWORK_SYSTEM
         #define BUILD_WITH_NETWORK_SYSTEM 1
     #endif
 #endif
 
-// BUILD_WITH_CONTAINER_SYSTEM <- KCENON_WITH_CONTAINER_SYSTEM
+// BUILD_WITH_CONTAINER_SYSTEM <- KCENON_WITH_CONTAINER_SYSTEM (DEPRECATED)
 #ifndef BUILD_WITH_CONTAINER_SYSTEM
     #if KCENON_WITH_CONTAINER_SYSTEM
         #define BUILD_WITH_CONTAINER_SYSTEM 1

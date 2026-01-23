@@ -7,6 +7,7 @@
 #include "kcenon/file_transfer/cloud/azure_blob_storage.h"
 #include "kcenon/file_transfer/cloud/cloud_http_client.h"
 #include "kcenon/file_transfer/cloud/cloud_utils.h"
+#include "kcenon/file_transfer/config/feature_flags.h"
 
 #include <algorithm>
 #include <array>
@@ -228,7 +229,7 @@ struct azure_blob_upload_stream::impl {
         : blob_name(name), config(cfg), credentials(std::move(creds)), options(opts),
           http_client_(std::move(http_client)) {
         block_buffer.reserve(config.multipart.part_size);
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
         if (!http_client_) {
             http_client_ = std::make_shared<real_azure_http_client>(
                 std::chrono::milliseconds(30000));  // 30 second timeout
@@ -310,7 +311,7 @@ struct azure_blob_upload_stream::impl {
     }
 
     auto upload_block(const std::string& block_id, std::span<const std::byte> data) -> result<void> {
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
         if (!http_client_) {
             return unexpected{error{error_code::not_initialized, "HTTP client not initialized"}};
         }
@@ -720,7 +721,7 @@ struct azure_blob_download_stream::impl {
     }
 
     auto initialize() -> result<void> {
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
         if (!http_client_) {
             return unexpected{error{error_code::not_initialized, "HTTP client not initialized"}};
         }
@@ -798,7 +799,7 @@ struct azure_blob_download_stream::impl {
     }
 
     auto fetch_range(uint64_t start, uint64_t end) -> result<std::vector<std::byte>> {
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
         if (!http_client_) {
             return unexpected{error{error_code::not_initialized, "HTTP client not initialized"}};
         }
@@ -922,7 +923,7 @@ struct azure_blob_storage::impl {
          std::shared_ptr<credential_provider> credentials,
          std::shared_ptr<azure_http_client_interface> http_client = nullptr)
         : config_(config), credentials_(std::move(credentials)), http_client_(std::move(http_client)) {
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
         if (!http_client_) {
             http_client_ = std::make_shared<real_azure_http_client>(
                 std::chrono::milliseconds(30000));  // 30 second timeout
@@ -1225,7 +1226,7 @@ auto azure_blob_storage::download(const std::string& key) -> result<std::vector<
         return unexpected{error{error_code::not_initialized, "Not connected"}};
     }
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
     if (!impl_->http_client_) {
         return unexpected{error{error_code::not_initialized, "HTTP client not initialized"}};
     }
@@ -1321,7 +1322,7 @@ auto azure_blob_storage::delete_object(const std::string& key) -> result<delete_
         return unexpected{error{error_code::not_initialized, "Not connected"}};
     }
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
     if (!impl_->http_client_) {
         return unexpected{error{error_code::not_initialized, "HTTP client not initialized"}};
     }
@@ -1394,7 +1395,7 @@ auto azure_blob_storage::exists(const std::string& key) -> result<bool> {
         return unexpected{error{error_code::not_initialized, "Not connected"}};
     }
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
     if (!impl_->http_client_) {
         return unexpected{error{error_code::not_initialized, "HTTP client not initialized"}};
     }
@@ -1430,7 +1431,7 @@ auto azure_blob_storage::get_metadata(const std::string& key) -> result<cloud_ob
         return unexpected{error{error_code::not_initialized, "Not connected"}};
     }
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
     if (!impl_->http_client_) {
         return unexpected{error{error_code::not_initialized, "HTTP client not initialized"}};
     }
@@ -1516,7 +1517,7 @@ auto azure_blob_storage::list_objects(
         return unexpected{error{error_code::not_initialized, "Not connected"}};
     }
 
-#ifdef BUILD_WITH_NETWORK_SYSTEM
+#if KCENON_WITH_NETWORK_SYSTEM
     if (!impl_->http_client_) {
         return unexpected{error{error_code::not_initialized, "HTTP client not initialized"}};
     }
