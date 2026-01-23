@@ -12,7 +12,7 @@
 #include <queue>
 #include <thread>
 
-#include <network_system/core/messaging_quic_client.h>
+#include <kcenon/network/core/messaging_quic_client.h>
 
 namespace kcenon::file_transfer {
 

@@ -159,7 +159,7 @@ function(find_file_trans_dependencies)
         )
 
         foreach(_path ${_network_paths})
-            if(EXISTS "${_path}/network_system")
+            if(EXISTS "${_path}/kcenon/network")
                 get_filename_component(NETWORK_SYSTEM_INCLUDE_DIR "${_path}" ABSOLUTE)
                 break()
             endif()

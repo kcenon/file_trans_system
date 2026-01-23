@@ -21,7 +21,7 @@
 #include "kcenon/file_transfer/server/server_pipeline.h"
 
 #include <kcenon/thread/core/job.h>
-#include <kcenon/thread/core/bounded_job_queue.h>
+#include <kcenon/thread/core/job_queue.h>
 #include <kcenon/thread/core/thread_pool.h>
 #include <kcenon/common/patterns/result.h>
 
@@ -50,12 +50,12 @@ struct pipeline_context {
     std::shared_ptr<thread::thread_pool> thread_pool;
 
     /// Bounded job queues for each stage
-    std::shared_ptr<thread::bounded_job_queue> decompress_queue;
-    std::shared_ptr<thread::bounded_job_queue> verify_queue;
-    std::shared_ptr<thread::bounded_job_queue> write_queue;
-    std::shared_ptr<thread::bounded_job_queue> read_queue;
-    std::shared_ptr<thread::bounded_job_queue> compress_queue;
-    std::shared_ptr<thread::bounded_job_queue> send_queue;
+    std::shared_ptr<thread::job_queue> decompress_queue;
+    std::shared_ptr<thread::job_queue> verify_queue;
+    std::shared_ptr<thread::job_queue> write_queue;
+    std::shared_ptr<thread::job_queue> read_queue;
+    std::shared_ptr<thread::job_queue> compress_queue;
+    std::shared_ptr<thread::job_queue> send_queue;
 
     /// Compression engines for workers
     std::vector<std::unique_ptr<compression_engine>> compression_engines;
@@ -64,10 +64,10 @@ struct pipeline_context {
     std::vector<std::shared_ptr<encryption_interface>> encryption_engines;
 
     /// Decrypt queue (for upload pipeline: decompress -> decrypt -> verify)
-    std::shared_ptr<thread::bounded_job_queue> decrypt_queue;
+    std::shared_ptr<thread::job_queue> decrypt_queue;
 
     /// Encrypt queue (for download pipeline: read -> encrypt -> compress)
-    std::shared_ptr<thread::bounded_job_queue> encrypt_queue;
+    std::shared_ptr<thread::job_queue> encrypt_queue;
 
     /// Whether encryption is enabled for this pipeline
     bool encryption_enabled = false;
