@@ -43,6 +43,7 @@
 #include "kcenon/file_transfer/adapters/logger_adapter.h"
 #include "kcenon/file_transfer/adapters/monitoring_adapter.h"
 #include "kcenon/file_transfer/adapters/monitorable_adapter.h"
+#include "kcenon/file_transfer/adapters/thread_pool_adapter.h"
 
 namespace kcenon::file_transfer {
 
