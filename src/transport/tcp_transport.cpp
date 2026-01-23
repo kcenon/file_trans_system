@@ -10,7 +10,7 @@
 #include <queue>
 #include <thread>
 
-#include <network_system/core/messaging_client.h>
+#include <kcenon/network/core/messaging_client.h>
 
 namespace kcenon::file_transfer {
 
@@ -35,10 +35,10 @@ struct tcp_transport::impl {
     std::condition_variable receive_cv;
     std::queue<std::vector<std::byte>> receive_queue;
 
-    std::shared_ptr<network_system::core::messaging_client> network_client;
+    std::shared_ptr<kcenon::network::core::messaging_client> network_client;
 
     explicit impl(tcp_transport_config cfg) : config(std::move(cfg)) {
-        network_client = std::make_shared<network_system::core::messaging_client>(
+        network_client = std::make_shared<kcenon::network::core::messaging_client>(
             "tcp_transport");
     }
 
