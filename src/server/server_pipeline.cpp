@@ -17,7 +17,7 @@
 #endif
 
 #include <kcenon/thread/core/thread_pool.h>
-#include <kcenon/thread/core/bounded_job_queue.h>
+#include <kcenon/thread/core/job_queue.h>
 
 #include <filesystem>
 #include <fstream>
@@ -55,19 +55,19 @@ struct server_pipeline::impl {
         context = std::make_shared<pipeline_context>();
         context->thread_pool = thread_pool;
 
-        // Create bounded job queues for each stage (used for backpressure tracking)
-        context->decompress_queue = std::make_shared<thread::bounded_job_queue>(
-            config.queue_size, 0.8);
-        context->verify_queue = std::make_shared<thread::bounded_job_queue>(
-            config.queue_size, 0.8);
-        context->write_queue = std::make_shared<thread::bounded_job_queue>(
-            config.queue_size, 0.8);
-        context->read_queue = std::make_shared<thread::bounded_job_queue>(
-            config.queue_size, 0.8);
-        context->compress_queue = std::make_shared<thread::bounded_job_queue>(
-            config.queue_size, 0.8);
-        context->send_queue = std::make_shared<thread::bounded_job_queue>(
-            config.queue_size, 0.8);
+        // Create job queues for each stage with bounded size for backpressure
+        context->decompress_queue = std::make_shared<thread::job_queue>(
+            config.queue_size);
+        context->verify_queue = std::make_shared<thread::job_queue>(
+            config.queue_size);
+        context->write_queue = std::make_shared<thread::job_queue>(
+            config.queue_size);
+        context->read_queue = std::make_shared<thread::job_queue>(
+            config.queue_size);
+        context->compress_queue = std::make_shared<thread::job_queue>(
+            config.queue_size);
+        context->send_queue = std::make_shared<thread::job_queue>(
+            config.queue_size);
 
         // Create compression engines for workers
         auto total_compression_workers = config.compression_workers;
@@ -79,10 +79,10 @@ struct server_pipeline::impl {
 
         // Create encryption queues if encryption is enabled
         if (config.enable_encryption) {
-            context->decrypt_queue = std::make_shared<thread::bounded_job_queue>(
-                config.queue_size, 0.8);
-            context->encrypt_queue = std::make_shared<thread::bounded_job_queue>(
-                config.queue_size, 0.8);
+            context->decrypt_queue = std::make_shared<thread::job_queue>(
+                config.queue_size);
+            context->encrypt_queue = std::make_shared<thread::job_queue>(
+                config.queue_size);
             context->encryption_enabled = true;
 
 #ifdef FILE_TRANS_ENABLE_ENCRYPTION
