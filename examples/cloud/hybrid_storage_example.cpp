@@ -478,7 +478,7 @@ int main(int argc, char* argv[]) {
 
     // Create S3 storage
     std::cout << "Creating cloud storage...\n";
-    auto cloud = s3_storage::create(config, credentials);
+    auto cloud = s3_storage::create(config, std::move(credentials));
     if (!cloud) {
         std::cerr << "Failed to create S3 storage.\n";
         return 1;
@@ -496,7 +496,8 @@ int main(int argc, char* argv[]) {
 
     // Create hybrid storage manager
     // We need to create a second S3 storage for the manager since we're moving ownership
-    auto manager_cloud = s3_storage::create(config, credentials);
+    auto manager_credentials = s3_credential_provider::create_default();
+    auto manager_cloud = s3_storage::create(config, std::move(manager_credentials));
     if (!manager_cloud) {
         std::cerr << "Failed to create manager storage.\n";
         return 1;

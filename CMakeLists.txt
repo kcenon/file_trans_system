@@ -267,6 +267,8 @@ set(FILE_TRANS_SOURCES
     src/core/bandwidth_limiter.cpp
     src/core/statistics_collector.cpp
     src/adapters/logger_adapter.cpp
+    src/adapters/monitoring_adapter.cpp
+    src/adapters/monitorable_adapter.cpp
     src/server/file_transfer_server.cpp
     src/server/server_pipeline.cpp
     src/server/pipeline_jobs.cpp

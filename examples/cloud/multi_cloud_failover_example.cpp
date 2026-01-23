@@ -435,7 +435,7 @@ int main(int argc, char* argv[]) {
             .with_region(s3_region)
             .build_s3();
 
-        auto s3 = s3_storage::create(s3_config, s3_credentials);
+        auto s3 = s3_storage::create(s3_config, std::move(s3_credentials));
         if (s3) {
             auto result = s3->connect();
             if (result.has_value()) {
@@ -497,18 +497,18 @@ int main(int argc, char* argv[]) {
             [[nodiscard]] auto is_available() const -> bool override { return false; }
             [[nodiscard]] auto upload(const std::string&, std::span<const std::byte>)
                 -> result<upload_result> override {
-                return make_error(error_code::connection_failed, "Dummy provider");
+                return unexpected{error{error_code::connection_failed, "Dummy provider"}};
             }
             [[nodiscard]] auto download(const std::string&)
                 -> result<std::vector<std::byte>> override {
-                return make_error(error_code::connection_failed, "Dummy provider");
+                return unexpected{error{error_code::connection_failed, "Dummy provider"}};
             }
             [[nodiscard]] auto delete_object(const std::string&)
                 -> result<delete_result> override {
-                return make_error(error_code::connection_failed, "Dummy provider");
+                return unexpected{error{error_code::connection_failed, "Dummy provider"}};
             }
             [[nodiscard]] auto exists(const std::string&) -> result<bool> override {
-                return make_error(error_code::connection_failed, "Dummy provider");
+                return unexpected{error{error_code::connection_failed, "Dummy provider"}};
             }
         };
         secondary = std::make_unique<dummy_provider>();
