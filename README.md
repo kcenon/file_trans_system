@@ -1,3 +1,7 @@
+> Status: archived 2026-09. No further maintenance; kept for reference.
+>
+> Performance figures and feature claims in this README were written during active development and have not been re-verified.
+
 # file_trans_system
 
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg)](https://isocpp.org/std/the-standard)
