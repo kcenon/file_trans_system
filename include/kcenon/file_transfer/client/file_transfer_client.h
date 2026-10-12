@@ -486,6 +486,8 @@ public:
 
 private:
     explicit file_transfer_client(client_config config);
+    auto process_download_chunk_impl(uint64_t handle_id, const chunk& data,
+                                     bool finalize_on_last_chunk) -> result<void>;
 
     struct impl;
     std::unique_ptr<impl> impl_;

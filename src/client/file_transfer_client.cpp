@@ -12,6 +12,7 @@
 #include <kcenon/file_transfer/core/protocol_codec.h>
 #include <kcenon/file_transfer/core/chunk_config.h>
 #include <kcenon/file_transfer/core/compression_engine.h>
+#include <kcenon/file_transfer/core/file_commit.h>
 #include <kcenon/file_transfer/core/logging.h>
 
 #include <chrono>
@@ -21,6 +22,7 @@
 #include <thread>
 #include <deque>
 #include <future>
+#include <set>
 
 #ifdef FILE_TRANS_ENABLE_LZ4
 #include <lz4.h>
@@ -214,6 +216,7 @@ struct download_context : transfer_context_base {
     uint64_t& received_chunks{transferred_chunks};
     uint64_t& bytes_received{transferred_bytes};
     bool cancelled{false};
+    std::set<uint64_t> received_indices;
 };
 
 /**
@@ -330,6 +333,7 @@ struct batch_context {
 }
 
 struct file_transfer_client::impl {
+    std::atomic<file_transfer_client*> owner{nullptr};
     client_config config;
     std::atomic<connection_state> current_state{connection_state::disconnected};
     endpoint server_endpoint;
@@ -503,6 +507,18 @@ struct file_transfer_client::impl {
         if (auto callback = completion_callback()) { try { callback(outcome); } catch (...) {} }
     }
 
+    void fail_download(const std::shared_ptr<download_context>& ctx, std::string message) {
+        transfer_result outcome;
+        {
+            std::lock_guard lock(ctx->mutex);
+            if (is_terminal_status(to_transfer_status(ctx->state))) return;
+            ctx->state = internal_transfer_state::failed; ctx->error_message = message;
+            std::error_code ec; std::filesystem::remove(ctx->temp_path, ec);
+            outcome = {false, ctx->remote_name, ctx->transferred_bytes, message}; ctx->cv.notify_all();
+        }
+        if (auto callback = completion_callback()) { try { callback(outcome); } catch (...) {} }
+    }
+
     explicit impl(client_config cfg) : config(std::move(cfg)) {
         // Initialize bandwidth limiters if limits are configured
         if (config.upload_bandwidth_limit.has_value()) {
@@ -630,6 +646,7 @@ auto file_transfer_client::builder::build() -> result<file_transfer_client> {
 // file_transfer_client implementation
 file_transfer_client::file_transfer_client(client_config config)
     : impl_(std::make_unique<impl>(std::move(config))) {
+    impl_->owner = this;
     // Initialize logger (safe to call multiple times)
     get_logger().initialize();
 
@@ -656,9 +673,17 @@ file_transfer_client::file_transfer_client(client_config config)
     });
 }
 
-file_transfer_client::file_transfer_client(file_transfer_client&&) noexcept = default;
-auto file_transfer_client::operator=(file_transfer_client&&) noexcept
-    -> file_transfer_client& = default;
+file_transfer_client::file_transfer_client(file_transfer_client&& other) noexcept : impl_(std::move(other.impl_)) {
+    if (impl_) impl_->owner = this;
+}
+auto file_transfer_client::operator=(file_transfer_client&& other) noexcept
+    -> file_transfer_client& {
+    if (this != &other) {
+        impl_ = std::move(other.impl_);
+        if (impl_) impl_->owner = this;
+    }
+    return *this;
+}
 file_transfer_client::~file_transfer_client() {
     if (impl_ && is_connected()) {
         (void)disconnect();
@@ -915,7 +940,7 @@ auto file_transfer_client::download_file(
 
     // Create temp file path
     ctx->temp_path = local_path;
-    ctx->temp_path += ".tmp";
+    ctx->temp_path += "." + ctx->tid.to_string() + ".part";
 
     // Log download start with context
     transfer_log_context log_ctx;
@@ -926,45 +951,84 @@ auto file_transfer_client::download_file(
     // Store download context
     {
         std::lock_guard lock(impl_->download_mutex);
-        impl_->download_contexts[handle_id] = std::move(ctx);
+        impl_->download_contexts[handle_id] = ctx;
     }
 
-    // Get context pointer for operations
-    std::shared_ptr<download_context> dl_ctx;
-    {
-        std::lock_guard lock(impl_->download_mutex);
-        dl_ctx = impl_->download_contexts[handle_id];
-    }
-
-    // Build and send DOWNLOAD_REQUEST message
-    msg_download_request request{};
-    std::copy(dl_ctx->tid.bytes.begin(), dl_ctx->tid.bytes.end(),
-              request.transfer_id.begin());
-    request.filename = remote_name;
-    request.compression = (impl_->config.compression == compression_mode::none)
-                              ? wire_compression_mode::none
-                              : wire_compression_mode::lz4;
-    request.resume_from = 0;  // New download, no resume
-
-    // Send request via network client
-    // Note: Actual network send implementation depends on messaging_client API
-    // This is a placeholder for the protocol flow
-
-    // Wait for DOWNLOAD_ACCEPT or DOWNLOAD_REJECT
-    // The actual implementation would use async message handling
-
-    // Update statistics
-    {
-        std::lock_guard lock(impl_->stats_mutex);
-        impl_->statistics.total_files_downloaded++;
-    }
+    auto response = impl_->open_channel(ctx->tid);
+    auto* state = impl_.get();
+    state->launch([state, ctx, response, handle_id] {
+        auto checked = [](auto result) {
+            if (!result) throw std::runtime_error(result.error().message);
+        };
+        try {
+            if (ctx->options.encrypt.value_or(state->config.enable_encryption))
+                throw std::runtime_error("Encrypted download is not yet negotiated");
+            msg_download_request request{};
+            request.transfer_id = ctx->tid.bytes; request.filename = ctx->remote_name;
+            request.compression = static_cast<wire_compression_mode>(state->config.compression);
+            checked(state->send(message_type::download_request, request));
+            auto first = state->receive(response);
+            if (!first) throw std::runtime_error(first.error().message);
+            if (first.value().type == message_type::download_reject) {
+                auto reject = wire::decode<msg_download_reject>(first.value().payload);
+                throw std::runtime_error(reject ? reject.value().message : reject.error().message);
+            }
+            if (first.value().type != message_type::download_accept)
+                throw std::runtime_error("Download data arrived before metadata");
+            auto accepted = wire::decode<msg_download_accept>(first.value().payload);
+            if (!accepted) throw std::runtime_error(accepted.error().message);
+            const auto& metadata = accepted.value();
+            if (metadata.compression != request.compression || metadata.resume_offset ||
+                metadata.encryption != wire_encryption_algorithm::none)
+                throw std::runtime_error("Invalid download negotiation response");
+            std::string hash;
+            for (auto byte : metadata.sha256_hash) {
+                hash += "0123456789abcdef"[byte >> 4]; hash += "0123456789abcdef"[byte & 15];
+            }
+            checked(state->owner.load()->set_download_metadata(handle_id, metadata.file_size,
+                metadata.total_chunks, metadata.chunk_size, hash));
+            uint64_t wire_bytes = 0;
+            while (state->wait_active(ctx)) {
+                auto frame = state->receive(response);
+                if (!frame) throw std::runtime_error(frame.error().message);
+                if (frame.value().type == message_type::chunk_data) {
+                    auto decoded = wire::decode<chunk>(frame.value().payload);
+                    if (!decoded) throw std::runtime_error(decoded.error().message);
+                    auto& data = decoded.value();
+                    if (data.is_compressed() && metadata.compression == wire_compression_mode::none)
+                        throw std::runtime_error("Unnegotiated compression");
+                    checked(state->owner.load()->process_download_chunk_impl(handle_id, data, false));
+                    wire_bytes += data.data.size();
+                    checked(state->send(message_type::chunk_ack, msg_chunk_ack{ctx->tid.bytes, data.header.chunk_index}));
+                } else if (frame.value().type == message_type::download_complete) {
+                    auto completed = wire::decode<msg_download_complete>(frame.value().payload);
+                    if (!completed) throw std::runtime_error(completed.error().message);
+                    if (completed.value().total_chunks != metadata.total_chunks ||
+                        completed.value().bytes_sent != metadata.file_size || completed.value().bytes_on_wire != wire_bytes)
+                        throw std::runtime_error("Download completion totals mismatch");
+                    checked(state->owner.load()->finalize_download(handle_id));
+                    checked(state->send(message_type::download_ack, msg_download_ack{ctx->tid.bytes, 1, metadata.file_size}));
+                    state->close_channel(ctx->tid); return;
+                } else throw std::runtime_error("Unexpected download response");
+            }
+            throw std::runtime_error("Download interrupted");
+        } catch (const std::exception& err) {
+            (void)state->send(message_type::transfer_cancel, msg_transfer_cancel{ctx->tid.bytes, 0, err.what()});
+            state->fail_download(ctx, err.what());
+        }
+        state->close_channel(ctx->tid);
+    });
 
     return handle;
 }
 
 auto file_transfer_client::process_download_chunk(
     uint64_t handle_id, const chunk& received_chunk) -> result<void> {
-    if (impl_->download_limiter) impl_->download_limiter->acquire(received_chunk.data.size());
+    return process_download_chunk_impl(handle_id, received_chunk, true);
+}
+
+auto file_transfer_client::process_download_chunk_impl(
+    uint64_t handle_id, const chunk& received_chunk, bool finalize_on_last_chunk) -> result<void> {
     std::shared_ptr<download_context> ctx;
     {
         std::lock_guard lock(impl_->download_mutex);
@@ -973,9 +1037,21 @@ auto file_transfer_client::process_download_chunk(
             return unexpected{error{error_code::transfer_not_found, "Download context not found"}};
         ctx = it->second;
     }
+    if (!impl_->throttle(ctx, impl_->download_limiter.get(), received_chunk.data.size()))
+        return unexpected{error{error_code::invalid_state_transition, "Download interrupted"}};
     std::unique_lock lock(ctx->mutex);
     if (is_terminal_status(to_transfer_status(ctx->state)))
         return unexpected{error{error_code::transfer_already_completed, "Download is already terminal"}};
+    const auto& h = received_chunk.header;
+    if (ctx->state != download_state::transferring || h.chunk_index >= ctx->total_chunks ||
+        ctx->received_indices.contains(h.chunk_index) || h.chunk_offset != h.chunk_index * ctx->chunk_size ||
+        h.original_size != std::min<uint64_t>(ctx->chunk_size, ctx->file_size - h.chunk_offset) ||
+        h.compressed_size != received_chunk.data.size() || is_encrypted(h.flags) ||
+        (static_cast<uint8_t>(h.flags) & 0xf0) ||
+        is_first_chunk(h.flags) != (h.chunk_index == 0) ||
+        is_last_chunk(h.flags) != (h.chunk_index + 1 == ctx->total_chunks) ||
+        (!received_chunk.is_compressed() && h.original_size != h.compressed_size))
+        return unexpected{error{error_code::invalid_configuration, "Invalid, duplicate, or premature download chunk"}};
     std::vector<std::byte> data;
     if (received_chunk.is_compressed()) {
         auto decoded = decompress_lz4(received_chunk.data, received_chunk.header.original_size);
@@ -991,6 +1067,7 @@ auto file_transfer_client::process_download_chunk(
     file.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
     file.close();
     if (!file) return unexpected{error{error_code::file_write_error, "Failed to write download chunk"}};
+    ctx->received_indices.insert(h.chunk_index);
     ++ctx->received_chunks;
     ctx->bytes_received += data.size();
     ctx->state = download_state::transferring;
@@ -998,9 +1075,9 @@ auto file_transfer_client::process_download_chunk(
     transfer_progress progress{ctx->remote_name, ctx->bytes_received, ctx->file_size,
         ctx->file_size ? 100.0 * ctx->bytes_received / ctx->file_size : 100.0};
     lock.unlock();
-    if (auto callback = impl_->progress_observer()) callback(progress);
+    if (auto callback = impl_->progress_observer()) { try { callback(progress); } catch (...) {} }
     // finalize_download owns the context lock. Never call it while holding it.
-    return complete ? finalize_download(handle_id) : result<void>{};
+    return complete && finalize_on_last_chunk ? finalize_download(handle_id) : result<void>{};
 }
 
 auto file_transfer_client::finalize_download(uint64_t handle_id) -> result<void> {
@@ -1025,13 +1102,13 @@ auto file_transfer_client::finalize_download(uint64_t handle_id) -> result<void>
         failure = error{error_code::file_hash_mismatch, "SHA-256 verification failed"};
     else {
         ctx->state = download_state::completing;
-        std::error_code ec;
-        if (!ctx->options.overwrite && std::filesystem::exists(ctx->local_path, ec))
-            failure = error{error_code::file_already_exists, "Destination already exists"};
-        else {
-            std::filesystem::rename(ctx->temp_path, ctx->local_path, ec);
-            if (ec) failure = error{error_code::file_write_error, "Cannot commit download: " + ec.message()};
-        }
+        auto committed = commit_file(ctx->temp_path, ctx->local_path, ctx->options.overwrite);
+        if (!committed) failure = committed.error();
+    }
+    if (!failure) {
+        std::lock_guard stats_lock(impl_->stats_mutex);
+        ++impl_->statistics.total_files_downloaded;
+        impl_->statistics.total_bytes_downloaded += ctx->bytes_received;
     }
     ctx->state = failure ? download_state::failed : download_state::completed;
     ctx->error_message = failure.message;
@@ -1042,11 +1119,7 @@ auto file_transfer_client::finalize_download(uint64_t handle_id) -> result<void>
     transfer_result outcome{!failure, ctx->remote_name, ctx->bytes_received, failure.message};
     ctx->cv.notify_all();
     lock.unlock();
-    if (!failure) {
-        std::lock_guard stats_lock(impl_->stats_mutex);
-        impl_->statistics.total_bytes_downloaded += outcome.bytes_transferred;
-    }
-    if (auto callback = impl_->completion_callback()) callback(outcome);
+    if (auto callback = impl_->completion_callback()) { try { callback(outcome); } catch (...) {} }
     return failure ? result<void>{unexpected{failure}} : result<void>{};
 }
 
@@ -1073,7 +1146,8 @@ auto file_transfer_client::cancel_download(uint64_t handle_id) -> result<void> {
     transfer_result outcome{false, ctx->remote_name, ctx->bytes_received, ctx->error_message};
     ctx->cv.notify_all();
     lock.unlock();
-    if (auto callback = impl_->completion_callback()) callback(outcome);
+    impl_->fail_channel(ctx->tid, error{error_code::invalid_state_transition, "Download cancelled"});
+    if (auto callback = impl_->completion_callback()) { try { callback(outcome); } catch (...) {} }
     return {};
 }
 
@@ -1096,6 +1170,11 @@ auto file_transfer_client::set_download_metadata(
     }
 
     std::lock_guard ctx_lock(ctx->mutex);
+    if (ctx->state != download_state::initializing || !chunk_config{chunk_size}.validate() ||
+        total_chunks != file_size / chunk_size + (file_size % chunk_size != 0) ||
+        file_size > static_cast<uint64_t>(std::numeric_limits<std::streamoff>::max()) ||
+        (ctx->options.verify_hash && sha256_hash.size() != 64))
+        return unexpected{error{error_code::invalid_configuration, "Invalid or repeated download metadata"}};
     ctx->file_size = file_size;
     ctx->total_chunks = total_chunks;
     ctx->chunk_size = chunk_size;
@@ -1109,6 +1188,7 @@ auto file_transfer_client::set_download_metadata(
         file.put('\0');
     }
     file.close();
+    if (!file) return unexpected{error{error_code::file_write_error, "Cannot allocate download temporary file"}};
 
     return {};
 }

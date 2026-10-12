@@ -1,27 +1,27 @@
 #include "protocol_peer.h"
 #include <kcenon/file_transfer/client/file_transfer_client.h>
 #include <kcenon/file_transfer/server/file_transfer_server.h>
+#include <kcenon/network/core/messaging_server.h>
 #include <future>
 
 namespace kcenon::file_transfer::test {
 class DownloadControlTest : public ::testing::Test {
 protected:
     std::filesystem::path root;
-    std::unique_ptr<file_transfer_server> server;
+    std::shared_ptr<network::core::messaging_server> server;
     std::unique_ptr<file_transfer_client> client;
     std::vector<std::byte> bytes = std::vector<std::byte>(1024, std::byte{42});
     void SetUp() override {
         root = std::filesystem::temp_directory_path() / ("fts-download-control-" + transfer_id::generate().to_string());
-        auto built = file_transfer_server::builder().with_storage_directory(root / "server").build();
-        ASSERT_TRUE(built); server = std::make_unique<file_transfer_server>(std::move(built.value()));
-        auto port = available_port(); ASSERT_TRUE(server->start({"127.0.0.1", port}));
+        server = std::make_shared<network::core::messaging_server>("download-control-peer");
+        auto port = available_port(); ASSERT_TRUE(server->start_server(port).is_ok());
         auto c = file_transfer_client::builder().build(); ASSERT_TRUE(c);
         client = std::make_unique<file_transfer_client>(std::move(c.value()));
         ASSERT_TRUE(client->connect({"127.0.0.1", port}));
     }
     void TearDown() override {
         client.reset();
-        if (server && server->is_running()) (void)server->stop();
+        if (server) (void)server->stop_server();
         server.reset();
         std::error_code ec; std::filesystem::remove_all(root, ec);
     }
@@ -62,7 +62,8 @@ TEST_F(DownloadControlTest, CancelNotifiesOnceAndCleansTemporaryFile) {
     ASSERT_EQ(waiter.wait_for(2s), std::future_status::ready);
     auto result = waiter.get(); ASSERT_TRUE(result); EXPECT_FALSE(result.value().success);
     EXPECT_EQ(handle.get_status(), transfer_status::cancelled); EXPECT_EQ(callbacks, 1);
-    EXPECT_FALSE(std::filesystem::exists(root / "cancel.bin.tmp"));
+    for (const auto& entry : std::filesystem::directory_iterator(root))
+        EXPECT_NE(entry.path().extension(), ".part");
     EXPECT_FALSE(std::filesystem::exists(root / "cancel.bin"));
     EXPECT_FALSE(client->process_download_chunk(handle.get_id(), last_chunk()));
 }

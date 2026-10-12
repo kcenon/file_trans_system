@@ -272,6 +272,7 @@ endif()
 set(FILE_TRANS_SOURCES
     src/file_transfer.cpp
     src/core/checksum.cpp
+    src/core/file_commit.cpp
     src/core/chunk_splitter.cpp
     src/core/chunk_assembler.cpp
     src/core/compression_engine.cpp
