@@ -62,6 +62,7 @@ set(UNIT_TEST_SOURCES
     unit/protocol/test_types.cpp
     unit/state/test_state_management.cpp
     unit/server/test_server_pipeline.cpp
+    unit/server/test_storage_manager.cpp
     unit/server/test_pipeline_jobs.cpp
     unit/server/test_quota_manager.cpp
     unit/server/test_storage_manager.cpp

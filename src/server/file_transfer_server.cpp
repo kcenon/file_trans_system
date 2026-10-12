@@ -5,6 +5,7 @@
 
 #include "kcenon/file_transfer/server/file_transfer_server.h"
 #include "kcenon/file_transfer/core/logging.h"
+#include "server_runtime.h"
 
 #include <chrono>
 #include <filesystem>
@@ -29,6 +30,7 @@ struct file_transfer_server::impl {
     std::function<void(const client_info&)> disconnect_callback;
     std::function<void(const transfer_result&)> complete_callback;
     std::function<void(const transfer_progress&)> progress_callback;
+    mutable std::mutex callbacks_mutex;
 
     // Statistics
     mutable std::mutex stats_mutex;
@@ -42,6 +44,13 @@ struct file_transfer_server::impl {
     std::shared_mutex clients_mutex;
     std::unordered_map<uint64_t, client_info> clients;
     std::atomic<uint64_t> next_client_id{1};
+    std::shared_ptr<detail::server_runtime> runtime;
+
+    auto callbacks() const -> detail::server_callbacks {
+        std::lock_guard lock(callbacks_mutex);
+        return {upload_callback, download_callback, connect_callback,
+                disconnect_callback, complete_callback, progress_callback};
+    }
 
     // Helper to log client connection
     void log_client_connected(const client_info& info) {
@@ -188,6 +197,13 @@ auto file_transfer_server::builder::with_cloud_cache_directory(
 }
 
 auto file_transfer_server::builder::build() -> result<file_transfer_server> {
+    auto chunk_validation = chunk_config{config_.chunk_size}.validate();
+    if (!chunk_validation) return unexpected{chunk_validation.error()};
+    if (config_.cloud_config && config_.cloud_config->credentials) {
+        return unexpected{error{error_code::invalid_configuration,
+            "Configure credentials on the cloud storage instance before with_cloud_storage(); "
+            "the storage interface cannot replace an existing backend's credentials"}};
+    }
     // Validate configuration based on storage mode
     if (!config_.is_valid()) {
         switch (config_.storage) {
@@ -272,8 +288,25 @@ auto file_transfer_server::start(const endpoint& listen_addr) -> result<void> {
     impl_->current_state = server_state::starting;
     impl_->listen_port = listen_addr.port;
 
+    auto* owner = impl_.get();
+    impl_->runtime = std::make_shared<detail::server_runtime>(impl_->config,
+        [owner] { return owner->callbacks(); });
+    auto initialized = impl_->runtime->start();
+    if (!initialized) {
+        impl_->runtime->stop();
+        impl_->current_state = server_state::stopped;
+        impl_->listen_port = 0;
+        return initialized;
+    }
+    auto runtime = std::weak_ptr<detail::server_runtime>{impl_->runtime};
+    impl_->network_server->set_connection_callback([runtime](auto session) {
+        if (auto active = runtime.lock()) active->connect(session);
+        else session->close();
+    });
+
     auto result = impl_->network_server->start_server(listen_addr.port);
     if (result.is_err()) {
+        impl_->runtime->stop();
         impl_->current_state = server_state::stopped;
         FT_LOG_ERROR(log_category::server,
             "Failed to start network server: " + result.error().message);
@@ -306,6 +339,8 @@ auto file_transfer_server::stop() -> result<void> {
                                "Failed to stop network server: " + result.error().message}};
     }
 
+    if (impl_->runtime) impl_->runtime->stop();
+
     impl_->current_state = server_state::stopped;
     impl_->listen_port = 0;
     FT_LOG_INFO(log_category::server, "Server stopped");
@@ -327,40 +362,47 @@ auto file_transfer_server::port() const -> uint16_t {
 void file_transfer_server::on_upload_request(
     std::function<bool(const upload_request&)> callback) {
     FT_LOG_DEBUG(log_category::server, "Upload request callback registered");
+    std::lock_guard lock(impl_->callbacks_mutex);
     impl_->upload_callback = std::move(callback);
 }
 
 void file_transfer_server::on_download_request(
     std::function<bool(const download_request&)> callback) {
     FT_LOG_DEBUG(log_category::server, "Download request callback registered");
+    std::lock_guard lock(impl_->callbacks_mutex);
     impl_->download_callback = std::move(callback);
 }
 
 void file_transfer_server::on_client_connected(
     std::function<void(const client_info&)> callback) {
     FT_LOG_DEBUG(log_category::server, "Client connected callback registered");
+    std::lock_guard lock(impl_->callbacks_mutex);
     impl_->connect_callback = std::move(callback);
 }
 
 void file_transfer_server::on_client_disconnected(
     std::function<void(const client_info&)> callback) {
     FT_LOG_DEBUG(log_category::server, "Client disconnected callback registered");
+    std::lock_guard lock(impl_->callbacks_mutex);
     impl_->disconnect_callback = std::move(callback);
 }
 
 void file_transfer_server::on_transfer_complete(
     std::function<void(const transfer_result&)> callback) {
     FT_LOG_DEBUG(log_category::server, "Transfer complete callback registered");
+    std::lock_guard lock(impl_->callbacks_mutex);
     impl_->complete_callback = std::move(callback);
 }
 
 void file_transfer_server::on_progress(
     std::function<void(const transfer_progress&)> callback) {
     FT_LOG_DEBUG(log_category::server, "Progress callback registered");
+    std::lock_guard lock(impl_->callbacks_mutex);
     impl_->progress_callback = std::move(callback);
 }
 
 auto file_transfer_server::get_statistics() const -> server_statistics {
+    if (impl_->runtime) return impl_->runtime->statistics();
     std::lock_guard lock(impl_->stats_mutex);
     auto stats = impl_->statistics;
     std::shared_lock clients_lock(impl_->clients_mutex);
@@ -369,6 +411,7 @@ auto file_transfer_server::get_statistics() const -> server_statistics {
 }
 
 auto file_transfer_server::get_storage_stats() const -> storage_stats {
+    if (impl_->runtime) return impl_->runtime->storage_statistics();
     std::lock_guard lock(impl_->stats_mutex);
     return impl_->storage_statistics;
 }

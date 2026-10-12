@@ -515,14 +515,15 @@ auto local_storage_backend::full_path(const std::string& key) const
 // ============================================================================
 
 struct cloud_storage_backend::impl {
-    std::unique_ptr<cloud_storage_interface> storage;
+    std::shared_ptr<cloud_storage_interface> storage;
+    std::string key_prefix;
     storage_backend_type backend_type;
     std::string backend_name;
 
     mutable std::shared_mutex mutex;
     std::function<void(const storage_progress&)> progress_callback;
 
-    impl(std::unique_ptr<cloud_storage_interface> s, storage_backend_type type)
+    impl(std::shared_ptr<cloud_storage_interface> s, storage_backend_type type)
         : storage(std::move(s)), backend_type(type) {
         switch (type) {
             case storage_backend_type::cloud_s3:
@@ -549,7 +550,7 @@ struct cloud_storage_backend::impl {
 };
 
 cloud_storage_backend::cloud_storage_backend(
-    std::unique_ptr<cloud_storage_interface> storage,
+    std::shared_ptr<cloud_storage_interface> storage,
     storage_backend_type backend_type)
     : impl_(std::make_unique<impl>(std::move(storage), backend_type)) {}
 
@@ -571,6 +572,15 @@ auto cloud_storage_backend::create(
 
 auto cloud_storage_backend::type() const -> storage_backend_type {
     return impl_->backend_type;
+}
+
+auto cloud_storage_backend::create_shared(
+    std::shared_ptr<cloud_storage_interface> storage,
+    storage_backend_type type, std::string prefix) -> std::unique_ptr<cloud_storage_backend> {
+    if (!storage) return nullptr;
+    auto backend = std::unique_ptr<cloud_storage_backend>(new cloud_storage_backend(std::move(storage), type));
+    backend->impl_->key_prefix = std::move(prefix);
+    return backend;
 }
 
 auto cloud_storage_backend::name() const -> std::string_view {
@@ -631,7 +641,7 @@ auto cloud_storage_backend::store(
         cloud_options.metadata.emplace_back(k, v);
     }
 
-    auto upload_result = impl_->storage->upload(key, data, cloud_options);
+    auto upload_result = impl_->storage->upload(impl_->key_prefix + key, data, cloud_options);
     if (!upload_result.has_value()) {
         return unexpected{error{
             error_code::file_write_error,
@@ -671,7 +681,7 @@ auto cloud_storage_backend::store_file(
         cloud_options.metadata.emplace_back(k, v);
     }
 
-    auto upload_result = impl_->storage->upload_file(file_path, key, cloud_options);
+    auto upload_result = impl_->storage->upload_file(file_path, impl_->key_prefix + key, cloud_options);
     if (!upload_result.has_value()) {
         return unexpected{error{
             error_code::file_write_error,
@@ -697,7 +707,7 @@ auto cloud_storage_backend::retrieve(
     const std::string& key,
     const retrieve_options& /*options*/) -> result<std::vector<std::byte>> {
 
-    auto download_result = impl_->storage->download(key);
+    auto download_result = impl_->storage->download(impl_->key_prefix + key);
     if (!download_result.has_value()) {
         return unexpected{error{
             error_code::file_read_error,
@@ -715,7 +725,7 @@ auto cloud_storage_backend::retrieve_file(
 
     auto start_time = std::chrono::steady_clock::now();
 
-    auto download_res = impl_->storage->download_file(key, file_path);
+    auto download_res = impl_->storage->download_file(impl_->key_prefix + key, file_path);
     if (!download_res.has_value()) {
         return unexpected{error{
             error_code::file_read_error,
@@ -734,7 +744,7 @@ auto cloud_storage_backend::retrieve_file(
 
     // Convert cloud metadata to stored object metadata
     const auto& cloud_meta = download_res.value().metadata;
-    res.metadata.key = cloud_meta.key;
+    res.metadata.key = key;
     res.metadata.size = cloud_meta.size;
     res.metadata.last_modified = cloud_meta.last_modified;
     res.metadata.etag = cloud_meta.etag;
@@ -748,7 +758,7 @@ auto cloud_storage_backend::retrieve_file(
 }
 
 auto cloud_storage_backend::remove(const std::string& key) -> result<void> {
-    auto delete_result = impl_->storage->delete_object(key);
+    auto delete_result = impl_->storage->delete_object(impl_->key_prefix + key);
     if (!delete_result.has_value()) {
         return unexpected{error{
             error_code::file_access_denied,
@@ -759,7 +769,7 @@ auto cloud_storage_backend::remove(const std::string& key) -> result<void> {
 }
 
 auto cloud_storage_backend::exists(const std::string& key) -> result<bool> {
-    auto exists_result = impl_->storage->exists(key);
+    auto exists_result = impl_->storage->exists(impl_->key_prefix + key);
     if (!exists_result.has_value()) {
         return unexpected{error{
             error_code::file_read_error,
@@ -772,7 +782,7 @@ auto cloud_storage_backend::exists(const std::string& key) -> result<bool> {
 auto cloud_storage_backend::get_metadata(const std::string& key)
     -> result<stored_object_metadata> {
 
-    auto meta_result = impl_->storage->get_metadata(key);
+    auto meta_result = impl_->storage->get_metadata(impl_->key_prefix + key);
     if (!meta_result.has_value()) {
         return unexpected{error{
             error_code::file_read_error,
@@ -782,7 +792,7 @@ auto cloud_storage_backend::get_metadata(const std::string& key)
 
     const auto& cloud_meta = meta_result.value();
     stored_object_metadata metadata;
-    metadata.key = cloud_meta.key;
+    metadata.key = key;
     metadata.size = cloud_meta.size;
     metadata.last_modified = cloud_meta.last_modified;
     metadata.etag = cloud_meta.etag;
@@ -815,7 +825,7 @@ auto cloud_storage_backend::list(const list_storage_options& options)
     -> result<list_storage_result> {
 
     list_objects_options cloud_options;
-    cloud_options.prefix = options.prefix;
+    cloud_options.prefix = impl_->key_prefix + options.prefix.value_or("");
     cloud_options.max_keys = options.max_results;
     cloud_options.continuation_token = options.continuation_token;
 
@@ -834,7 +844,8 @@ auto cloud_storage_backend::list(const list_storage_options& options)
 
     for (const auto& cloud_meta : list_result.value().objects) {
         stored_object_metadata metadata;
-        metadata.key = cloud_meta.key;
+        if (!cloud_meta.key.starts_with(impl_->key_prefix)) continue;
+        metadata.key = cloud_meta.key.substr(impl_->key_prefix.size());
         metadata.size = cloud_meta.size;
         metadata.last_modified = cloud_meta.last_modified;
         metadata.etag = cloud_meta.etag;
@@ -1001,8 +1012,9 @@ auto storage_manager::initialize() -> result<void> {
     if (impl_->config.secondary_backend) {
         auto secondary_result = impl_->config.secondary_backend->connect();
         if (!secondary_result.has_value()) {
-            // Log warning but don't fail
             impl_->report_error("", secondary_result.error());
+            (void)impl_->config.primary_backend->disconnect();
+            return unexpected{secondary_result.error()};
         }
     }
 
@@ -1054,8 +1066,8 @@ auto storage_manager::store(
     if (impl_->config.replicate_writes && impl_->config.secondary_backend) {
         auto secondary_result = impl_->config.secondary_backend->store(key, data, options);
         if (!secondary_result.has_value()) {
-            // Log error but don't fail the operation
             impl_->report_error(key, secondary_result.error());
+            return unexpected{secondary_result.error()};
         }
     }
 
@@ -1090,6 +1102,7 @@ auto storage_manager::store_file(
             key, file_path, options);
         if (!secondary_result.has_value()) {
             impl_->report_error(key, secondary_result.error());
+            return unexpected{secondary_result.error()};
         }
     }
 
@@ -1254,6 +1267,7 @@ auto storage_manager::list(const list_storage_options& options)
 
         // Get from primary
         auto primary_result = impl_->config.primary_backend->list(options);
+        if (!primary_result) return unexpected{primary_result.error()};
         if (primary_result.has_value()) {
             for (auto& obj : primary_result.value().objects) {
                 objects_map[obj.key] = std::move(obj);
@@ -1262,6 +1276,7 @@ auto storage_manager::list(const list_storage_options& options)
 
         // Get from secondary
         auto secondary_result = impl_->config.secondary_backend->list(options);
+        if (!secondary_result) return unexpected{secondary_result.error()};
         if (secondary_result.has_value()) {
             for (auto& obj : secondary_result.value().objects) {
                 if (objects_map.find(obj.key) == objects_map.end()) {
