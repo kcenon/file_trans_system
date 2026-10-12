@@ -291,8 +291,9 @@ class server_runtime : public std::enable_shared_from_this<server_runtime> {
             throw std::invalid_argument(stored.error().message);
         }
         if (stored.value().bytes_stored != op.size) throw std::invalid_argument("Backend did not store the complete file");
-        send(client, message_type::upload_ack, msg_upload_ack{id.bytes, 1, op.filename});
+        auto filename = op.filename;
         finish(id, true);
+        send(client, message_type::upload_ack, msg_upload_ack{id.bytes, 1, filename});
     }
     void send_next(session& client, operation& op) {
         if (op.paused) return;

@@ -5,6 +5,7 @@
 set(INTEGRATION_TEST_SOURCES
     test_server_protocol.cpp
     test_download_control.cpp
+    test_public_upload.cpp
     test_basic_scenarios.cpp
     test_error_advanced_scenarios.cpp
     test_concurrency.cpp

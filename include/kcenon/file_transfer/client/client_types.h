@@ -13,6 +13,7 @@
 #include <string>
 
 #include "kcenon/file_transfer/core/types.h"
+#include "kcenon/file_transfer/core/compression_types.h"
 
 namespace kcenon::file_transfer {
 
@@ -55,20 +56,10 @@ struct reconnect_policy {
 /**
  * @brief Compression mode for transfers
  */
-enum class compression_mode {
-    none,
-    always,
-    adaptive
-};
 
 /**
  * @brief Compression level
  */
-enum class compression_level {
-    fast,
-    balanced,
-    best
-};
 
 /**
  * @brief Progress callback configuration
@@ -94,6 +85,7 @@ struct client_config {
     std::optional<std::size_t> upload_bandwidth_limit;
     std::optional<std::size_t> download_bandwidth_limit;
     std::chrono::milliseconds connect_timeout{30000};
+    std::chrono::milliseconds transfer_timeout{30000}; ///< Deadline for each protocol response
     progress_config progress;              ///< Progress callback configuration
 
     // Encryption settings

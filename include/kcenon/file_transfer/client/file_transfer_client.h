@@ -95,6 +95,9 @@ public:
          */
         auto with_connect_timeout(std::chrono::milliseconds timeout) -> builder&;
 
+        /// Set the deadline for each transfer protocol response.
+        auto with_transfer_timeout(std::chrono::milliseconds timeout) -> builder&;
+
         /**
          * @brief Set progress callback interval
          * @param interval Interval between progress callbacks (default: 100ms)

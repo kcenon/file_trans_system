@@ -145,7 +145,7 @@ public:
         std::vector<std::byte> output(static_cast<std::size_t>(max_dst_size));
 
         int compressed_size = 0;
-        if (level_ == compression_level::high) {
+        if (level_ != compression_level::fast) {
             compressed_size = LZ4_compress_HC(
                 reinterpret_cast<const char*>(input.data()),
                 reinterpret_cast<char*>(output.data()),

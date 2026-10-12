@@ -7,6 +7,7 @@
 #define KCENON_FILE_TRANSFER_CORE_COMPRESSION_ENGINE_H
 
 #include <kcenon/file_transfer/core/types.h>
+#include <kcenon/file_transfer/core/compression_types.h>
 
 #include <cstddef>
 #include <memory>
@@ -19,19 +20,10 @@ namespace kcenon::file_transfer {
 /**
  * @brief Compression mode for chunk processing
  */
-enum class compression_mode {
-    disabled,  ///< No compression
-    enabled,   ///< Always compress
-    adaptive   ///< Auto-detect based on data compressibility (default)
-};
 
 /**
  * @brief Compression level
  */
-enum class compression_level {
-    fast,     ///< LZ4 default compression (faster)
-    high      ///< LZ4 HC compression (higher ratio)
-};
 
 /**
  * @brief Compression statistics for adaptive compression optimization
