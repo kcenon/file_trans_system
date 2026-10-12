@@ -9,7 +9,7 @@
 #include "kcenon/file_transfer/server/server_pipeline.h"
 #include "kcenon/file_transfer/server/server_types.h"
 #include "kcenon/file_transfer/server/storage_manager.h"
-#include <kcenon/network/session/messaging_session.h>
+#include <kcenon/file_transfer/transport/transfer_listener.h>
 
 #include <condition_variable>
 #include <deque>
@@ -47,7 +47,7 @@ struct server_callbacks {
 // and pipeline work never blocks the network I/O executor. Downloads are
 // acknowledged chunk by chunk, bounding both peers' in-flight buffers.
 class server_runtime : public std::enable_shared_from_this<server_runtime> {
-    using session = kcenon::network::session::messaging_session;
+    using session = accepted_transport;
     struct operation {
         transfer_id id;
         session* owner{};
@@ -90,7 +90,7 @@ class server_runtime : public std::enable_shared_from_this<server_runtime> {
     }
     template<class T> auto send(session& client, message_type type, const T& value) -> bool {
         auto encoded = wire::encode(type, value);
-        return encoded && client.send(std::move(encoded.value())).is_ok();
+        return encoded && client.send(std::move(encoded.value())).has_value();
     }
     template<class T> auto signed_send(session& client, message_type type, T value,
         const std::shared_ptr<transfer_crypto>& crypto) -> bool {
@@ -599,11 +599,11 @@ public:
         auto session_weak = std::weak_ptr<session>{client};
         // The dependency reports the same server_id for every session. Capture
         // the actual session identity rather than using that string as a key.
-        client->set_disconnection_callback([weak, identity = client.get()](const std::string&) {
+        client->on_disconnect([weak, identity = client.get()] {
             if (auto self = weak.lock()) self->post([self, identity] { self->remove_peer(identity); });
         });
         auto decoder = std::make_shared<wire::stream_decoder>();
-        client->set_receive_callback([weak, session_weak, decoder](const std::vector<uint8_t>& data) {
+        client->on_receive([weak, session_weak, decoder](const std::vector<uint8_t>& data) {
             auto self = weak.lock(); auto peer = session_weak.lock();
             if (!self || !peer) return;
             auto frames = decoder->feed(data);
@@ -616,9 +616,6 @@ public:
                 }
             }
         });
-        // messaging_session closes itself after its error callback returns.
-        // Calling close() inside that callback would reacquire its mutex.
-        client->set_error_callback({});
         post([self = shared_from_this(), client] {
             if (self->peers_.size() >= self->config_.max_connections) {
                 self->reject(*client, message_type::error, {}, error{error_code::connection_refused, "Connection limit exceeded"});

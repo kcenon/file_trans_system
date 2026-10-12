@@ -22,7 +22,7 @@ struct file_transfer_server::impl {
     std::atomic<server_state> current_state{server_state::stopped};
     uint16_t listen_port{0};
 
-    std::shared_ptr<kcenon::network::core::messaging_server> network_server;
+    std::unique_ptr<transfer_listener> listener;
 
     // Callbacks
     std::function<bool(const upload_request&)> upload_callback;
@@ -207,7 +207,20 @@ auto file_transfer_server::builder::with_cloud_cache_directory(
     return *this;
 }
 
+auto file_transfer_server::builder::with_transport(transfer_transport_config config) -> builder& {
+    config_.transport = std::move(config); return *this;
+}
+
 auto file_transfer_server::builder::build() -> result<file_transfer_server> {
+    if (auto quic = std::get_if<quic_transport_config>(&config_.transport)) {
+#ifndef FILE_TRANS_ENABLE_QUIC
+        return unexpected{error{error_code::invalid_configuration, "QUIC transport is disabled in this build"}};
+#else
+        if (!quic->cert_path || !quic->key_path || quic->cert_path->empty() || quic->key_path->empty())
+            return unexpected{error{error_code::invalid_configuration, "QUIC server requires certificate and key files"}};
+#endif
+    }
+
     if (config_.enable_encryption || config_.require_encryption) {
         auto valid = transfer_crypto::validate_secret(config_.encryption_key, config_.encryption_password);
         if (!valid) return unexpected{valid.error()};
@@ -277,8 +290,7 @@ file_transfer_server::file_transfer_server(server_config config)
     // Initialize logger (safe to call multiple times)
     get_logger().initialize();
 
-    impl_->network_server = std::make_shared<kcenon::network::core::messaging_server>(
-        "file_transfer_server");
+    impl_->listener = transfer_listener::create(impl_->config.transport);
 }
 
 file_transfer_server::file_transfer_server(file_transfer_server&&) noexcept = default;
@@ -314,13 +326,13 @@ auto file_transfer_server::start(const endpoint& listen_addr) -> result<void> {
         return initialized;
     }
     auto runtime = std::weak_ptr<detail::server_runtime>{impl_->runtime};
-    impl_->network_server->set_connection_callback([runtime](auto session) {
+    impl_->listener->on_accept([runtime](auto session) {
         if (auto active = runtime.lock()) active->connect(session);
         else session->close();
     });
 
-    auto result = impl_->network_server->start_server(listen_addr.port);
-    if (result.is_err()) {
+    auto result = impl_->listener->start(listen_addr);
+    if (!result) {
         impl_->runtime->stop();
         impl_->current_state = server_state::stopped;
         FT_LOG_ERROR(log_category::server,
@@ -345,8 +357,8 @@ auto file_transfer_server::stop() -> result<void> {
     FT_LOG_INFO(log_category::server, "Stopping server");
     impl_->current_state = server_state::stopping;
 
-    auto result = impl_->network_server->stop_server();
-    if (result.is_err()) {
+    auto result = impl_->listener->stop();
+    if (!result) {
         impl_->current_state = server_state::running;
         FT_LOG_ERROR(log_category::server,
             "Failed to stop network server: " + result.error().message);
@@ -361,6 +373,8 @@ auto file_transfer_server::stop() -> result<void> {
     FT_LOG_INFO(log_category::server, "Server stopped");
     return {};
 }
+
+auto file_transfer_server::transport_name() const -> std::string { return impl_->listener->type(); }
 
 auto file_transfer_server::is_running() const -> bool {
     return impl_->current_state == server_state::running;

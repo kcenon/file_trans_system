@@ -75,7 +75,8 @@ struct quic_transport::impl {
 
             // Emit event for connected/disconnected
             if (event_callback) {
-                transport_event_data event_data;
+                if (new_state != transport_state::connected && new_state != transport_state::disconnected && new_state != transport_state::error) return;
+                transport_event_data event_data{};
                 if (new_state == transport_state::connected) {
                     event_data.event = transport_event::connected;
                 } else if (new_state == transport_state::disconnected) {
@@ -154,8 +155,8 @@ quic_transport::quic_transport(quic_transport_config config)
 }
 
 quic_transport::~quic_transport() {
-    if (impl_ && is_connected()) {
-        (void)disconnect();
+    if (impl_) {
+        (void)impl_->quic_client->stop_client();
     }
 }
 
@@ -214,7 +215,7 @@ auto quic_transport::connect(
             std::transform(data.begin(), data.end(), byte_data.begin(),
                 [](std::uint8_t b) { return std::byte{b}; });
 
-            {
+            if (!impl_->config.event_delivery_only) {
                 std::lock_guard lock(impl_->receive_mutex);
                 impl_->receive_queue.push(byte_data);
             }
@@ -697,7 +698,7 @@ auto quic_transport::connect_with_0rtt(
             std::transform(data.begin(), data.end(), byte_data.begin(),
                 [](std::uint8_t b) { return std::byte{b}; });
 
-            {
+            if (!impl_->config.event_delivery_only) {
                 std::lock_guard lock(impl_->receive_mutex);
                 impl_->receive_queue.push(byte_data);
             }

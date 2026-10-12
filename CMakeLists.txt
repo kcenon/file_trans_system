@@ -32,6 +32,7 @@ option(FILE_TRANS_BUILD_INTEGRATION_TESTS "Build integration tests (requires net
 option(FILE_TRANS_BUILD_EXAMPLES "Build examples" ON)
 option(FILE_TRANS_BUILD_BENCHMARKS "Build benchmarks" OFF)
 option(FILE_TRANS_ENABLE_LZ4 "Enable LZ4 compression" ON)
+option(FILE_TRANS_ENABLE_QUIC "Enable experimental public QUIC (unqualified pinned dependency)" OFF)
 option(FILE_TRANS_ENABLE_ENCRYPTION "Enable encryption support (requires OpenSSL)" ON)
 option(FILE_TRANS_ENABLE_COVERAGE "Enable code coverage" OFF)
 
@@ -293,6 +294,7 @@ set(FILE_TRANS_SOURCES
     src/server/storage_manager.cpp
     src/server/storage_policy.cpp
     src/client/file_transfer_client.cpp
+    src/transport/transfer_listener.cpp
     src/transport/tcp_transport.cpp
     src/transport/quic_transport.cpp
     src/transport/session_resumption.cpp
@@ -356,6 +358,10 @@ if(FILE_TRANS_ENABLE_LZ4 AND LZ4_FOUND)
     elseif(LZ4_LIBRARIES)
         target_link_libraries(FileTransSystem PRIVATE ${LZ4_LIBRARIES})
     endif()
+endif()
+
+if(FILE_TRANS_ENABLE_QUIC)
+    target_compile_definitions(FileTransSystem PUBLIC FILE_TRANS_ENABLE_QUIC)
 endif()
 
 # OpenSSL encryption support (compile definitions and includes only)

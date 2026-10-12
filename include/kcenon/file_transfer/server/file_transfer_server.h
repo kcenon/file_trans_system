@@ -45,6 +45,7 @@ public:
     class builder {
     public:
         builder();
+        auto with_transport(transfer_transport_config config) -> builder&;
 
         /**
          * @brief Set storage directory for uploaded files
@@ -178,6 +179,7 @@ public:
      * @return true if running, false otherwise
      */
     [[nodiscard]] auto is_running() const -> bool;
+    [[nodiscard]] auto transport_name() const -> std::string;
 
     /**
      * @brief Get current server state

@@ -44,6 +44,7 @@ public:
     class builder {
     public:
         builder();
+        auto with_transport(transfer_transport_config config) -> builder&;
 
         /**
          * @brief Set compression mode
@@ -168,6 +169,8 @@ public:
      * @return true if connected, false otherwise
      */
     [[nodiscard]] auto is_connected() const -> bool;
+    [[nodiscard]] auto network_bytes() const -> std::pair<uint64_t, uint64_t>;
+    [[nodiscard]] auto transport_name() const -> std::string;
 
     /**
      * @brief Get current connection state

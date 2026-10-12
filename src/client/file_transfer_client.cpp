@@ -24,12 +24,14 @@
 #include <deque>
 #include <future>
 #include <set>
+#include <cstring>
 
 #ifdef FILE_TRANS_ENABLE_LZ4
 #include <lz4.h>
 #endif
 
-#include <kcenon/network/core/messaging_client.h>
+#include <kcenon/file_transfer/transport/tcp_transport.h>
+#include <kcenon/file_transfer/transport/quic_transport.h>
 
 // Windows compatibility: undefine macros from Windows headers that conflict
 // with std::ofstream::write() method
@@ -340,7 +342,7 @@ struct file_transfer_client::impl {
     std::atomic<connection_state> current_state{connection_state::disconnected};
     endpoint server_endpoint;
 
-    std::shared_ptr<kcenon::network::core::messaging_client> network_client;
+    std::unique_ptr<transport_interface> transport;
 
     // Callbacks
     std::function<void(const transfer_progress&)> progress_callback;
@@ -403,7 +405,7 @@ struct file_transfer_client::impl {
     ~impl() {
         closing = true;
         fail_channels(error{error_code::connection_lost, "Client shut down"});
-        if (network_client) (void)network_client->stop_client();
+        if (transport) (void)transport->disconnect();
         for (auto& job : jobs) if (job.valid()) job.wait();
     }
     auto open_channel(const transfer_id& id) -> std::shared_ptr<channel> {
@@ -440,8 +442,8 @@ struct file_transfer_client::impl {
     template<class T> auto send(message_type type, const T& message) -> result<void> {
         auto bytes = wire::encode(type, message);
         if (!bytes) return unexpected{bytes.error()};
-        auto sent = network_client->send_packet(std::move(bytes.value()));
-        if (sent.is_err()) return unexpected{error{error_code::connection_lost, sent.error().message}};
+        auto sent = transport->send(std::as_bytes(std::span{bytes.value()}));
+        if (!sent) return unexpected{error{error_code::connection_lost, sent.error().message}};
         return {};
     }
     void receive_bytes(const std::vector<uint8_t>& bytes) {
@@ -635,7 +637,16 @@ auto file_transfer_client::builder::with_encryption_key(
     return *this;
 }
 
+auto file_transfer_client::builder::with_transport(transfer_transport_config config) -> builder& {
+    config_.transport = std::move(config); return *this;
+}
+
 auto file_transfer_client::builder::build() -> result<file_transfer_client> {
+#ifndef FILE_TRANS_ENABLE_QUIC
+    if (std::holds_alternative<quic_transport_config>(config_.transport))
+        return unexpected{error{error_code::invalid_configuration, "QUIC transport is disabled in this build"}};
+#endif
+
     if (config_.enable_encryption) {
         auto valid = transfer_crypto::validate_secret(config_.encryption_key, config_.encryption_password);
         if (!valid) return unexpected{valid.error()};
@@ -658,26 +669,22 @@ file_transfer_client::file_transfer_client(client_config config)
     // Initialize logger (safe to call multiple times)
     get_logger().initialize();
 
-    impl_->network_client = std::make_shared<kcenon::network::core::messaging_client>(
-        "file_transfer_client");
+    impl_->transport = std::visit([](auto config) -> std::unique_ptr<transport_interface> {
+        config.event_delivery_only = true;
+        if constexpr (std::is_same_v<decltype(config), tcp_transport_config>) return tcp_transport::create(config);
+        else return quic_transport::create(config);
+    }, impl_->config.transport);
     auto* state = impl_.get();
-    impl_->network_client->set_receive_callback([state](const auto& bytes) { state->receive_bytes(bytes); });
-    impl_->network_client->set_connected_callback([state] {
-        std::lock_guard lock(state->connection_mutex);
-        state->transport_connected = true; state->connection_cv.notify_all();
-    });
-    impl_->network_client->set_disconnected_callback([state] {
-        {
-            std::lock_guard lock(state->connection_mutex);
-            state->transport_connected = false; state->connection_error = "Connection lost";
-            state->connection_cv.notify_all();
+    impl_->transport->on_event([state](const transport_event_data& event) {
+        if (event.event == transport_event::data_received) {
+            std::vector<uint8_t> bytes(event.data.size());
+            std::memcpy(bytes.data(), event.data.data(), bytes.size()); state->receive_bytes(bytes);
+        } else if (event.event == transport_event::disconnected) {
+            state->fail_channels(error{error_code::connection_lost, "Connection lost"});
+            state->set_state(connection_state::disconnected);
+        } else if (event.event == transport_event::error) {
+            state->fail_channels(error{error_code::connection_lost, event.error_message});
         }
-        state->fail_channels(error{error_code::connection_lost, "Connection lost"});
-        state->set_state(connection_state::disconnected);
-    });
-    impl_->network_client->set_error_callback([state](std::error_code error) {
-        std::lock_guard lock(state->connection_mutex);
-        state->connection_error = error.message(); state->connection_cv.notify_all();
     });
 }
 
@@ -711,33 +718,9 @@ auto file_transfer_client::connect(const endpoint& server_addr) -> result<void> 
 
     impl_->set_state(connection_state::connecting);
     impl_->server_endpoint = server_addr;
-    {
-        std::lock_guard lock(impl_->connection_mutex);
-        impl_->transport_connected = false; impl_->connection_error.clear();
-        impl_->decoder = wire::stream_decoder{};
-    }
-
-    auto result = impl_->network_client->start_client(server_addr.host, server_addr.port);
-    if (result.is_err()) {
-        impl_->set_state(connection_state::disconnected);
-        FT_LOG_ERROR(log_category::client,
-            "Failed to connect: " + result.error().message);
-        return unexpected{error{error_code::internal_error,
-                               "Failed to connect: " + result.error().message}};
-    }
-
-    std::unique_lock lock(impl_->connection_mutex);
-    bool ready = impl_->connection_cv.wait_for(lock, impl_->config.connect_timeout, [&] {
-        return impl_->transport_connected || !impl_->connection_error.empty();
-    });
-    if (!ready || !impl_->transport_connected) {
-        auto message = ready ? impl_->connection_error : "Connection deadline exceeded";
-        lock.unlock();
-        (void)impl_->network_client->stop_client();
-        impl_->set_state(connection_state::disconnected);
-        return unexpected{error{ready ? error_code::connection_failed : error_code::connection_timeout, message}};
-    }
-    lock.unlock();
+    impl_->decoder = wire::stream_decoder{};
+    auto connected = impl_->transport->connect(server_addr, impl_->config.connect_timeout);
+    if (!connected) { impl_->set_state(connection_state::disconnected); return unexpected{connected.error()}; }
     impl_->set_state(connection_state::connected);
     FT_LOG_INFO(log_category::client, "Connected to server successfully");
     return {};
@@ -753,8 +736,8 @@ auto file_transfer_client::disconnect() -> result<void> {
     FT_LOG_INFO(log_category::client, "Disconnecting from server");
     impl_->fail_channels(error{error_code::connection_lost, "Client disconnected"});
 
-    auto result = impl_->network_client->stop_client();
-    if (result.is_err()) {
+    auto result = impl_->transport->disconnect();
+    if (!result) {
         FT_LOG_ERROR(log_category::client,
             "Failed to disconnect: " + result.error().message);
         return unexpected{error{error_code::internal_error,
@@ -768,6 +751,11 @@ auto file_transfer_client::disconnect() -> result<void> {
 
 auto file_transfer_client::is_connected() const -> bool {
     return impl_->current_state == connection_state::connected;
+}
+
+auto file_transfer_client::transport_name() const -> std::string { return std::string(impl_->transport->type()); }
+auto file_transfer_client::network_bytes() const -> std::pair<uint64_t, uint64_t> {
+    auto stats = impl_->transport->get_statistics(); return {stats.bytes_sent, stats.bytes_received};
 }
 
 auto file_transfer_client::state() const -> connection_state {

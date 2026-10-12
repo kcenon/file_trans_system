@@ -6,6 +6,7 @@
 #ifndef KCENON_FILE_TRANSFER_CLIENT_CLIENT_TYPES_H
 #define KCENON_FILE_TRANSFER_CLIENT_CLIENT_TYPES_H
 
+#include "kcenon/file_transfer/transport/transport_config.h"
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -78,6 +79,7 @@ struct progress_config {
  * @brief Client configuration
  */
 struct client_config {
+    transfer_transport_config transport = tcp_transport_config{};
     compression_mode compression = compression_mode::adaptive;
     compression_level comp_level = compression_level::fast;
     std::size_t chunk_size = 256 * 1024;  // 256KB
