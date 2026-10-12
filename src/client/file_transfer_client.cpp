@@ -6,6 +6,7 @@
 #include "kcenon/file_transfer/client/file_transfer_client.h"
 
 #include <kcenon/file_transfer/core/bandwidth_limiter.h>
+#include <kcenon/file_transfer/client/detail/reconnect_sequence.h>
 #include <kcenon/file_transfer/core/checksum.h>
 #include <kcenon/file_transfer/core/chunk_assembler.h>
 #include <kcenon/file_transfer/core/protocol_types.h>
@@ -396,17 +397,88 @@ struct file_transfer_client::impl {
     std::mutex jobs_mutex;
     std::vector<std::future<void>> jobs;
     std::atomic<bool> closing{false};
-    std::mutex connection_mutex;
-    std::condition_variable connection_cv;
-    bool transport_connected{false};
-    std::string connection_error;
+    std::mutex connection_operation_mutex;
+    std::mutex reconnect_mutex;
+    std::condition_variable reconnect_cv;
+    uint64_t connection_generation{};
+    std::stop_source connection_stop;
+    bool manual_disconnect{true}, retry_pending{};
+    std::deque<connection_state> state_events;
+    std::thread reconnect_worker;
     wire::stream_decoder decoder;
 
     ~impl() {
         closing = true;
+        { std::lock_guard lock(reconnect_mutex); manual_disconnect=true; connection_stop.request_stop(); ++connection_generation; retry_pending=false; reconnect_cv.notify_all(); }
+        if (transport) transport->cancel_pending();
+        if (reconnect_worker.joinable()) reconnect_worker.join();
         fail_channels(error{error_code::connection_lost, "Client shut down"});
-        if (transport) (void)transport->disconnect();
+        if (transport) { std::lock_guard lock(connection_operation_mutex); (void)transport->disconnect(); }
         for (auto& job : jobs) if (job.valid()) job.wait();
+    }
+    void state_locked(connection_state value) {
+        if (current_state.exchange(value) != value && !closing) state_events.push_back(value);
+        reconnect_cv.notify_all();
+    }
+    void deliver_state(connection_state value) {
+        std::function<void(connection_state)> callback;
+        { std::lock_guard lock(callbacks_mutex); callback=state_callback; }
+        if (callback && !closing) { try { callback(value); } catch (...) {} }
+    }
+    bool generation_valid(uint64_t generation) {
+        std::lock_guard lock(reconnect_mutex);
+        return !closing && !manual_disconnect && connection_generation==generation;
+    }
+    void connection_lost() {
+        fail_channels(error{error_code::connection_lost, "Connection lost"});
+        std::lock_guard lock(reconnect_mutex);
+        if (closing || manual_disconnect || current_state != connection_state::connected) return;
+        retry_pending=config.auto_reconnect && config.reconnect.max_attempts>0;
+        state_locked(retry_pending ? connection_state::reconnecting : connection_state::disconnected);
+    }
+    void run_connections() {
+        for (;;) {
+            uint64_t generation;
+            {
+                std::unique_lock lock(reconnect_mutex);
+                reconnect_cv.wait(lock, [&] { return closing || retry_pending || !state_events.empty(); });
+                if (closing) return;
+                if (!state_events.empty()) {
+                    auto event=state_events.front(); state_events.pop_front(); lock.unlock(); deliver_state(event); continue;
+                }
+                retry_pending=false; generation=connection_generation;
+            }
+            auto wait = [&](std::chrono::milliseconds delay) {
+                auto deadline=std::chrono::steady_clock::now()+delay;
+                std::unique_lock lock(reconnect_mutex);
+                while (!closing && !manual_disconnect && generation==connection_generation) {
+                    if (!state_events.empty()) {
+                        auto event=state_events.front(); state_events.pop_front(); lock.unlock(); deliver_state(event); lock.lock(); continue;
+                    }
+                    if (std::chrono::steady_clock::now()>=deadline) return true;
+                    reconnect_cv.wait_until(lock,deadline);
+                }
+                return false;
+            };
+            auto attempt = [&](std::chrono::milliseconds timeout) {
+                std::lock_guard operation(connection_operation_mutex);
+                if (!generation_valid(generation)) return false;
+                (void)transport->disconnect(); decoder=wire::stream_decoder{};
+                { std::lock_guard lock(stats_mutex); ++statistics.total_retries; }
+                std::stop_token token;
+                { std::lock_guard lock(reconnect_mutex); token=connection_stop.get_token(); }
+                auto connected=transport->connect_cancellable(server_endpoint,timeout,token);
+                std::lock_guard lock(reconnect_mutex);
+                if (closing || manual_disconnect || generation!=connection_generation) return false;
+                if (connected) { state_locked(connection_state::connected); return true; }
+                return false;
+            };
+            bool recovered=detail::reconnect_sequence(config.reconnect, config.connect_timeout, wait, attempt);
+            if (!recovered) {
+                std::lock_guard lock(reconnect_mutex);
+                if (!closing && !manual_disconnect && generation==connection_generation) state_locked(connection_state::disconnected);
+            }
+        }
     }
     auto open_channel(const transfer_id& id) -> std::shared_ptr<channel> {
         auto response = std::make_shared<channel>();
@@ -536,24 +608,9 @@ struct file_transfer_client::impl {
     }
 
     void set_state(connection_state new_state) {
-        auto old_state = current_state.exchange(new_state);
-        if (old_state != new_state) {
-            // Log state transitions
-            if (new_state == connection_state::reconnecting) {
-                FT_LOG_INFO(log_category::client, "Attempting to reconnect to server");
-            } else if (new_state == connection_state::connected &&
-                       old_state == connection_state::reconnecting) {
-                FT_LOG_INFO(log_category::client, "Reconnection successful");
-            } else if (new_state == connection_state::disconnected &&
-                       old_state == connection_state::reconnecting) {
-                FT_LOG_WARN(log_category::client, "Reconnection failed");
-            }
-
-            std::function<void(connection_state)> callback;
-            { std::lock_guard lock(callbacks_mutex); callback = state_callback; }
-            if (callback) { try { callback(new_state); } catch (...) {} }
-        }
+        std::lock_guard lock(reconnect_mutex); state_locked(new_state);
     }
+
 };
 
 // Builder implementation
@@ -647,6 +704,8 @@ auto file_transfer_client::builder::build() -> result<file_transfer_client> {
         return unexpected{error{error_code::invalid_configuration, "QUIC transport is disabled in this build"}};
 #endif
 
+    if (!detail::valid_reconnect_policy(config_.reconnect))
+        return unexpected{error{error_code::invalid_configuration, "Invalid reconnect delay or multiplier"}};
     if (config_.enable_encryption) {
         auto valid = transfer_crypto::validate_secret(config_.encryption_key, config_.encryption_password);
         if (!valid) return unexpected{valid.error()};
@@ -680,12 +739,12 @@ file_transfer_client::file_transfer_client(client_config config)
             std::vector<uint8_t> bytes(event.data.size());
             std::memcpy(bytes.data(), event.data.data(), bytes.size()); state->receive_bytes(bytes);
         } else if (event.event == transport_event::disconnected) {
-            state->fail_channels(error{error_code::connection_lost, "Connection lost"});
-            state->set_state(connection_state::disconnected);
+            state->connection_lost();
         } else if (event.event == transport_event::error) {
             state->fail_channels(error{error_code::connection_lost, event.error_message});
         }
     });
+    impl_->reconnect_worker=std::thread([state] { state->run_connections(); });
 }
 
 file_transfer_client::file_transfer_client(file_transfer_client&& other) noexcept : impl_(std::move(other.impl_)) {
@@ -706,47 +765,47 @@ file_transfer_client::~file_transfer_client() {
 }
 
 auto file_transfer_client::connect(const endpoint& server_addr) -> result<void> {
-    if (impl_->current_state == connection_state::connected ||
-        impl_->current_state == connection_state::connecting) {
-        FT_LOG_WARN(log_category::client, "Client is already connected or connecting");
-        return unexpected{error{error_code::already_initialized,
-                               "Client is already connected or connecting"}};
+    uint64_t generation;
+    {
+        std::lock_guard lock(impl_->reconnect_mutex);
+        if (impl_->current_state==connection_state::connected || impl_->current_state==connection_state::connecting)
+            return unexpected{error{error_code::already_initialized, "Client is already connected or connecting"}};
+        impl_->manual_disconnect=true; impl_->retry_pending=false; impl_->connection_stop.request_stop();
+        generation=++impl_->connection_generation; impl_->reconnect_cv.notify_all();
     }
-
-    FT_LOG_INFO(log_category::client,
-        "Connecting to server " + server_addr.host + ":" + std::to_string(server_addr.port));
-
-    impl_->set_state(connection_state::connecting);
-    impl_->server_endpoint = server_addr;
-    impl_->decoder = wire::stream_decoder{};
-    auto connected = impl_->transport->connect(server_addr, impl_->config.connect_timeout);
-    if (!connected) { impl_->set_state(connection_state::disconnected); return unexpected{connected.error()}; }
-    impl_->set_state(connection_state::connected);
-    FT_LOG_INFO(log_category::client, "Connected to server successfully");
+    impl_->transport->cancel_pending();
+    std::lock_guard operation(impl_->connection_operation_mutex);
+    (void)impl_->transport->disconnect();
+    {
+        std::lock_guard lock(impl_->reconnect_mutex);
+        if (generation!=impl_->connection_generation || impl_->closing)
+            return unexpected{error{error_code::connection_failed, "Connection attempt cancelled"}};
+        impl_->connection_stop=std::stop_source{};
+        impl_->manual_disconnect=false; impl_->server_endpoint=server_addr;
+        impl_->state_locked(connection_state::connecting);
+    }
+    impl_->decoder=wire::stream_decoder{};
+    std::stop_token token;
+    { std::lock_guard lock(impl_->reconnect_mutex); token=impl_->connection_stop.get_token(); }
+    auto connected=impl_->transport->connect_cancellable(server_addr,impl_->config.connect_timeout,token);
+    std::lock_guard lock(impl_->reconnect_mutex);
+    if (generation!=impl_->connection_generation || impl_->manual_disconnect || impl_->closing)
+        return unexpected{error{error_code::connection_failed, "Connection attempt cancelled"}};
+    impl_->state_locked(connected ? connection_state::connected : connection_state::disconnected);
+    if (!connected) return unexpected{connected.error()};
     return {};
 }
 
 auto file_transfer_client::disconnect() -> result<void> {
-    if (impl_->current_state != connection_state::connected) {
-        FT_LOG_WARN(log_category::client, "Disconnect called but client is not connected");
-        return unexpected{error{error_code::not_initialized,
-                               "Client is not connected"}};
+    {
+        std::lock_guard lock(impl_->reconnect_mutex);
+        impl_->manual_disconnect=true; impl_->retry_pending=false; impl_->connection_stop.request_stop(); ++impl_->connection_generation;
+        impl_->state_locked(connection_state::disconnected);
     }
-
-    FT_LOG_INFO(log_category::client, "Disconnecting from server");
+    impl_->transport->cancel_pending();
     impl_->fail_channels(error{error_code::connection_lost, "Client disconnected"});
-
-    auto result = impl_->transport->disconnect();
-    if (!result) {
-        FT_LOG_ERROR(log_category::client,
-            "Failed to disconnect: " + result.error().message);
-        return unexpected{error{error_code::internal_error,
-                               "Failed to disconnect: " + result.error().message}};
-    }
-
-    impl_->set_state(connection_state::disconnected);
-    FT_LOG_INFO(log_category::client, "Disconnected from server");
-    return {};
+    std::lock_guard operation(impl_->connection_operation_mutex);
+    return impl_->transport->disconnect();
 }
 
 auto file_transfer_client::is_connected() const -> bool {

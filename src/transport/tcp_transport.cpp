@@ -124,6 +124,11 @@ auto tcp_transport::connect(const endpoint& remote) -> result<connection_result>
 auto tcp_transport::connect(
     const endpoint& remote,
     std::chrono::milliseconds timeout) -> result<connection_result> {
+    return connect_cancellable(remote,timeout,{});
+}
+
+auto tcp_transport::connect_cancellable(const endpoint& remote, std::chrono::milliseconds timeout,
+    std::stop_token stop) -> result<connection_result> {
 
     if (impl_->current_state == transport_state::connected ||
         impl_->current_state == transport_state::connecting) {
@@ -176,6 +181,8 @@ auto tcp_transport::connect(
             }
         });
 
+    std::stop_callback cancelled(stop,[this] { cancel_pending(); });
+    if (stop.stop_requested()) { impl_->set_state(transport_state::disconnected); return unexpected{error{error_code::connection_failed, "Connection attempt cancelled"}}; }
     auto started = impl_->network_client->start_client(remote.host, remote.port);
     if (started.is_err()) { impl_->set_state(transport_state::error); return unexpected{error{error_code::connection_failed, started.error().message}}; }
     std::unique_lock lock(impl_->connect_mutex);
@@ -206,6 +213,11 @@ auto tcp_transport::connect_async(const endpoint& remote)
     return std::async(std::launch::async, [this, remote]() {
         return connect(remote);
     });
+}
+
+void tcp_transport::cancel_pending() {
+    std::lock_guard lock(impl_->connect_mutex);
+    impl_->connect_error = "Connection attempt cancelled"; impl_->connect_cv.notify_all();
 }
 
 auto tcp_transport::disconnect() -> result<void> {

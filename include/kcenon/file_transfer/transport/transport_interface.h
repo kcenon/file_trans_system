@@ -10,6 +10,7 @@
 #ifndef KCENON_FILE_TRANSFER_TRANSPORT_TRANSPORT_INTERFACE_H
 #define KCENON_FILE_TRANSFER_TRANSPORT_TRANSPORT_INTERFACE_H
 
+#include <stop_token>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -180,6 +181,14 @@ public:
      * @return Result indicating success or failure
      */
     [[nodiscard]] virtual auto disconnect() -> result<void> = 0;
+    virtual auto connect_cancellable(const endpoint& remote, std::chrono::milliseconds timeout, std::stop_token stop)
+        -> result<connection_result> {
+        if (stop.stop_requested()) return unexpected{error{error_code::connection_failed, "Connection attempt cancelled"}};
+        std::stop_callback cancel(stop, [this] { cancel_pending(); });
+        return connect(remote, timeout);
+    }
+    /// Wake a pending connection attempt without blocking its I/O thread.
+    virtual void cancel_pending() {}
 
     /**
      * @brief Check if connected

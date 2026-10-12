@@ -34,15 +34,21 @@ public:
     auto type() const -> std::string override { return "tcp"; }
     auto start(const endpoint& endpoint) -> result<void> override {
         server_->set_connection_callback([this](auto session) {
-            auto connection=std::make_shared<tcp_connection>(session, [this, id=session.get()] { std::lock_guard lock(mutex_); connections_.erase(id); });
+            auto connection=std::make_shared<tcp_connection>(session, [this, id=session.get()] {
+                std::shared_ptr<accepted_transport> removed;
+                { std::lock_guard lock(mutex_); auto it=connections_.find(id); if(it!=connections_.end()) { removed=std::move(it->second); connections_.erase(it); } }
+            });
             { std::lock_guard lock(mutex_); connections_[session.get()]=connection; }
             callback_(std::move(connection));
         });
         return converted(server_->start_server(endpoint.port));
     }
     auto stop() -> result<void> override {
-        auto result=converted(server_->stop_server());
-        std::lock_guard lock(mutex_); connections_.clear(); return result;
+        decltype(connections_) connections;
+        { std::lock_guard lock(mutex_); connections.swap(connections_); }
+        for(auto& [_, connection] : connections) connection->close();
+        connections.clear();
+        return converted(server_->stop_server());
     }
 };
 class quic_connection final : public accepted_transport {
@@ -90,8 +96,11 @@ public:
 #endif
     }
     auto stop() -> result<void> override {
-        auto result=converted(server_->stop_server());
-        std::lock_guard lock(mutex_); connections_.clear(); return result;
+        decltype(connections_) connections;
+        { std::lock_guard lock(mutex_); connections.swap(connections_); }
+        for(auto& [_, connection] : connections) connection->close();
+        connections.clear();
+        return converted(server_->stop_server());
     }
 };
 } // namespace

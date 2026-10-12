@@ -357,6 +357,7 @@ auto file_transfer_server::stop() -> result<void> {
     FT_LOG_INFO(log_category::server, "Stopping server");
     impl_->current_state = server_state::stopping;
 
+    if (impl_->runtime) impl_->runtime->stop();
     auto result = impl_->listener->stop();
     if (!result) {
         impl_->current_state = server_state::running;
