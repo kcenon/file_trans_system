@@ -26,6 +26,11 @@ namespace kcenon::file_transfer {
 
 /**
  * @brief S3 upload stream implementation for multipart uploads
+ *
+ * Single-consumer API. Buffer storage is bounded by (max_concurrent_parts + 2)
+ * times part_size plus bounded HTTP responses and runtime overhead. File
+ * uploads add file_io_buffer_size. abort() drains in-flight parts before
+ * remote cleanup, and failed cleanup remains an explicit error.
  */
 class s3_upload_stream : public cloud_upload_stream {
 public:
@@ -63,6 +68,12 @@ private:
 
 /**
  * @brief S3 download stream implementation
+ *
+ * Single-consumer sequential stream. read() may return a short buffer at a
+ * range boundary. Zero means EOF only for a nonempty caller buffer. Failed
+ * initialization/ranges remain errors on subsequent reads; has_more() remains
+ * true so callers observe the error rather than treating it as an empty file.
+ * Ranges use If-Match with the initial ETag to reject object replacement.
  */
 class s3_download_stream : public cloud_download_stream {
 public:
@@ -90,7 +101,8 @@ private:
     s3_download_stream(
         const std::string& key,
         const s3_config& config,
-        std::shared_ptr<credential_provider> credentials);
+        std::shared_ptr<credential_provider> credentials,
+        cloud_http_transport transport);
 
     struct impl;
     std::unique_ptr<impl> impl_;

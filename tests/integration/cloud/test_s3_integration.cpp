@@ -24,6 +24,10 @@
 #include <gtest/gtest.h>
 
 #include "kcenon/file_transfer/cloud/s3_storage.h"
+#include "kcenon/file_transfer/core/checksum.h"
+#if defined(__APPLE__) || defined(__linux__)
+#include <sys/resource.h>
+#endif
 
 #include <chrono>
 #include <cstdlib>
@@ -758,6 +762,56 @@ TEST_F(MinIOIntegrationTest, LargeFileUploadDownload) {
 
     EXPECT_EQ(download_result.value().size(), file_size);
     EXPECT_EQ(download_result.value(), data);
+}
+
+TEST_F(MinIOIntegrationTest, BoundedStreamingFileRoundTrip) {
+    auto config = storage_->get_s3_config(); config.multipart.threshold = 1024 * 1024;
+    config.multipart.part_size = 5 * 1024 * 1024; config.multipart.max_concurrent_parts = 2;
+    config.download_range_size = 1024 * 1024; config.file_io_buffer_size = 65536;
+    storage_ = s3_storage::create(config, provider_); ASSERT_TRUE(storage_->connect());
+    const auto key = test_key("bounded-stream.bin");
+    constexpr std::size_t file_size = 256 * 1024 * 1024 + 123;
+    auto source = temp_dir_ / "large-source", destination = temp_dir_ / "large-destination";
+    { std::ofstream file(source, std::ios::binary); std::array<char, 65536> block;
+      for (std::size_t i = 0; i < block.size(); ++i) block[i] = static_cast<char>((i * 29 + 7) % 251);
+      for (std::size_t offset = 0; offset < file_size; offset += block.size())
+          file.write(block.data(), std::min(block.size(), file_size - offset)); }
+#if defined(__APPLE__) || defined(__linux__)
+    auto peak_rss = [] {
+        rusage value{}; getrusage(RUSAGE_SELF, &value);
+#ifdef __APPLE__
+        return static_cast<uint64_t>(value.ru_maxrss);
+#else
+        return static_cast<uint64_t>(value.ru_maxrss) * 1024;
+#endif
+    };
+    auto before = peak_rss();
+#endif
+    auto uploaded = storage_->upload_file(source, key); ASSERT_TRUE(uploaded) << uploaded.error().message; track_upload(key);
+    EXPECT_EQ(uploaded.value().bytes_uploaded, file_size);
+    auto downloaded = storage_->download_file(key, destination); ASSERT_TRUE(downloaded) << downloaded.error().message;
+    EXPECT_EQ(downloaded.value().bytes_downloaded, file_size);
+    EXPECT_EQ(checksum::sha256_file(source).value(), checksum::sha256_file(destination).value());
+#if defined(__APPLE__) || defined(__linux__)
+    auto growth = peak_rss() - before;
+    RecordProperty("file_bytes", file_size); RecordProperty("peak_rss_growth_bytes", growth);
+    std::cout << "Bounded S3 file: " << file_size << " bytes; peak RSS growth: " << growth << " bytes\n";
+    // Budget includes allocator, TLS, hashing, and request overhead, as well as
+    // two 5 MiB in-flight parts, the accumulating part, and 1 MiB range reads.
+    EXPECT_LT(growth, 64 * 1024 * 1024);
+#endif
+}
+
+TEST_F(MinIOIntegrationTest, RangedStreamRejectsObjectReplacement) {
+    const auto key = test_key("replaced-object");
+    auto bytes = create_test_data(2 * 1024 * 1024 + 13);
+    ASSERT_TRUE(storage_->upload(key, bytes)); track_upload(key);
+    auto stream = storage_->create_download_stream(key); ASSERT_TRUE(stream);
+    std::vector<std::byte> buffer(1024 * 1024);
+    auto read = stream->read(buffer); ASSERT_TRUE(read); ASSERT_EQ(read.value(), buffer.size());
+    bytes[0] ^= std::byte{1}; ASSERT_TRUE(storage_->upload(key, bytes));
+    auto next = stream->read(buffer); EXPECT_FALSE(next);
+    EXPECT_EQ(stream->bytes_read(), buffer.size()); EXPECT_FALSE(stream->read(buffer));
 }
 
 }  // namespace

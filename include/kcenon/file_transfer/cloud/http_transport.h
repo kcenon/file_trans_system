@@ -8,10 +8,17 @@
 #include <span>
 
 namespace kcenon::file_transfer {
+struct cloud_http_body_source {
+    uint64_t size{};
+    std::string sha256;
+    // Offset-based reads make request retries replayable without buffering.
+    std::function<result<std::size_t>(uint64_t, std::span<std::byte>)> read;
+};
 struct cloud_http_request {
     std::string method, url;
     std::map<std::string, std::string> headers;
     std::span<const std::byte> body;
+    std::optional<cloud_http_body_source> source;
     std::chrono::milliseconds connect_timeout{30000}, timeout{30000};
     bool verify_ssl{true};
     std::optional<std::string> ca_cert_path;
