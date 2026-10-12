@@ -90,14 +90,17 @@ endif()
 if(FILE_TRANS_ENABLE_ENCRYPTION AND OpenSSL_FOUND)
     list(APPEND UNIT_TEST_SOURCES
         unit/cloud/test_s3_storage.cpp
-    unit/cloud/test_s3_failures.cpp
-    unit/cloud/test_s3_streaming.cpp
+        unit/cloud/test_s3_failures.cpp
+        unit/cloud/test_s3_streaming.cpp
         unit/cloud/test_azure_blob_storage.cpp
         unit/cloud/test_gcs_storage.cpp
+        unit/cloud/test_gcs_signing.cpp
     )
 endif()
 
 add_executable(file_trans_unit_tests ${UNIT_TEST_SOURCES})
+target_compile_definitions(file_trans_unit_tests PRIVATE
+    FILE_TRANS_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test_data")
 
 # On Windows MSVC, static library transitive dependencies are not automatically
 # propagated to executables, and the linker may not include unreferenced symbols

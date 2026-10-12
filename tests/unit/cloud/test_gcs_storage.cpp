@@ -4,6 +4,7 @@
  */
 
 #include <gtest/gtest.h>
+#include <fstream>
 
 #include "kcenon/file_transfer/cloud/gcs_storage.h"
 
@@ -18,17 +19,8 @@ namespace {
  * @brief Helper function to create test service account JSON with valid RSA key
  */
 inline std::string create_test_service_account_json() {
-    // Valid 2048-bit RSA private key for testing (not for production use)
-    return R"({
-        "type": "service_account",
-        "project_id": "my-project-id",
-        "private_key_id": "key123",
-        "private_key": "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF8PbnGy0AHB7MxExmUZ8M+cQ8bpy\nHDmNRbZ+/Mc6D3G4rQhE0J0aQMJGZ7qWQVk4BFTrBfF7fZ5PY7M7CsYNl7Q5i1P0\nSdT1xjyWaRVlz3BfhCKz8/4MZEKtfPxJi/VdG8uGGfKG6QXvKsFn/bP2dxQWpRq0\ntXqG1q3o8IZNxT4xmQqhN1xJ7K8qREeoHxVj8nE1QqGYXLQjP+b0z8v6T6Y2NG1i\n3HWLKSyK8QMJEb1P8t8Qnmq9GOPY3vF4WYU5TXjKTRjNwFHmWS8X0F1NMuXPCqNJ\nV6hR0tYR6gHbRMYZ+7B8P5MkZ3C5CvPPt6qy3wIDAQABAoIBAAL0VHLgA8GU1y3/\nJtG+7hkQGNqFRPMPuOEmYKLJWvt8EGUq4pv5IGIhlQ5HsYlSiMcR3xQwJkP8T1cP\nPelON1kYI4D7k3VjQPrzPYQ5YjGwhoezqBJJL6SAxVQQGCdZaM9AoVq7n6XLIID7\nxhQ9NjLhUFl0lQopBwqDYjAOu4+d5ixjLPFVCrPAQ0YpXprxY+J5G5Q5/3xPGTcQ\njnz4XoRLuGgn1pHXmkxZVHMj5APNQZ6P3+LmE9VWVtPh3JqmihS9DLqN7QoM9FEK\npxtmCt9cV/Q8INYI3LxpNvZPL3q0TZxP3HhvHU+nFP3rMvF8PvfJt5iQpN0qF9Ec\n3S7HEhECgYEA7pZR2vGY0Y8E/P4H8pFAqSAH9cExDUbD1S5HjLLl6QU8UEs8MRdN\nfqM8pfexOT9kJVFlG5e8qJQmqK+5y6m+qNk6hU3vERHNaM4RcQ2qJz3AYzhz0uzn\nkPR/hXsA3nL2I9PqEGGZj3E6LPPJ3XpKr4cPh7L3q5vg7OJzDR6P+3kCgYEA4OB8\nt4+gEu8p5c8QpVxP/zylQJdLY7u5QsPl3+cQ6GWGK9rkF6P8OZHt3cQ8GNvMxAyQ\nh0R0xhQqM0l7vPetE/OEKF+1jc8JaRhBKLq9LXeQEUP+9Sq7hJ7tODhJ5bGikxLu\nhQjH7NyLOFU7N5u0W6jLp4gJHr4XJ3K7R6WuXH8CgYBNwMH3DXBopmX+2yb0xyxP\n0lT3qJQAWuwD3+wF0M0T4w6P8jqKT0v3Q7M3V6o8HJtLw5xP0Y8JfPJKqM3kHnD9\nOqVn2T6o3bE4f9zPMh+T/k4jVLnCbifj/z2q3h3cKHvM7BoWYxKWLZM3+BqPq6Lt\nZq8F+t5pKRz+EVdne4HhsQKBgGiLU0GlMGaFo7bIfOHaKze7QKFP1hK7d3LqQk9h\n0T1J0YfxR1oQ5gPg7XM5D1B0k9c7m1iG6aIqhz7qPJqLVy0gTNpKYFqT1OYo/xo7\ng4JqLXpKXkL9K3x2n2iK5rY2lXxXNJPM/G4rTl6LxKpJ6T8d0I7OifWJGF3g5vN9\nv4HRAoGBALn8qW3o1X3sMi6cH+q4u9/NhEZsT2F7KRd0rQ5nqBKr6z6xLpqEeAQo\nHdLcQ3OVfYT6I8I5Y8JYPQ3hM3qQQxXe5h7c5I4mM2+d8M3f0kvvfj5k9bj6MKQM\nHX8b7HBo0aLfJj7WlQ3I8fvoVz5M5qU8rAQ9PvMh7f5Q2p8mJdWz\n-----END RSA PRIVATE KEY-----\n",
-        "client_email": "test@my-project-id.iam.gserviceaccount.com",
-        "client_id": "123456789",
-        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-        "token_uri": "https://oauth2.googleapis.com/token"
-    })";
+    std::ifstream input(std::filesystem::path(FILE_TRANS_TEST_DATA_DIR) / "gcs_signing/service-account.json");
+    return {std::istreambuf_iterator<char>{input}, {}};
 }
 
 /**

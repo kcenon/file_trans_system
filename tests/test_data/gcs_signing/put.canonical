@@ -1,0 +1,10 @@
+PUT
+/test-bucket/dir/caf%C3%A9%20%2B%25%3F.txt
+X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-Credential=test-signer%40test-project.iam.gserviceaccount.com%2F20250102%2Fauto%2Fstorage%2Fgoog4_request&X-Goog-Date=20250102T030405Z&X-Goog-Expires=3600&X-Goog-SignedHeaders=content-md5%3Bcontent-type%3Bhost%3Bx-goog-meta-label
+content-md5:XUFAKrxLKna5cZ2REBfFkg==
+content-type:text/plain; charset=UTF-8
+host:storage.googleapis.com
+x-goog-meta-label:Test Value
+
+content-md5;content-type;host;x-goog-meta-label
+UNSIGNED-PAYLOAD

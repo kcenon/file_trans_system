@@ -400,6 +400,12 @@ public:
         const std::string& key,
         const presigned_url_options& options = {}) -> result<std::string>;
 
+    /// Deterministic signing time overload. Requires a service-account RSA key;
+    /// token-only/metadata-server credentials cannot sign URLs locally.
+    [[nodiscard]] auto generate_signed_url(
+        const std::string& key, const presigned_url_options& options,
+        std::chrono::system_clock::time_point signing_time) -> result<std::string>;
+
     /**
      * @brief Compose multiple objects into one
      * @param source_keys Source object keys to compose

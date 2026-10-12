@@ -174,6 +174,32 @@ auto signed_url = storage->generate_presigned_url("file.bin", options);
 // Share URL for direct access
 ```
 
+URL signing runs locally with the identity and RSA private key in a service-account
+JSON document (provided directly or loaded from a file). It supports GET and PUT,
+with expiration from 1 through 604800 seconds. The key must be an unencrypted RSA
+key of at least 2048 bits. Token-only credentials and metadata-server credentials
+without a private key return a capability error; IAM `signBlob` is not implemented.
+
+For PUT, `content_type`, `content_md5`, and `custom_metadata` become signed headers.
+The caller must send them with the request; metadata names use `x-goog-meta-`.
+GET response content-type and content-disposition overrides are included in the
+signed query. Custom endpoints and S3-specific storage/encryption options are
+rejected. Signing does not require `connect()` or an OAuth token exchange.
+
+The timestamp overload of `generate_signed_url` accepts an explicit signing time
+for deterministic checks. The implementation follows Google's
+[V4 signing process](https://cloud.google.com/storage/docs/access-control/signing-urls-manually)
+and [canonical request specification](https://cloud.google.com/storage/docs/authentication/canonical-requests).
+The public fixture key under `tests/test_data/gcs_signing` is only for tests.
+`generate_reference.py` independently regenerates the GET/PUT reference signatures
+using Python and the OpenSSL CLI.
+
+An optional live URL/tampering test reads an existing object when
+`GCS_SIGNING_TEST_SERVICE_ACCOUNT_FILE`, `GCS_SIGNING_TEST_BUCKET`, and
+`GCS_SIGNING_TEST_OBJECT` are explicitly set. Run
+`file_trans_cloud_integration_tests --gtest_filter=GcsSignedUrlIntegrationTest.*`.
+Without those settings, the live test reports a skip.
+
 ### Storage Class Management
 
 GCS supports multiple storage classes:

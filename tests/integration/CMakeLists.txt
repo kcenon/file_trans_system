@@ -29,6 +29,7 @@ add_executable(file_trans_integration_tests ${INTEGRATION_TEST_SOURCES})
 if(FILE_TRANS_ENABLE_ENCRYPTION AND OpenSSL_FOUND)
     add_executable(file_trans_cloud_integration_tests
         cloud/test_s3_integration.cpp
+        cloud/test_gcs_signing_integration.cpp
     )
 
     target_include_directories(file_trans_cloud_integration_tests PRIVATE

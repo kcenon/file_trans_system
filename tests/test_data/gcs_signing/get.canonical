@@ -1,0 +1,7 @@
+GET
+/test-bucket/dir/caf%C3%A9%20%2B%25%3F.txt
+X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-Credential=test-signer%40test-project.iam.gserviceaccount.com%2F20250102%2Fauto%2Fstorage%2Fgoog4_request&X-Goog-Date=20250102T030405Z&X-Goog-Expires=3600&X-Goog-SignedHeaders=host&response-content-disposition=attachment%3B%20filename%3D%22caf%C3%A9.txt%22&response-content-type=text%2Fplain
+host:storage.googleapis.com
+
+host
+UNSIGNED-PAYLOAD
