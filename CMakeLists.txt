@@ -219,6 +219,7 @@ include(FileTransInstall)
 
 find_package(PkgConfig QUIET)
 find_package(Threads REQUIRED)
+find_package(CURL REQUIRED)
 
 find_file_trans_dependencies()
 
@@ -311,6 +312,7 @@ if(FILE_TRANS_ENABLE_ENCRYPTION AND OpenSSL_FOUND)
         src/cloud/cloud_utils.cpp
         src/cloud/cloud_http_client.cpp
         src/cloud/s3_storage.cpp
+        src/cloud/http_transport.cpp
         src/cloud/azure_blob_storage.cpp
         src/cloud/gcs_storage.cpp
     )
@@ -340,6 +342,7 @@ target_include_directories(FileTransSystem
 
 # Link threading library
 target_link_libraries(FileTransSystem PUBLIC Threads::Threads)
+target_link_libraries(FileTransSystem PRIVATE CURL::libcurl)
 
 # LZ4 compression
 if(FILE_TRANS_ENABLE_LZ4 AND LZ4_FOUND)

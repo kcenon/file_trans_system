@@ -2,7 +2,7 @@
 """Build the compatible ecosystem revisions without replacing existing work.
 
 Usage: python3 tools/bootstrap_dependencies.py [--workspace PATH] [--jobs N]
-Requires Git, CMake, Ninja, a C++20 compiler, and development OpenSSL/LZ4.
+Requires Git, CMake, Ninja, a C++20 compiler, and development OpenSSL/LZ4/libcurl.
 The pinned network client requires the checked-in native socket close patch.
 """
 import argparse

@@ -228,6 +228,24 @@ TEST_F(MinIOIntegrationTest, UploadSmallData) {
     EXPECT_FALSE(result.value().etag.empty());
 }
 
+TEST_F(MinIOIntegrationTest, PresignedIndependentHttpReadVerifiesPersistedUpload) {
+    const auto key = test_key("independent read.bin");
+    auto bytes = create_test_data(100001);
+    auto uploaded = storage_->upload(key, bytes); ASSERT_TRUE(uploaded) << uploaded.error().message;
+    track_upload(key);
+    presigned_url_options options; options.method = "GET";
+    auto url = storage_->generate_presigned_url(key, options); ASSERT_TRUE(url);
+    cloud_http_request request; request.method = "GET"; request.url = url.value();
+    // This HTTP client knows neither s3_storage nor the signing credentials.
+    auto response = make_default_cloud_http_transport()(request); ASSERT_TRUE(response) << response.error().message;
+    ASSERT_EQ(response.value().status_code, 200) << response.value().get_body_string();
+    ASSERT_EQ(response.value().body.size(), bytes.size());
+    EXPECT_TRUE(std::equal(bytes.begin(), bytes.end(), response.value().body.begin(),
+        [](std::byte expected, uint8_t actual) { return std::to_integer<uint8_t>(expected) == actual; }));
+    auto metadata = storage_->get_metadata(key); ASSERT_TRUE(metadata); EXPECT_EQ(metadata.value().size, bytes.size());
+    EXPECT_EQ(metadata.value().etag, uploaded.value().etag);
+}
+
 TEST_F(MinIOIntegrationTest, UploadMediumData) {
     const auto key = test_key("medium_data.bin");
     auto data = create_test_data(1024 * 1024);  // 1MB

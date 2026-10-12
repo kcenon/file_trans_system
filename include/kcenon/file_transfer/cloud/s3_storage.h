@@ -20,6 +20,7 @@
 #include "cloud_credentials.h"
 #include "cloud_error.h"
 #include "cloud_storage_interface.h"
+#include "http_transport.h"
 
 namespace kcenon::file_transfer {
 
@@ -53,7 +54,8 @@ private:
         const std::string& key,
         const s3_config& config,
         std::shared_ptr<credential_provider> credentials,
-        const cloud_transfer_options& options);
+        const cloud_transfer_options& options,
+        cloud_http_transport transport);
 
     struct impl;
     std::unique_ptr<impl> impl_;
@@ -141,7 +143,8 @@ public:
      */
     [[nodiscard]] static auto create(
         const s3_config& config,
-        std::shared_ptr<credential_provider> credentials) -> std::unique_ptr<s3_storage>;
+        std::shared_ptr<credential_provider> credentials,
+        cloud_http_transport transport = {}) -> std::unique_ptr<s3_storage>;
 
     ~s3_storage() override;
 
@@ -299,7 +302,8 @@ public:
 private:
     explicit s3_storage(
         const struct s3_config& config,
-        std::shared_ptr<credential_provider> credentials);
+        std::shared_ptr<credential_provider> credentials,
+        cloud_http_transport transport);
 
     struct impl;
     std::unique_ptr<impl> impl_;
