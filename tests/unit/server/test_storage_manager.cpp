@@ -175,6 +175,20 @@ TEST_F(StorageManagerTest, LocalBackend_List) {
     EXPECT_EQ(list_result.value().objects.size(), 3);
 }
 
+TEST_F(StorageManagerTest, LocalBackend_ListContinuationIsStableAndExhaustive) {
+    auto backend = local_storage_backend::create(test_dir_);
+    ASSERT_TRUE(backend->connect());
+    for (auto name : {"c", "a", "b"}) ASSERT_TRUE(backend->store(name, create_test_data(10)));
+    list_storage_options options; options.max_results = 2;
+    auto first = backend->list(options); ASSERT_TRUE(first); ASSERT_EQ(first.value().objects.size(), 2);
+    EXPECT_EQ(first.value().objects[0].key, "a"); EXPECT_EQ(first.value().objects[1].key, "b");
+    ASSERT_TRUE(first.value().is_truncated); ASSERT_TRUE(first.value().continuation_token);
+    options.continuation_token = first.value().continuation_token;
+    auto second = backend->list(options); ASSERT_TRUE(second); ASSERT_EQ(second.value().objects.size(), 1);
+    EXPECT_EQ(second.value().objects[0].key, "c"); EXPECT_FALSE(second.value().is_truncated);
+    options.continuation_token = "bad-token"; EXPECT_FALSE(backend->list(options));
+}
+
 TEST_F(StorageManagerTest, LocalBackend_ListWithPrefix) {
     auto backend = local_storage_backend::create(test_dir_);
     ASSERT_NE(backend, nullptr);

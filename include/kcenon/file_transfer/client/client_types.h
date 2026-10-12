@@ -14,6 +14,7 @@
 
 #include "kcenon/file_transfer/core/types.h"
 #include "kcenon/file_transfer/core/compression_types.h"
+#include "kcenon/file_transfer/core/protocol_types.h"
 
 namespace kcenon::file_transfer {
 
@@ -116,9 +117,13 @@ struct download_options {
  * @brief List options
  */
 struct list_options {
+    // Glob matching is case-sensitive (* and ?). Pages use a stable filename
+    // tie-breaker. Zero limit selects 1000; the maximum page size is 10000.
     std::string pattern = "*";
     std::size_t offset = 0;
     std::size_t limit = 1000;
+    list_sort_field sort_by = list_sort_field::name;
+    list_sort_order sort_order = list_sort_order::ascending;
 };
 
 /**

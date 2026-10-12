@@ -389,7 +389,7 @@ class server_runtime : public std::enable_shared_from_this<server_runtime> {
         if (static_cast<uint8_t>(request.sort_by) > 2 || static_cast<uint8_t>(request.sort_order) > 1)
             throw std::invalid_argument("Invalid listing sort option");
         auto all = list_all();
-        if (!all) throw std::invalid_argument(all.error().message);
+        if (!all) { reject(client, message_type::list_request, transfer_id{request.request_id}, all.error()); return; }
         auto& objects = all.value();
         std::erase_if(objects, [&](const auto& object) {
             return !valid_filename(object.key) || !glob(request.pattern.empty() ? "*" : request.pattern, object.key);
@@ -407,7 +407,12 @@ class server_runtime : public std::enable_shared_from_this<server_runtime> {
         response.total_count = static_cast<uint32_t>(objects.size());
         auto end = std::min<uint64_t>(objects.size(), uint64_t{request.offset} + std::min<uint32_t>(request.limit ? request.limit : 1000, 10000));
         for (uint64_t i = request.offset; i < end; ++i) {
-            const auto& object = objects[i];
+            auto object = objects[i];
+            if (!object.content_hash && object.backend == storage_backend_type::local) {
+                auto metadata = storage_->get_metadata(object.key);
+                if (!metadata) { reject(client, message_type::list_request, transfer_id{request.request_id}, metadata.error()); return; }
+                object = std::move(metadata.value());
+            }
             file_entry entry{};
             entry.filename = object.key; entry.file_size = object.size;
             entry.modified_time = std::chrono::duration_cast<std::chrono::seconds>(object.last_modified.time_since_epoch()).count();

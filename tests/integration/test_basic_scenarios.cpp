@@ -425,14 +425,8 @@ TEST_F(FileListIntegrationTest, ListFilesDefault) {
     ASSERT_TRUE(connect_client());
 
     auto result = client_->list_files();
-    EXPECT_TRUE(result.has_value());
-
-    // Empty storage should return empty list
-    if (result.has_value()) {
-        // Note: In current stub implementation, this returns empty vector
-        auto& files = result.value();
-        EXPECT_TRUE(files.empty() || files.size() >= 0);
-    }
+    ASSERT_TRUE(result.has_value());
+    EXPECT_TRUE(result.value().empty());
 }
 
 TEST_F(FileListIntegrationTest, ListFilesWithOptions) {
@@ -444,7 +438,8 @@ TEST_F(FileListIntegrationTest, ListFilesWithOptions) {
     options.limit = 100;
 
     auto result = client_->list_files(options);
-    EXPECT_TRUE(result.has_value());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_TRUE(result.value().empty());
 }
 
 TEST_F(FileListIntegrationTest, ListFilesWithPagination) {
@@ -455,7 +450,8 @@ TEST_F(FileListIntegrationTest, ListFilesWithPagination) {
     options.limit = 5;
 
     auto result = client_->list_files(options);
-    EXPECT_TRUE(result.has_value());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_TRUE(result.value().empty());
 }
 
 // =============================================================================

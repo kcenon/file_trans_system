@@ -1194,16 +1194,51 @@ auto file_transfer_client::set_download_metadata(
 }
 
 auto file_transfer_client::list_files(
-    [[maybe_unused]] const list_options& options) -> result<std::vector<file_info>> {
+    const list_options& options) -> result<std::vector<file_info>> {
 
     if (!is_connected()) {
         return unexpected{error{error_code::not_initialized,
                                "Client is not connected"}};
     }
 
-    // TODO: Implement actual file listing logic
-    // For now, return empty list
-    return std::vector<file_info>{};
+    if (options.offset > UINT32_MAX || options.limit > 10000 || options.pattern.size() > UINT16_MAX ||
+        static_cast<uint8_t>(options.sort_by) > 2 || static_cast<uint8_t>(options.sort_order) > 1)
+        return unexpected{error{error_code::invalid_configuration, "Invalid list options"}};
+    const auto id = transfer_id::generate();
+    auto response = impl_->open_channel(id);
+    struct channel_guard {
+        impl* state; transfer_id id;
+        ~channel_guard() { state->close_channel(id); }
+    } guard{impl_.get(), id};
+    const auto limit = static_cast<uint32_t>(options.limit ? options.limit : 1000);
+    auto sent = impl_->send(message_type::list_request, msg_list_request{id.bytes, options.pattern,
+        static_cast<uint32_t>(options.offset), limit, options.sort_by, options.sort_order});
+    if (!sent) return unexpected{sent.error()};
+    auto frame = impl_->receive(response);
+    if (!frame) return unexpected{frame.error()};
+    if (frame.value().type != message_type::list_response)
+        return unexpected{error{error_code::invalid_configuration, "Unexpected listing response"}};
+    auto decoded = wire::decode<msg_list_response>(frame.value().payload);
+    if (!decoded) return unexpected{decoded.error()};
+    const auto& page = decoded.value();
+    auto remaining = options.offset < page.total_count ? page.total_count - options.offset : 0;
+    if (page.entries.size() != std::min<std::size_t>(remaining, limit) ||
+        static_cast<bool>(page.has_more) != (remaining > limit))
+        return unexpected{error{error_code::invalid_configuration, "Inconsistent listing pagination"}};
+    std::vector<file_info> files;
+    std::set<std::string> names;
+    for (const auto& entry : page.entries) {
+        if (entry.filename.empty() || !names.insert(entry.filename).second ||
+            entry.modified_time > static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::duration::max()).count()))
+            return unexpected{error{error_code::invalid_configuration, "Invalid listing metadata"}};
+        std::string hash;
+        if (std::any_of(entry.sha256_hash.begin(), entry.sha256_hash.end(), [](auto b) { return b != 0; }))
+            for (auto b : entry.sha256_hash) { hash += "0123456789abcdef"[b >> 4]; hash += "0123456789abcdef"[b & 15]; }
+        files.push_back({entry.filename, entry.file_size, std::move(hash),
+            std::chrono::system_clock::time_point{std::chrono::seconds{entry.modified_time}}});
+    }
+    return files;
 }
 
 void file_transfer_client::on_progress(

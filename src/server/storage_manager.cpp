@@ -4,6 +4,7 @@
  */
 
 #include "kcenon/file_transfer/server/storage_manager.h"
+#include "kcenon/file_transfer/core/checksum.h"
 
 #include <algorithm>
 #include <chrono>
@@ -391,13 +392,13 @@ auto local_storage_backend::get_metadata(const std::string& key)
     }
 
     auto last_write = std::filesystem::last_write_time(target_path, ec);
-    if (!ec) {
-        auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
-            last_write - std::filesystem::file_time_type::clock::now() +
-            std::chrono::system_clock::now());
-        metadata.last_modified = sctp;
-    }
+    if (ec) return unexpected{error{error_code::file_read_error, ec.message()}};
+    metadata.last_modified = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+        std::filesystem::file_time_type::clock::to_sys(last_write));
 
+    auto hash = checksum::sha256_file(target_path);
+    if (!hash) return unexpected{hash.error()};
+    metadata.content_hash = std::move(hash.value());
     return result<stored_object_metadata>(std::move(metadata));
 }
 
@@ -407,17 +408,17 @@ auto local_storage_backend::list(const list_storage_options& options)
     list_storage_result res;
 
     std::error_code ec;
-    if (!std::filesystem::exists(impl_->base_path, ec) || ec) {
-        return result<list_storage_result>(std::move(res));
-    }
-
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(impl_->base_path, ec)) {
-        if (ec) break;
-
-        if (!entry.is_regular_file(ec) || ec) continue;
+    std::filesystem::recursive_directory_iterator it(impl_->base_path, ec), end;
+    if (ec) return unexpected{error{error_code::file_read_error, "Cannot list storage: " + ec.message()}};
+    for (; it != end; it.increment(ec)) {
+        if (ec) return unexpected{error{error_code::file_read_error, "Cannot enumerate storage: " + ec.message()}};
+        const auto& entry = *it;
+        auto status = entry.symlink_status(ec);
+        if (ec) return unexpected{error{error_code::file_read_error, ec.message()}};
+        if (!std::filesystem::is_regular_file(status)) continue;
 
         auto relative_path = std::filesystem::relative(entry.path(), impl_->base_path, ec);
-        if (ec) continue;
+        if (ec) return unexpected{error{error_code::file_read_error, ec.message()}};
 
         // Use generic_string for cross-platform path handling (forward slashes)
         std::string key = relative_path.generic_string();
@@ -431,25 +432,29 @@ auto local_storage_backend::list(const list_storage_options& options)
         metadata.key = key;
         metadata.backend = storage_backend_type::local;
         metadata.size = entry.file_size(ec);
-
-        if (!ec) {
-            auto last_write = entry.last_write_time(ec);
-            if (!ec) {
-                auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
-                    last_write - std::filesystem::file_time_type::clock::now() +
-                    std::chrono::system_clock::now());
-                metadata.last_modified = sctp;
-            }
-        }
-
+        if (ec) return unexpected{error{error_code::file_read_error, ec.message()}};
+        auto last_write = entry.last_write_time(ec);
+        if (ec) return unexpected{error{error_code::file_read_error, ec.message()}};
+        metadata.last_modified = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+            std::filesystem::file_time_type::clock::to_sys(last_write));
         res.objects.push_back(std::move(metadata));
-
-        if (res.objects.size() >= options.max_results) {
-            res.is_truncated = true;
-            break;
-        }
     }
-
+    if (ec) return unexpected{error{error_code::file_read_error, ec.message()}};
+    std::sort(res.objects.begin(), res.objects.end(), [](const auto& a, const auto& b) { return a.key < b.key; });
+    std::size_t offset = 0;
+    if (options.continuation_token) {
+        try {
+            std::size_t consumed = 0;
+            offset = std::stoull(*options.continuation_token, &consumed);
+            if (consumed != options.continuation_token->size() || options.continuation_token->empty() || options.continuation_token->front() == '-') throw std::invalid_argument("Invalid continuation token");
+        } catch (...) { return unexpected{error{error_code::invalid_configuration, "Invalid continuation token"}}; }
+    }
+    offset = std::min(offset, res.objects.size());
+    auto count = std::min<std::size_t>(options.max_results ? options.max_results : 1000, res.objects.size() - offset);
+    res.is_truncated = offset + count < res.objects.size();
+    if (res.is_truncated) res.continuation_token = std::to_string(offset + count);
+    res.objects.erase(res.objects.begin(), res.objects.begin() + offset);
+    res.objects.resize(count);
     return result<list_storage_result>(std::move(res));
 }
 
