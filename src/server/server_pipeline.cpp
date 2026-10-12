@@ -85,15 +85,7 @@ struct server_pipeline::impl {
                 config.queue_size);
             context->encryption_enabled = true;
 
-#ifdef FILE_TRANS_ENABLE_ENCRYPTION
-            // Create encryption engines for workers
-            auto total_encryption_workers = config.encryption_workers;
-            context->encryption_engines.reserve(total_encryption_workers);
-            for (std::size_t i = 0; i < total_encryption_workers; ++i) {
-                context->encryption_engines.push_back(
-                    aes_gcm_engine::create(aes_gcm_config{}));
-            }
-#endif
+            context->encryption_provider = config.encryption_provider;
         }
 
         // Set statistics pointer in context
@@ -244,7 +236,7 @@ pipeline_chunk::pipeline_chunk(const chunk& c)
     , checksum(c.header.checksum)
     , is_compressed(c.is_compressed())
     , original_size(c.header.original_size)
-    , is_encrypted(false)
+    , is_encrypted(kcenon::file_transfer::is_encrypted(c.header.flags))
     , enc_metadata(nullptr) {}
 
 pipeline_chunk::pipeline_chunk(const pipeline_chunk& other)
@@ -315,6 +307,15 @@ auto server_pipeline::start() -> result<void> {
                                "Pipeline is already running"}};
     }
 
+    if (impl_->config.enable_encryption) {
+#ifndef FILE_TRANS_ENABLE_ENCRYPTION
+        return unexpected{error{error_code::invalid_configuration, "Pipeline encryption support is disabled"}};
+#else
+        if (!impl_->config.encryption_provider)
+            return unexpected{error{error_code::invalid_configuration, "Pipeline encryption requires a transfer key provider"}};
+#endif
+    }
+
     FT_LOG_INFO(log_category::pipeline,
         "Starting pipeline with " + std::to_string(impl_->config.io_workers) +
         " I/O workers, " + std::to_string(impl_->config.compression_workers) +
@@ -372,8 +373,11 @@ auto server_pipeline::submit_upload_chunk(pipeline_chunk data) -> result<void> {
 
     // Create decompress job and submit to thread pool
     auto worker_id = impl_->get_worker_id();
-    auto job = std::make_unique<decompress_job>(
-        impl_->context, std::move(data), worker_id);
+    if (data.is_encrypted != impl_->config.enable_encryption)
+        return unexpected{error{error_code::invalid_configuration, "Pipeline chunk encryption policy mismatch"}};
+    std::unique_ptr<pipeline_job_base> job;
+    if (data.is_encrypted) job = std::make_unique<decrypt_job>(impl_->context, std::move(data), worker_id);
+    else job = std::make_unique<decompress_job>(impl_->context, std::move(data), worker_id);
 
     auto enqueue_result = impl_->thread_pool->enqueue(std::move(job));
     if (!enqueue_result.is_ok()) {
@@ -395,8 +399,10 @@ auto server_pipeline::try_submit_upload_chunk(pipeline_chunk data) -> bool {
 
     // Create decompress job and submit to thread pool
     auto worker_id = impl_->get_worker_id();
-    auto job = std::make_unique<decompress_job>(
-        impl_->context, std::move(data), worker_id);
+    if (data.is_encrypted != impl_->config.enable_encryption) return false;
+    std::unique_ptr<pipeline_job_base> job;
+    if (data.is_encrypted) job = std::make_unique<decrypt_job>(impl_->context, std::move(data), worker_id);
+    else job = std::make_unique<decompress_job>(impl_->context, std::move(data), worker_id);
 
     auto enqueue_result = impl_->thread_pool->enqueue(std::move(job));
     if (!enqueue_result.is_ok()) {

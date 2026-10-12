@@ -274,6 +274,7 @@ set(FILE_TRANS_SOURCES
     src/file_transfer.cpp
     src/core/checksum.cpp
     src/core/file_commit.cpp
+    src/core/transfer_crypto.cpp
     src/core/chunk_splitter.cpp
     src/core/chunk_assembler.cpp
     src/core/compression_engine.cpp
@@ -426,7 +427,8 @@ if(KCENON_WITH_NETWORK_SYSTEM AND NETWORK_SYSTEM_INCLUDE_DIR)
     # network_system's QUIC transport uses OpenSSL for TLS 1.3
     # Unix linkers (GCC's ld) require libraries to be specified after
     # the objects that reference them for proper symbol resolution
-    if(FILE_TRANS_ENABLE_ENCRYPTION AND OpenSSL_FOUND)
+    find_package(OpenSSL REQUIRED) # Pinned network_system requires TLS even with file encryption disabled
+    if(OpenSSL_FOUND)
         target_link_libraries(FileTransSystem PUBLIC OpenSSL::SSL OpenSSL::Crypto)
     endif()
 endif()

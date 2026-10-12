@@ -13,6 +13,7 @@
 #include <kcenon/file_transfer/core/chunk_config.h>
 #include <kcenon/file_transfer/core/compression_engine.h>
 #include <kcenon/file_transfer/core/file_commit.h>
+#include <kcenon/file_transfer/encryption/transfer_crypto.h>
 #include <kcenon/file_transfer/core/logging.h>
 
 #include <chrono>
@@ -137,6 +138,7 @@ using download_state = internal_transfer_state;
  */
 struct transfer_context_base {
     transfer_id tid;
+    std::shared_ptr<transfer_crypto> crypto;
     internal_transfer_state state{internal_transfer_state::idle};
 
     // Progress tracking
@@ -620,6 +622,7 @@ auto file_transfer_client::builder::with_encryption(bool enable) -> builder& {
 auto file_transfer_client::builder::with_encryption_password(
     const std::string& password) -> builder& {
     config_.encryption_password = password;
+    config_.encryption_key.clear();
     config_.enable_encryption = true;
     return *this;
 }
@@ -627,11 +630,16 @@ auto file_transfer_client::builder::with_encryption_password(
 auto file_transfer_client::builder::with_encryption_key(
     std::span<const std::byte> key) -> builder& {
     config_.encryption_key.assign(key.begin(), key.end());
+    config_.encryption_password.clear();
     config_.enable_encryption = true;
     return *this;
 }
 
 auto file_transfer_client::builder::build() -> result<file_transfer_client> {
+    if (config_.enable_encryption) {
+        auto valid = transfer_crypto::validate_secret(config_.encryption_key, config_.encryption_password);
+        if (!valid) return unexpected{valid.error()};
+    }
     if (config_.connect_timeout <= std::chrono::milliseconds::zero() ||
         config_.transfer_timeout <= std::chrono::milliseconds::zero())
         return unexpected{error{error_code::invalid_configuration, "Connection and transfer deadlines must be positive"}};
@@ -770,8 +778,10 @@ auto file_transfer_client::upload_file(
     const std::filesystem::path& local_path, const std::string& remote_name,
     const upload_options& options) -> result<transfer_handle> {
     if (!is_connected()) return unexpected{error{error_code::not_initialized, "Client is not connected"}};
-    if (options.encrypt.value_or(impl_->config.enable_encryption))
-        return unexpected{error{error_code::invalid_configuration, "Transfer encryption has not been configured"}};
+    if (options.encrypt.value_or(impl_->config.enable_encryption)) {
+        auto valid = transfer_crypto::validate_secret(impl_->config.encryption_key, impl_->config.encryption_password);
+        if (!valid) return unexpected{valid.error()};
+    }
     std::error_code ec;
     if (!std::filesystem::is_regular_file(local_path, ec))
         return unexpected{error{error_code::file_not_found, "Local file not found: " + local_path.string()}};
@@ -787,7 +797,13 @@ auto file_transfer_client::upload_file(
     auto response = impl_->open_channel(ctx->tid);
     auto* state = impl_.get();
     state->launch([state, ctx, response] {
-        auto send = [&](message_type type, const auto& value) {
+        auto send = [&](message_type type, auto value) {
+            if constexpr (requires { value.auth_tag; }) {
+                if (ctx->crypto) {
+                    auto signed_value = ctx->crypto->sign(type, value);
+                    if (!signed_value) throw std::runtime_error(signed_value.error().message);
+                }
+            }
             auto sent = state->send(type, value);
             if (!sent) throw std::runtime_error(sent.error().message);
         };
@@ -801,6 +817,10 @@ auto file_transfer_client::upload_file(
             if (frame.value().type != expected) throw std::runtime_error("Unexpected upload response");
             auto value = wire::decode<T>(frame.value().payload);
             if (!value) throw std::runtime_error(value.error().message);
+            if (ctx->crypto && expected != message_type::upload_accept) {
+                auto verified = ctx->crypto->verify(expected, value.value());
+                if (!verified) throw std::runtime_error(verified.error().message);
+            }
             return std::move(value.value());
         };
         try {
@@ -815,12 +835,30 @@ auto file_transfer_client::upload_file(
                 (compression == compression_mode::always ? wire_compression_mode::lz4 : wire_compression_mode::adaptive);
             request.options = transfer_options::verify_checksum;
             if (ctx->options.overwrite) request.options = request.options | transfer_options::overwrite_existing;
+            if (ctx->options.encrypt.value_or(state->config.enable_encryption)) {
+                request.encryption = wire_encryption_algorithm::aes_256_gcm;
+                auto salt = transfer_crypto::random_salt();
+                if (!salt) throw std::runtime_error(salt.error().message);
+                request.encryption_salt = salt.value();
+                auto crypto = transfer_crypto::create(state->config.encryption_key, state->config.encryption_password,
+                    ctx->tid, request.encryption_salt, true);
+                if (!crypto) throw std::runtime_error(crypto.error().message);
+                ctx->crypto = std::move(crypto.value());
+            }
             if (!state->wait_active(ctx)) throw std::runtime_error("Upload interrupted");
             send(message_type::upload_request, request);
             auto accepted = receive.template operator()<msg_upload_accept>(message_type::upload_accept);
             if (!chunk_config{accepted.chunk_size}.validate() || accepted.resume_offset ||
-                accepted.encryption != wire_encryption_algorithm::none || accepted.compression != request.compression)
+                accepted.encryption != request.encryption || accepted.compression != request.compression)
                 throw std::runtime_error("Invalid upload negotiation response");
+            if (ctx->crypto) {
+                auto crypto = transfer_crypto::create(state->config.encryption_key, state->config.encryption_password,
+                    ctx->tid, request.encryption_salt, true, &accepted.encryption_salt);
+                if (!crypto) throw std::runtime_error(crypto.error().message);
+                ctx->crypto = std::move(crypto.value());
+                auto verified = ctx->crypto->verify(message_type::upload_accept, accepted);
+                if (!verified) throw std::runtime_error(verified.error().message);
+            }
             {
                 std::lock_guard lock(ctx->mutex);
                 if (is_terminal_status(to_transfer_status(ctx->state))) throw std::runtime_error("Upload interrupted");
@@ -849,6 +887,10 @@ auto file_transfer_client::upload_file(
                     if (encoded.value().size() < data.data.size()) { data.data = std::move(encoded.value()); h.flags |= chunk_flags::compressed; }
                 }
                 h.compressed_size = static_cast<uint32_t>(data.data.size());
+                if (ctx->crypto) {
+                    auto sealed = ctx->crypto->seal(data);
+                    if (!sealed) throw std::runtime_error(sealed.error().message);
+                }
                 if (!state->throttle(ctx, state->upload_limiter.get(), data.data.size())) throw std::runtime_error("Upload interrupted");
                 send(message_type::chunk_data, data);
                 auto ack = receive.template operator()<msg_chunk_ack>(message_type::chunk_ack);
@@ -888,6 +930,11 @@ auto file_transfer_client::download_file(
         FT_LOG_ERROR(log_category::client, "Download failed: client is not connected");
         return unexpected{error{error_code::not_initialized,
                                "Client is not connected"}};
+    }
+
+    if (options.encrypt.value_or(impl_->config.enable_encryption)) {
+        auto valid = transfer_crypto::validate_secret(impl_->config.encryption_key, impl_->config.encryption_password);
+        if (!valid) return unexpected{valid.error()};
     }
 
     // Validate remote filename
@@ -960,13 +1007,25 @@ auto file_transfer_client::download_file(
         auto checked = [](auto result) {
             if (!result) throw std::runtime_error(result.error().message);
         };
+        auto send = [&](message_type type, auto value) {
+            if (ctx->crypto) checked(ctx->crypto->sign(type, value));
+            checked(state->send(type, value));
+        };
         try {
-            if (ctx->options.encrypt.value_or(state->config.enable_encryption))
-                throw std::runtime_error("Encrypted download is not yet negotiated");
             msg_download_request request{};
             request.transfer_id = ctx->tid.bytes; request.filename = ctx->remote_name;
             request.compression = static_cast<wire_compression_mode>(state->config.compression);
-            checked(state->send(message_type::download_request, request));
+            if (ctx->options.encrypt.value_or(state->config.enable_encryption)) {
+                request.encryption = wire_encryption_algorithm::aes_256_gcm;
+                auto salt = transfer_crypto::random_salt();
+                if (!salt) throw std::runtime_error(salt.error().message);
+                request.encryption_salt = salt.value();
+                auto crypto = transfer_crypto::create(state->config.encryption_key, state->config.encryption_password,
+                    ctx->tid, request.encryption_salt, false);
+                if (!crypto) throw std::runtime_error(crypto.error().message);
+                ctx->crypto = std::move(crypto.value());
+            }
+            send(message_type::download_request, request);
             auto first = state->receive(response);
             if (!first) throw std::runtime_error(first.error().message);
             if (first.value().type == message_type::download_reject) {
@@ -979,8 +1038,15 @@ auto file_transfer_client::download_file(
             if (!accepted) throw std::runtime_error(accepted.error().message);
             const auto& metadata = accepted.value();
             if (metadata.compression != request.compression || metadata.resume_offset ||
-                metadata.encryption != wire_encryption_algorithm::none)
+                metadata.encryption != request.encryption)
                 throw std::runtime_error("Invalid download negotiation response");
+            if (ctx->crypto) {
+                auto crypto = transfer_crypto::create(state->config.encryption_key, state->config.encryption_password,
+                    ctx->tid, request.encryption_salt, false, &metadata.encryption_salt);
+                if (!crypto) throw std::runtime_error(crypto.error().message);
+                ctx->crypto = std::move(crypto.value());
+                checked(ctx->crypto->verify(message_type::download_accept, metadata));
+            }
             std::string hash;
             for (auto byte : metadata.sha256_hash) {
                 hash += "0123456789abcdef"[byte >> 4]; hash += "0123456789abcdef"[byte & 15];
@@ -997,17 +1063,21 @@ auto file_transfer_client::download_file(
                     auto& data = decoded.value();
                     if (data.is_compressed() && metadata.compression == wire_compression_mode::none)
                         throw std::runtime_error("Unnegotiated compression");
-                    checked(state->owner.load()->process_download_chunk_impl(handle_id, data, false));
                     wire_bytes += data.data.size();
-                    checked(state->send(message_type::chunk_ack, msg_chunk_ack{ctx->tid.bytes, data.header.chunk_index}));
+                    if (is_encrypted(data.header.flags) != static_cast<bool>(ctx->crypto))
+                        throw std::runtime_error("Unnegotiated chunk encryption");
+                    if (ctx->crypto) checked(ctx->crypto->open(data));
+                    checked(state->owner.load()->process_download_chunk_impl(handle_id, data, false));
+                    send(message_type::chunk_ack, msg_chunk_ack{ctx->tid.bytes, data.header.chunk_index});
                 } else if (frame.value().type == message_type::download_complete) {
                     auto completed = wire::decode<msg_download_complete>(frame.value().payload);
                     if (!completed) throw std::runtime_error(completed.error().message);
+                    if (ctx->crypto) checked(ctx->crypto->verify(message_type::download_complete, completed.value()));
                     if (completed.value().total_chunks != metadata.total_chunks ||
                         completed.value().bytes_sent != metadata.file_size || completed.value().bytes_on_wire != wire_bytes)
                         throw std::runtime_error("Download completion totals mismatch");
                     checked(state->owner.load()->finalize_download(handle_id));
-                    checked(state->send(message_type::download_ack, msg_download_ack{ctx->tid.bytes, 1, metadata.file_size}));
+                    send(message_type::download_ack, msg_download_ack{ctx->tid.bytes, 1, metadata.file_size});
                     state->close_channel(ctx->tid); return;
                 } else throw std::runtime_error("Unexpected download response");
             }

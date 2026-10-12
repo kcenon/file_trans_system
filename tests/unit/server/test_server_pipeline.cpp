@@ -690,3 +690,33 @@ TEST_F(ServerPipelineTest, PipelineChunkMoveConstruction) {
 
 }  // namespace
 }  // namespace kcenon::file_transfer
+
+TEST(PipelineEncryptionPolicyTest, MissingTransferKeyFailsWithoutSuccessfulStage) {
+    using namespace kcenon::file_transfer;
+    pipeline_config config; config.enable_encryption = true;
+    config.encryption_provider = [](const transfer_id&) { return std::shared_ptr<encryption_interface>{}; };
+    auto built = server_pipeline::create(config); ASSERT_TRUE(built);
+    auto& pipeline = built.value();
+#ifndef FILE_TRANS_ENABLE_ENCRYPTION
+    EXPECT_FALSE(pipeline.start());
+#else
+    std::mutex mutex; std::condition_variable cv; bool failed=false; unsigned successful=0;
+    pipeline.on_error([&](auto, const auto&) { std::lock_guard lock(mutex); failed=true; cv.notify_all(); });
+    pipeline.on_stage_complete([&](auto stage, const auto&) { if (stage==pipeline_stage::encrypt || stage==pipeline_stage::decrypt) ++successful; });
+    ASSERT_TRUE(pipeline.start());
+    pipeline_chunk data; data.id=transfer_id::generate(); data.chunk_index=0; data.checksum=0;
+    data.original_size=3; data.is_encrypted=true; data.is_compressed=false; data.data.resize(3);
+    ASSERT_TRUE(pipeline.submit_upload_chunk(std::move(data)));
+    { std::unique_lock lock(mutex); ASSERT_TRUE(cv.wait_for(lock, std::chrono::seconds(2), [&] { return failed; })); }
+    ASSERT_TRUE(pipeline.stop()); EXPECT_EQ(successful, 0); EXPECT_EQ(pipeline.stats().chunks_processed, 0);
+#endif
+}
+
+#ifndef FILE_TRANS_ENABLE_ENCRYPTION
+#include <kcenon/file_transfer/encryption/transfer_crypto.h>
+TEST(PipelineEncryptionPolicyTest, CryptoDisabledRejectsEvenValidSecret) {
+    using namespace kcenon::file_transfer;
+    EXPECT_FALSE(transfer_crypto::validate_secret(std::vector<std::byte>(32), ""));
+    EXPECT_FALSE(transfer_crypto::random_salt());
+}
+#endif

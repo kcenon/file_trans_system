@@ -352,6 +352,9 @@ struct msg_upload_request {
     transfer_options options;               // 4 bytes
     uint64_t resume_from;                   // 8 bytes (0 if new)
 
+    std::array<uint8_t, 32> encryption_salt{}; // Random client/server salt; never a secret key
+    std::array<uint8_t, 32> auth_tag{}; // Optional authenticated-transfer extension
+
     static constexpr std::size_t min_serialized_size = 72;
 };
 
@@ -364,6 +367,9 @@ struct msg_upload_accept {
     wire_encryption_algorithm encryption;   // 1 byte (agreed)
     uint32_t chunk_size;                    // 4 bytes
     uint64_t resume_offset;                 // 8 bytes
+
+    std::array<uint8_t, 32> encryption_salt{}; // Random client/server salt; never a secret key
+    std::array<uint8_t, 32> auth_tag{}; // Optional authenticated-transfer extension
 
     static constexpr std::size_t serialized_size = 30;
 };
@@ -388,6 +394,8 @@ struct msg_upload_complete {
     uint64_t bytes_sent;                    // 8 bytes (raw)
     uint64_t bytes_on_wire;                 // 8 bytes (compressed)
 
+    std::array<uint8_t, 32> auth_tag{}; // Optional authenticated-transfer extension
+
     static constexpr std::size_t serialized_size = 40;
 };
 
@@ -398,6 +406,8 @@ struct msg_upload_ack {
     std::array<uint8_t, 16> transfer_id;   // 16 bytes (UUID)
     uint8_t verified;                       // 1 byte (bool)
     std::string stored_path;                // variable (2-byte length prefix)
+
+    std::array<uint8_t, 32> auth_tag{}; // Optional authenticated-transfer extension
 
     static constexpr std::size_t min_serialized_size = 19;
 };
@@ -411,6 +421,9 @@ struct msg_download_request {
     wire_compression_mode compression;      // 1 byte
     wire_encryption_algorithm encryption;   // 1 byte
     uint64_t resume_from;                   // 8 bytes (0 if new)
+
+    std::array<uint8_t, 32> encryption_salt{}; // Random client/server salt; never a secret key
+    std::array<uint8_t, 32> auth_tag{}; // Optional authenticated-transfer extension
 
     static constexpr std::size_t min_serialized_size = 28;
 };
@@ -428,6 +441,9 @@ struct msg_download_accept {
     uint64_t total_chunks;                  // 8 bytes
     uint64_t resume_offset;                 // 8 bytes
     uint64_t modified_time;                 // 8 bytes (timestamp)
+
+    std::array<uint8_t, 32> encryption_salt{}; // Random client/server salt; never a secret key
+    std::array<uint8_t, 32> auth_tag{}; // Optional authenticated-transfer extension
 
     static constexpr std::size_t serialized_size = 86;
 };
@@ -452,6 +468,8 @@ struct msg_download_complete {
     uint64_t bytes_sent;                    // 8 bytes (raw)
     uint64_t bytes_on_wire;                 // 8 bytes (compressed)
 
+    std::array<uint8_t, 32> auth_tag{}; // Optional authenticated-transfer extension
+
     static constexpr std::size_t serialized_size = 40;
 };
 
@@ -462,6 +480,8 @@ struct msg_download_ack {
     std::array<uint8_t, 16> transfer_id;   // 16 bytes (UUID)
     uint8_t verified;                       // 1 byte (bool)
     uint64_t bytes_received;                // 8 bytes
+
+    std::array<uint8_t, 32> auth_tag{}; // Optional authenticated-transfer extension
 
     static constexpr std::size_t serialized_size = 25;
 };
@@ -512,6 +532,8 @@ struct msg_list_response {
 struct msg_chunk_ack {
     std::array<uint8_t, 16> transfer_id;   // 16 bytes (UUID)
     uint64_t chunk_index;                   // 8 bytes
+
+    std::array<uint8_t, 32> auth_tag{}; // Optional authenticated-transfer extension
 
     static constexpr std::size_t serialized_size = 24;
 };

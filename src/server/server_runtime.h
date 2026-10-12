@@ -5,6 +5,7 @@
 #include "kcenon/file_transfer/core/chunk_config.h"
 #include "kcenon/file_transfer/core/compression_engine.h"
 #include "kcenon/file_transfer/core/protocol_codec.h"
+#include "kcenon/file_transfer/encryption/transfer_crypto.h"
 #include "kcenon/file_transfer/server/server_pipeline.h"
 #include "kcenon/file_transfer/server/server_types.h"
 #include "kcenon/file_transfer/server/storage_manager.h"
@@ -55,6 +56,7 @@ class server_runtime : public std::enable_shared_from_this<server_runtime> {
         uint64_t size{}, chunks{}, index{}, bytes{}, wire_bytes{}, previous_size{};
         std::string hash;
         wire_compression_mode compression{};
+        std::shared_ptr<transfer_crypto> crypto;
         bool upload{}, overwrite{}, existed{}, paused{};
         std::set<uint64_t> received;
     };
@@ -89,6 +91,30 @@ class server_runtime : public std::enable_shared_from_this<server_runtime> {
     template<class T> auto send(session& client, message_type type, const T& value) -> bool {
         auto encoded = wire::encode(type, value);
         return encoded && client.send(std::move(encoded.value())).is_ok();
+    }
+    template<class T> auto signed_send(session& client, message_type type, T value,
+        const std::shared_ptr<transfer_crypto>& crypto) -> bool {
+        if (crypto) { auto signed_value = crypto->sign(type, value); if (!signed_value) return false; }
+        return send(client, type, value);
+    }
+    struct crypto_negotiation { std::shared_ptr<transfer_crypto> cipher; transfer_crypto::salt server_salt{}; };
+    template<class T> auto negotiate_crypto(const T& request, bool upload) -> result<crypto_negotiation> {
+        if (request.encryption == wire_encryption_algorithm::none) {
+            if (config_.require_encryption) return unexpected{error{error_code::invalid_configuration, "Server requires encrypted transfers"}};
+            return crypto_negotiation{};
+        }
+        if (!config_.enable_encryption || request.encryption != wire_encryption_algorithm::aes_256_gcm)
+            return unexpected{error{error_code::invalid_configuration, "Requested encryption is unavailable"}};
+        auto id = transfer_id{request.transfer_id};
+        auto initial = transfer_crypto::create(config_.encryption_key, config_.encryption_password, id, request.encryption_salt, upload);
+        if (!initial) return unexpected{initial.error()};
+        auto verified = initial.value()->verify(upload ? message_type::upload_request : message_type::download_request, request);
+        if (!verified) return unexpected{verified.error()};
+        auto salt = transfer_crypto::random_salt(); if (!salt) return unexpected{salt.error()};
+        auto accepted = transfer_crypto::create(config_.encryption_key, config_.encryption_password, id,
+            request.encryption_salt, upload, &salt.value());
+        if (!accepted) return unexpected{accepted.error()};
+        return crypto_negotiation{std::move(accepted.value()), salt.value()};
     }
     void reject(session& client, message_type request, const transfer_id& id, const error& err) {
         if (request == message_type::upload_request)
@@ -189,8 +215,8 @@ class server_runtime : public std::enable_shared_from_this<server_runtime> {
         };
         if (id.is_null() || operations_.contains(id)) return fail(error_code::invalid_configuration, "Invalid or duplicate transfer ID");
         if (!valid_filename(request.filename)) return fail(error_code::invalid_file_path, "Invalid filename");
-        if (request.encryption != wire_encryption_algorithm::none || config_.require_encryption)
-            return fail(error_code::invalid_configuration, "Requested encryption is not configured");
+        auto negotiated = negotiate_crypto(request, true);
+        if (!negotiated) return fail(negotiated.error().code, negotiated.error().message);
         if (request.resume_from) return fail(error_code::invalid_configuration, "Durable resume is not negotiated");
         if (static_cast<uint8_t>(request.compression) > 2)
             return fail(error_code::invalid_configuration, "Invalid compression mode");
@@ -226,11 +252,13 @@ class server_runtime : public std::enable_shared_from_this<server_runtime> {
         op.path = staging_ / id.to_string(); op.size = request.file_size; op.chunks = chunks;
         op.hash = hash_hex(request.sha256_hash); op.upload = true; op.overwrite = overwrite;
         op.existed = exists.value(); op.previous_size = previous_size; op.compression = request.compression;
+        op.crypto = negotiated.value().cipher;
         operations_.emplace(id, std::move(op));
         reserved_ += request.file_size;
         { std::lock_guard lock(stats_mutex_); ++stats_.active_transfers; ++stats_.active_uploads; }
-        if (!send(client, message_type::upload_accept, msg_upload_accept{id.bytes, request.compression,
-                  wire_encryption_algorithm::none, static_cast<uint32_t>(config_.chunk_size), 0}))
+        msg_upload_accept accepted{id.bytes, request.compression, request.encryption, static_cast<uint32_t>(config_.chunk_size), 0};
+        accepted.encryption_salt = negotiated.value().server_salt;
+        if (!signed_send(client, message_type::upload_accept, accepted, negotiated.value().cipher))
             finish(id, false, "Failed to send upload acceptance");
     }
     auto owned(session& client, const transfer_id& id) -> operation& {
@@ -246,10 +274,11 @@ class server_runtime : public std::enable_shared_from_this<server_runtime> {
             h.chunk_offset != h.chunk_index * config_.chunk_size ||
             h.original_size != std::min<uint64_t>(config_.chunk_size, op.size - h.chunk_offset) ||
             h.original_size > chunk_config::max_chunk_size || h.compressed_size > chunk_config::max_chunk_size + 65536 ||
-            is_encrypted(h.flags) || (data.is_compressed() && op.compression == wire_compression_mode::none))
+            is_encrypted(h.flags) != static_cast<bool>(op.crypto) || (data.is_compressed() && op.compression == wire_compression_mode::none))
             throw std::invalid_argument("Chunk does not match accepted transfer metadata");
+        const auto wire_size = h.compressed_size;
+        if (op.crypto) { auto decrypted = op.crypto->open(data); if (!decrypted) throw std::invalid_argument(decrypted.error().message); }
         if (!op.received.contains(h.chunk_index)) {
-            auto wire_size = h.compressed_size;
             auto processed = process_pipeline(data);
             if (!processed) throw std::invalid_argument(processed.error().message);
             data.data = std::move(processed.value().data);
@@ -262,12 +291,13 @@ class server_runtime : public std::enable_shared_from_this<server_runtime> {
             op.wire_bytes += wire_size;
             report_progress(op);
         }
-        if (!send(client, message_type::chunk_ack, msg_chunk_ack{op.id.bytes, h.chunk_index}))
+        if (!signed_send(client, message_type::chunk_ack, msg_chunk_ack{op.id.bytes, h.chunk_index}, op.crypto))
             finish(op.id, false, "Failed to acknowledge uploaded chunk");
     }
     void complete_upload(session& client, const msg_upload_complete& complete) {
         transfer_id id{complete.transfer_id};
         auto& op = owned(client, id);
+        if (op.crypto) { auto verified = op.crypto->verify(message_type::upload_complete, complete); if (!verified) throw std::invalid_argument(verified.error().message); }
         if (!op.upload || complete.total_chunks != op.chunks || complete.bytes_sent != op.size ||
             op.bytes != op.size || op.received.size() != op.chunks || complete.bytes_on_wire != op.wire_bytes)
             throw std::invalid_argument("Upload is incomplete");
@@ -292,14 +322,15 @@ class server_runtime : public std::enable_shared_from_this<server_runtime> {
         }
         if (stored.value().bytes_stored != op.size) throw std::invalid_argument("Backend did not store the complete file");
         auto filename = op.filename;
+        auto crypto = op.crypto;
         finish(id, true);
-        send(client, message_type::upload_ack, msg_upload_ack{id.bytes, 1, filename});
+        signed_send(client, message_type::upload_ack, msg_upload_ack{id.bytes, 1, filename}, crypto);
     }
     void send_next(session& client, operation& op) {
         if (op.paused) return;
         if (op.index == op.chunks) {
-            send(client, message_type::download_complete,
-                 msg_download_complete{op.id.bytes, op.chunks, op.bytes, op.wire_bytes});
+            signed_send(client, message_type::download_complete,
+                 msg_download_complete{op.id.bytes, op.chunks, op.bytes, op.wire_bytes}, op.crypto);
             return;
         }
         chunk data;
@@ -323,6 +354,7 @@ class server_runtime : public std::enable_shared_from_this<server_runtime> {
             }
         }
         h.compressed_size = static_cast<uint32_t>(data.data.size());
+        if (op.crypto) { auto encrypted = op.crypto->seal(data); if (!encrypted) throw std::invalid_argument(encrypted.error().message); }
         op.wire_bytes += h.compressed_size;
         if (!send(client, message_type::chunk_data, data)) throw std::invalid_argument("Failed to send download chunk");
     }
@@ -333,8 +365,9 @@ class server_runtime : public std::enable_shared_from_this<server_runtime> {
         };
         if (id.is_null() || operations_.contains(id)) return fail(error_code::invalid_configuration, "Invalid or duplicate transfer ID");
         if (!valid_filename(request.filename)) return fail(error_code::invalid_file_path, "Invalid filename");
-        if (request.encryption != wire_encryption_algorithm::none || config_.require_encryption || request.resume_from)
-            return fail(error_code::invalid_configuration, "Encryption or durable resume is not negotiated");
+        auto negotiated = negotiate_crypto(request, false);
+        if (!negotiated) return fail(negotiated.error().code, negotiated.error().message);
+        if (request.resume_from) return fail(error_code::invalid_configuration, "Durable resume is not negotiated");
         if (static_cast<uint8_t>(request.compression) > 2) return fail(error_code::invalid_configuration, "Invalid compression mode");
         auto cb = snapshot_callbacks().download;
         if (cb && !cb({request.filename, peers_.at(&client).info.id})) return fail(error_code::file_access_denied, "Download rejected by application");
@@ -349,13 +382,15 @@ class server_runtime : public std::enable_shared_from_this<server_runtime> {
         operation op;
         op.id = id; op.owner = &client; op.filename = request.filename; op.path = path;
         op.size = retrieved.value().bytes_retrieved; op.hash = hash.value(); op.compression = request.compression;
+        op.crypto = negotiated.value().cipher;
         op.chunks = op.size / config_.chunk_size + (op.size % config_.chunk_size != 0);
         operations_.emplace(id, std::move(op));
         { std::lock_guard lock(stats_mutex_); ++stats_.active_transfers; ++stats_.active_downloads; }
         auto& active = operations_.at(id);
         msg_download_accept accepted{id.bytes, active.size, hash_bytes(active.hash), active.compression,
-            wire_encryption_algorithm::none, static_cast<uint32_t>(config_.chunk_size), active.chunks, 0, 0};
-        if (!send(client, message_type::download_accept, accepted)) { finish(id, false, "Failed to accept download"); return; }
+            request.encryption, static_cast<uint32_t>(config_.chunk_size), active.chunks, 0, 0};
+        accepted.encryption_salt = negotiated.value().server_salt;
+        if (!signed_send(client, message_type::download_accept, accepted, active.crypto)) { finish(id, false, "Failed to accept download"); return; }
         send_next(client, active);
     }
     static auto glob(std::string_view pattern, std::string_view value) -> bool {
@@ -448,6 +483,7 @@ class server_runtime : public std::enable_shared_from_this<server_runtime> {
             case message_type::chunk_ack: {
                 auto ack = read<msg_chunk_ack>(frame);
                 auto& op = owned(*client, transfer_id{ack.transfer_id});
+                if (op.crypto) { auto verified = op.crypto->verify(message_type::chunk_ack, ack); if (!verified) throw std::invalid_argument(verified.error().message); }
                 if (op.upload || op.index >= op.chunks || ack.chunk_index != op.index) throw std::invalid_argument("Unexpected chunk acknowledgement");
                 ++op.index; op.bytes = std::min<uint64_t>(op.size, op.index * config_.chunk_size);
                 report_progress(op); send_next(*client, op); break;
@@ -455,6 +491,7 @@ class server_runtime : public std::enable_shared_from_this<server_runtime> {
             case message_type::download_ack: {
                 auto ack = read<msg_download_ack>(frame);
                 auto& op = owned(*client, transfer_id{ack.transfer_id});
+                if (op.crypto) { auto verified = op.crypto->verify(message_type::download_ack, ack); if (!verified) throw std::invalid_argument(verified.error().message); }
                 if (op.upload || op.index != op.chunks || ack.verified != 1 || ack.bytes_received != op.size)
                     throw std::invalid_argument("Download verification failed");
                 finish(op.id, true); break;

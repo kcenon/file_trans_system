@@ -3,8 +3,8 @@
  * @brief Server-side upload/download pipeline implementation
  *
  * Implements multi-stage pipelines for efficient file transfer processing:
- * - Upload pipeline: network_recv -> decompress -> decrypt -> chunk_verify -> file_write
- * - Download pipeline: file_read -> encrypt -> compress -> network_send
+ * - Upload pipeline: network_recv -> decrypt -> decompress -> chunk_verify -> file_write
+ * - Download pipeline: file_read -> compress -> encrypt -> network_send
  *
  * Encryption stages are optional and can be enabled via pipeline_config.
  */
@@ -62,6 +62,8 @@ enum class pipeline_stage {
 /**
  * @brief Pipeline configuration
  */
+class encryption_interface;
+
 struct pipeline_config {
     std::size_t io_workers = 2;            ///< Number of I/O worker threads
     std::size_t compression_workers = 4;   ///< Number of compression worker threads
@@ -76,6 +78,9 @@ struct pipeline_config {
 
     // Encryption settings
     bool enable_encryption = false;        ///< Enable encryption for transfers
+    // Return a keyed engine unique to this transfer; keep its key immutable.
+    // The provider must be thread safe. Missing engines fail the operation.
+    std::function<std::shared_ptr<encryption_interface>(const transfer_id&)> encryption_provider;
 
     /**
      * @brief Auto-detect optimal configuration based on hardware

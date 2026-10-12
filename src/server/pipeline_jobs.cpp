@@ -7,6 +7,7 @@
 
 #include "kcenon/file_transfer/core/bandwidth_limiter.h"
 #include "kcenon/file_transfer/core/checksum.h"
+#include "kcenon/file_transfer/core/protocol_codec.h"
 #include "kcenon/file_transfer/core/compression_engine.h"
 #include "kcenon/file_transfer/core/logging.h"
 #include "kcenon/file_transfer/encryption/encryption_config.h"
@@ -97,19 +98,7 @@ auto decompress_job::do_work() -> common::VoidResult {
 
     context_->report_stage_complete(pipeline_stage::decompress, chunk_);
 
-    // Submit to next stage
-    // If encryption is enabled and chunk is encrypted, go to decrypt stage
-    // Otherwise, go directly to verify stage
-    if (context_->encryption_enabled && chunk_.is_encrypted && context_->decrypt_queue) {
-        auto decrypt = std::make_unique<decrypt_job>(
-            context_, std::move(chunk_), worker_id_);
-        auto enqueue_result = context_->thread_pool->enqueue(std::move(decrypt));
-        if (!enqueue_result.is_ok()) {
-            return thread::make_error_result(
-                thread::error_code::queue_full,
-                "Failed to enqueue decrypt job");
-        }
-    } else if (context_->verify_queue) {
+    if (context_->verify_queue) {
         auto verify = std::make_unique<verify_job>(std::move(chunk_), context_);
         auto enqueue_result = context_->thread_pool->enqueue(std::move(verify));
         if (!enqueue_result.is_ok()) {
@@ -304,21 +293,8 @@ auto read_job::do_work() -> common::VoidResult {
 
     context_->report_stage_complete(pipeline_stage::file_read, chunk_);
 
-    // Submit to next stage
-    // If encryption is enabled, go to encrypt stage first
-    // Otherwise, go directly to compress stage
     auto worker_id = static_cast<std::size_t>(chunk_index_);
-
-    if (context_->encryption_enabled && context_->encrypt_queue) {
-        auto encrypt = std::make_unique<encrypt_job>(
-            context_, std::move(chunk_), worker_id);
-        auto enqueue_result = context_->thread_pool->enqueue(std::move(encrypt));
-        if (!enqueue_result.is_ok()) {
-            return thread::make_error_result(
-                thread::error_code::queue_full,
-                "Failed to enqueue encrypt job");
-        }
-    } else if (context_->compress_queue) {
+    if (context_->compress_queue) {
         auto compress = std::make_unique<compress_job>(
             context_, std::move(chunk_), worker_id);
         auto enqueue_result = context_->thread_pool->enqueue(std::move(compress));
@@ -391,15 +367,14 @@ auto compress_job::do_work() -> common::VoidResult {
 
     context_->report_stage_complete(pipeline_stage::compress, chunk_);
 
-    // Submit to next stage (send queue)
-    if (context_->send_queue) {
-        auto send = std::make_unique<send_job>(std::move(chunk_), context_);
-        auto enqueue_result = context_->thread_pool->enqueue(std::move(send));
-        if (!enqueue_result.is_ok()) {
-            return thread::make_error_result(
-                thread::error_code::queue_full,
-                "Failed to enqueue send job");
-        }
+    if (context_->encryption_enabled) {
+        auto next = std::make_unique<encrypt_job>(context_, std::move(chunk_), worker_id_);
+        auto queued = context_->thread_pool->enqueue(std::move(next));
+        if (!queued.is_ok()) return thread::make_error_result(thread::error_code::queue_full, "Cannot enqueue encryption");
+    } else if (context_->send_queue) {
+        auto next = std::make_unique<send_job>(std::move(chunk_), context_);
+        auto queued = context_->thread_pool->enqueue(std::move(next));
+        if (!queued.is_ok()) return thread::make_error_result(thread::error_code::queue_full, "Cannot enqueue send");
     }
 
     return common::ok();
@@ -466,73 +441,32 @@ encrypt_job::encrypt_job(std::shared_ptr<pipeline_context> context,
     , worker_id_(worker_id) {}
 
 auto encrypt_job::do_work() -> common::VoidResult {
-    if (is_cancelled()) {
-        return thread::make_error_result(
-            thread::error_code::operation_canceled,
-            "Encrypt job cancelled");
-    }
-
-    if (!context_->is_running()) {
-        return common::ok();
-    }
-
-    FT_LOG_TRACE(log_category::pipeline,
-                 "Encrypting chunk " + std::to_string(chunk_.chunk_index));
-
+    auto fail = [&](const std::string& message) {
+        context_->report_error(pipeline_stage::encrypt, message);
+        return thread::make_error_result(thread::error_code::job_execution_failed, message);
+    };
+    if (is_cancelled() || !context_->is_running()) return fail("Encryption job interrupted");
 #ifdef FILE_TRANS_ENABLE_ENCRYPTION
-    if (!context_->encryption_engines.empty()) {
-        auto& engine = context_->encryption_engines[
-            worker_id_ % context_->encryption_engines.size()];
-
-        if (engine && engine->has_key()) {
-            auto result = engine->encrypt_chunk(
-                std::span<const std::byte>(chunk_.data),
-                chunk_.chunk_index);
-
-            if (result.has_value()) {
-                auto& enc_result = result.value();
-                chunk_.data = std::move(enc_result.ciphertext);
-                chunk_.is_encrypted = true;
-                chunk_.enc_metadata = std::make_unique<encryption_metadata>(
-                    std::move(enc_result.metadata));
-
-                if (context_->statistics) {
-                    context_->statistics->chunks_encrypted++;
-                    context_->statistics->encryption_bytes += chunk_.data.size();
-                }
-
-                FT_LOG_TRACE(log_category::pipeline,
-                             "Chunk " + std::to_string(chunk_.chunk_index) +
-                                 " encrypted successfully");
-            } else {
-                auto error_msg = "Encryption failed for chunk " +
-                                 std::to_string(chunk_.chunk_index) + ": " +
-                                 result.error().message;
-                FT_LOG_ERROR(log_category::pipeline, error_msg);
-                context_->report_error(pipeline_stage::encrypt, result.error().message);
-
-                return thread::make_error_result(
-                    thread::error_code::job_execution_failed,
-                    error_msg);
-            }
-        }
-    }
+    auto engine = context_->encryption_provider ? context_->encryption_provider(chunk_.id) : nullptr;
+    if (!engine || !engine->has_key()) return fail("No valid encryption key for transfer");
+    auto size = static_cast<uint64_t>(chunk_.original_size);
+    auto compressed = static_cast<uint8_t>(chunk_.is_compressed);
+    wire::writer writer; writer(chunk_.id.bytes, chunk_.chunk_index, chunk_.checksum, size, compressed);
+    std::vector<std::byte> aad; for (auto b : writer.data) aad.push_back(std::byte{b});
+    auto transformed = engine->encrypt(chunk_.data, aad);
+    if (!transformed) return fail(transformed.error().message);
+    chunk_.data = std::move(transformed.value().ciphertext);
+    chunk_.enc_metadata = std::make_unique<encryption_metadata>(std::move(transformed.value().metadata));
+    chunk_.is_encrypted = true;
+    if (context_->statistics) { ++context_->statistics->chunks_encrypted; context_->statistics->encryption_bytes += chunk_.data.size(); }
+#else
+    return fail("Encryption support is disabled");
 #endif
-
     context_->report_stage_complete(pipeline_stage::encrypt, chunk_);
-
-    // Submit to next stage (compress queue)
-    if (context_->compress_queue) {
-        auto compress = std::make_unique<compress_job>(
-            context_, std::move(chunk_), worker_id_);
-        auto enqueue_result = context_->thread_pool->enqueue(std::move(compress));
-        if (!enqueue_result.is_ok()) {
-            return thread::make_error_result(
-                thread::error_code::queue_full,
-                "Failed to enqueue compress job");
-        }
+    if (context_->send_queue) {
+        auto next = std::make_unique<send_job>(std::move(chunk_), context_);
+        if (!context_->thread_pool->enqueue(std::move(next)).is_ok()) return fail("Cannot enqueue next stage");
     }
-
     return common::ok();
 }
 
@@ -552,73 +486,33 @@ decrypt_job::decrypt_job(std::shared_ptr<pipeline_context> context,
     , worker_id_(worker_id) {}
 
 auto decrypt_job::do_work() -> common::VoidResult {
-    if (is_cancelled()) {
-        return thread::make_error_result(
-            thread::error_code::operation_canceled,
-            "Decrypt job cancelled");
-    }
-
-    if (!context_->is_running()) {
-        return common::ok();
-    }
-
-    FT_LOG_TRACE(log_category::pipeline,
-                 "Decrypting chunk " + std::to_string(chunk_.chunk_index));
-
+    auto fail = [&](const std::string& message) {
+        context_->report_error(pipeline_stage::decrypt, message);
+        return thread::make_error_result(thread::error_code::job_execution_failed, message);
+    };
+    if (is_cancelled() || !context_->is_running()) return fail("Encryption job interrupted");
 #ifdef FILE_TRANS_ENABLE_ENCRYPTION
-    if (!context_->encryption_engines.empty() && chunk_.enc_metadata) {
-        auto& engine = context_->encryption_engines[
-            worker_id_ % context_->encryption_engines.size()];
-
-        if (engine && engine->has_key()) {
-            auto result = engine->decrypt_chunk(
-                std::span<const std::byte>(chunk_.data),
-                *chunk_.enc_metadata,
-                chunk_.chunk_index);
-
-            if (result.has_value()) {
-                chunk_.data = std::move(result.value().plaintext);
-                chunk_.is_encrypted = false;
-                chunk_.enc_metadata.reset();
-
-                if (context_->statistics) {
-                    context_->statistics->chunks_decrypted++;
-                }
-
-                FT_LOG_TRACE(log_category::pipeline,
-                             "Chunk " + std::to_string(chunk_.chunk_index) +
-                                 " decrypted successfully");
-            } else {
-                auto error_msg = "Decryption failed for chunk " +
-                                 std::to_string(chunk_.chunk_index) + ": " +
-                                 result.error().message;
-                FT_LOG_ERROR(log_category::pipeline, error_msg);
-                context_->report_error(pipeline_stage::decrypt, result.error().message);
-
-                return thread::make_error_result(
-                    thread::error_code::job_execution_failed,
-                    error_msg);
-            }
-        }
-    }
+    auto engine = context_->encryption_provider ? context_->encryption_provider(chunk_.id) : nullptr;
+    if (!engine || !engine->has_key()) return fail("No valid encryption key for transfer");
+    auto size = static_cast<uint64_t>(chunk_.original_size);
+    auto compressed = static_cast<uint8_t>(chunk_.is_compressed);
+    wire::writer writer; writer(chunk_.id.bytes, chunk_.chunk_index, chunk_.checksum, size, compressed);
+    std::vector<std::byte> aad; for (auto b : writer.data) aad.push_back(std::byte{b});
+    if (!chunk_.is_encrypted || !chunk_.enc_metadata) return fail("Missing encrypted chunk metadata");
+    auto metadata = *chunk_.enc_metadata; metadata.aad = aad;
+    auto transformed = engine->decrypt(chunk_.data, metadata);
+    if (!transformed) return fail(transformed.error().message);
+    chunk_.data = std::move(transformed.value().plaintext);
+    chunk_.enc_metadata.reset(); chunk_.is_encrypted = false;
+    if (context_->statistics) ++context_->statistics->chunks_decrypted;
 #else
-    // If encryption is not compiled in, just pass through
-    chunk_.is_encrypted = false;
+    return fail("Encryption support is disabled");
 #endif
-
     context_->report_stage_complete(pipeline_stage::decrypt, chunk_);
-
-    // Submit to next stage (verify queue)
-    if (context_->verify_queue) {
-        auto verify = std::make_unique<verify_job>(std::move(chunk_), context_);
-        auto enqueue_result = context_->thread_pool->enqueue(std::move(verify));
-        if (!enqueue_result.is_ok()) {
-            return thread::make_error_result(
-                thread::error_code::queue_full,
-                "Failed to enqueue verify job");
-        }
+    if (context_->decompress_queue) {
+        auto next = std::make_unique<decompress_job>(context_, std::move(chunk_), worker_id_);
+        if (!context_->thread_pool->enqueue(std::move(next)).is_ok()) return fail("Cannot enqueue next stage");
     }
-
     return common::ok();
 }
 

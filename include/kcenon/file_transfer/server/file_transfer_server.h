@@ -80,6 +80,9 @@ public:
          * @return Reference to builder for chaining
          */
         auto with_chunk_size(std::size_t size) -> builder&;
+        auto with_encryption_key(std::span<const std::byte> key) -> builder&;
+        auto with_encryption_password(const std::string& password) -> builder&;
+        auto with_required_encryption(bool required = true) -> builder&;
 
         /**
          * @brief Set storage mode

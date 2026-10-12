@@ -23,24 +23,51 @@ FT_FIELDS(msg_connect_ack, v.version, v.capabilities, v.session_id,
           v.max_chunk_size, v.max_file_size, v.server_name)
 FT_FIELDS(msg_heartbeat, v.timestamp, v.sequence)
 FT_FIELDS(msg_disconnect, v.reason_code, v.message)
-FT_FIELDS(msg_upload_request, v.transfer_id, v.filename, v.file_size,
-          v.sha256_hash, v.compression, v.encryption, v.options, v.resume_from)
-FT_FIELDS(msg_upload_accept, v.transfer_id, v.compression, v.encryption,
-          v.chunk_size, v.resume_offset)
+template<class Archive> void fields(Archive& a, msg_upload_request& v) {
+    a(v.transfer_id, v.filename, v.file_size, v.sha256_hash, v.compression, v.encryption, v.options, v.resume_from);
+    if (v.encryption != wire_encryption_algorithm::none) a(v.encryption_salt, v.auth_tag);
+}
+template<class Archive> void fields(Archive& a, msg_upload_accept& v) {
+    a(v.transfer_id, v.compression, v.encryption, v.chunk_size, v.resume_offset);
+    if (v.encryption != wire_encryption_algorithm::none) a(v.encryption_salt, v.auth_tag);
+}
 FT_FIELDS(msg_upload_reject, v.transfer_id, v.reason_code, v.message)
-FT_FIELDS(msg_upload_complete, v.transfer_id, v.total_chunks, v.bytes_sent, v.bytes_on_wire)
-FT_FIELDS(msg_upload_ack, v.transfer_id, v.verified, v.stored_path)
-FT_FIELDS(msg_download_request, v.transfer_id, v.filename, v.compression,
-          v.encryption, v.resume_from)
-FT_FIELDS(msg_download_accept, v.transfer_id, v.file_size, v.sha256_hash,
-          v.compression, v.encryption, v.chunk_size, v.total_chunks,
-          v.resume_offset, v.modified_time)
+template<class Archive> void fields(Archive& a, msg_upload_complete& v) {
+    a(v.transfer_id, v.total_chunks, v.bytes_sent, v.bytes_on_wire);
+    if constexpr (Archive::reading) { if (a.remaining()) a(v.auth_tag); }
+    else if (std::any_of(v.auth_tag.begin(), v.auth_tag.end(), [](auto b) { return b != 0; })) a(v.auth_tag);
+}
+template<class Archive> void fields(Archive& a, msg_upload_ack& v) {
+    a(v.transfer_id, v.verified, v.stored_path);
+    if constexpr (Archive::reading) { if (a.remaining()) a(v.auth_tag); }
+    else if (std::any_of(v.auth_tag.begin(), v.auth_tag.end(), [](auto b) { return b != 0; })) a(v.auth_tag);
+}
+template<class Archive> void fields(Archive& a, msg_download_request& v) {
+    a(v.transfer_id, v.filename, v.compression, v.encryption, v.resume_from);
+    if (v.encryption != wire_encryption_algorithm::none) a(v.encryption_salt, v.auth_tag);
+}
+template<class Archive> void fields(Archive& a, msg_download_accept& v) {
+    a(v.transfer_id, v.file_size, v.sha256_hash, v.compression, v.encryption, v.chunk_size, v.total_chunks, v.resume_offset, v.modified_time);
+    if (v.encryption != wire_encryption_algorithm::none) a(v.encryption_salt, v.auth_tag);
+}
 FT_FIELDS(msg_download_reject, v.transfer_id, v.reason_code, v.message)
-FT_FIELDS(msg_download_complete, v.transfer_id, v.total_chunks, v.bytes_sent, v.bytes_on_wire)
-FT_FIELDS(msg_download_ack, v.transfer_id, v.verified, v.bytes_received)
+template<class Archive> void fields(Archive& a, msg_download_complete& v) {
+    a(v.transfer_id, v.total_chunks, v.bytes_sent, v.bytes_on_wire);
+    if constexpr (Archive::reading) { if (a.remaining()) a(v.auth_tag); }
+    else if (std::any_of(v.auth_tag.begin(), v.auth_tag.end(), [](auto b) { return b != 0; })) a(v.auth_tag);
+}
+template<class Archive> void fields(Archive& a, msg_download_ack& v) {
+    a(v.transfer_id, v.verified, v.bytes_received);
+    if constexpr (Archive::reading) { if (a.remaining()) a(v.auth_tag); }
+    else if (std::any_of(v.auth_tag.begin(), v.auth_tag.end(), [](auto b) { return b != 0; })) a(v.auth_tag);
+}
 FT_FIELDS(msg_list_request, v.request_id, v.pattern, v.offset, v.limit, v.sort_by, v.sort_order)
 FT_FIELDS(file_entry, v.filename, v.file_size, v.sha256_hash, v.created_time, v.modified_time)
-FT_FIELDS(msg_chunk_ack, v.transfer_id, v.chunk_index)
+template<class Archive> void fields(Archive& a, msg_chunk_ack& v) {
+    a(v.transfer_id, v.chunk_index);
+    if constexpr (Archive::reading) { if (a.remaining()) a(v.auth_tag); }
+    else if (std::any_of(v.auth_tag.begin(), v.auth_tag.end(), [](auto b) { return b != 0; })) a(v.auth_tag);
+}
 FT_FIELDS(msg_chunk_nack, v.transfer_id, v.chunk_index, v.reason_code, v.reserved)
 FT_FIELDS(msg_transfer_cancel, v.transfer_id, v.reason_code, v.message)
 FT_FIELDS(msg_transfer_pause, v.transfer_id)

@@ -71,6 +71,7 @@ struct pipeline_context {
 
     /// Whether encryption is enabled for this pipeline
     bool encryption_enabled = false;
+    std::function<std::shared_ptr<encryption_interface>(const transfer_id&)> encryption_provider;
 
     /// Stage completion callback
     stage_callback on_stage_complete_cb;

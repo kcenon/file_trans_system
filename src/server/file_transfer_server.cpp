@@ -6,6 +6,7 @@
 #include "kcenon/file_transfer/server/file_transfer_server.h"
 #include "kcenon/file_transfer/core/logging.h"
 #include "server_runtime.h"
+#include <kcenon/file_transfer/encryption/transfer_crypto.h>
 
 #include <chrono>
 #include <filesystem>
@@ -131,6 +132,16 @@ auto file_transfer_server::builder::with_chunk_size(std::size_t size) -> builder
     return *this;
 }
 
+auto file_transfer_server::builder::with_encryption_key(std::span<const std::byte> key) -> builder& {
+    config_.encryption_key.assign(key.begin(), key.end()); config_.encryption_password.clear(); config_.enable_encryption = true; return *this;
+}
+auto file_transfer_server::builder::with_encryption_password(const std::string& password) -> builder& {
+    config_.encryption_password = password; config_.encryption_key.clear(); config_.enable_encryption = true; return *this;
+}
+auto file_transfer_server::builder::with_required_encryption(bool required) -> builder& {
+    config_.require_encryption = required; if (required) config_.enable_encryption = true; return *this;
+}
+
 auto file_transfer_server::builder::with_storage_mode(storage_mode mode) -> builder& {
     config_.storage = mode;
     return *this;
@@ -197,6 +208,10 @@ auto file_transfer_server::builder::with_cloud_cache_directory(
 }
 
 auto file_transfer_server::builder::build() -> result<file_transfer_server> {
+    if (config_.enable_encryption || config_.require_encryption) {
+        auto valid = transfer_crypto::validate_secret(config_.encryption_key, config_.encryption_password);
+        if (!valid) return unexpected{valid.error()};
+    }
     auto chunk_validation = chunk_config{config_.chunk_size}.validate();
     if (!chunk_validation) return unexpected{chunk_validation.error()};
     if (config_.cloud_config && config_.cloud_config->credentials) {
