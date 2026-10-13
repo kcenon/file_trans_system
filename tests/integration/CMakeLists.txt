@@ -11,6 +11,7 @@ set(INTEGRATION_TEST_SOURCES
     test_public_transport.cpp
     test_public_reconnect.cpp
     test_public_resume.cpp
+    test_public_batch.cpp
     test_basic_scenarios.cpp
     test_error_advanced_scenarios.cpp
     test_concurrency.cpp

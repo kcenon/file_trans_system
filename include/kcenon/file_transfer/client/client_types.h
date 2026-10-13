@@ -113,6 +113,7 @@ struct upload_options {
  * @brief Download options
  */
 struct download_options {
+    std::optional<compression_mode> compression; ///< Override client compression preference
     bool resumable = false;
     std::optional<transfer_id> resume_id; ///< Recover this durable transfer, including after restart
     bool overwrite = false;
@@ -485,7 +486,7 @@ struct batch_result {
  * @brief Options for batch transfers
  */
 struct batch_options {
-    std::size_t max_concurrent = 4;     ///< Maximum concurrent transfers
+    std::size_t max_concurrent = 4;     ///< Maximum concurrent transfers, inclusive range [1, 256]
     bool continue_on_error = true;      ///< Continue if individual files fail
     bool overwrite = false;             ///< Overwrite existing files
     std::optional<compression_mode> compression;  ///< Compression mode override

@@ -492,6 +492,7 @@ public:
 
 private:
     explicit file_transfer_client(client_config config);
+    auto finalize_download_impl(uint64_t handle_id, bool defer_terminal) -> result<void>;
     auto process_download_chunk_impl(uint64_t handle_id, const chunk& data,
                                      bool finalize_on_last_chunk) -> result<void>;
 

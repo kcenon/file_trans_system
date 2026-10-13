@@ -257,77 +257,13 @@ TEST_F(BatchTransferTest, UploadFiles_NotConnected) {
     EXPECT_EQ(result.error().code, error_code::not_initialized);
 }
 
-TEST_F(BatchTransferTest, UploadFiles_EmptyFileList) {
-    auto client_result = create_client();
-    ASSERT_TRUE(client_result.has_value());
-    auto& client = client_result.value();
 
-    // Connect first
-    (void)client.connect({"localhost", 8080});
 
-    std::vector<upload_entry> files;
-    auto result = client.upload_files(files);
-    EXPECT_FALSE(result.has_value());
-    EXPECT_EQ(result.error().code, error_code::invalid_file_path);
-}
 
-TEST_F(BatchTransferTest, UploadFiles_FileNotFound) {
-    auto client_result = create_client();
-    ASSERT_TRUE(client_result.has_value());
-    auto& client = client_result.value();
 
-    (void)client.connect({"localhost", 8080});
 
-    std::vector<upload_entry> files{
-        {test_dir_ / "nonexistent.txt", "remote.txt"}
-    };
 
-    auto result = client.upload_files(files);
-    EXPECT_FALSE(result.has_value());
-    EXPECT_EQ(result.error().code, error_code::file_not_found);
-}
 
-TEST_F(BatchTransferTest, UploadFiles_ValidBatch) {
-    auto client_result = create_client();
-    ASSERT_TRUE(client_result.has_value());
-    auto& client = client_result.value();
-
-    (void)client.connect({"localhost", 8080});
-
-    std::vector<upload_entry> files{
-        {test_files_[0], "remote1.txt"},
-        {test_files_[1], "remote2.txt"},
-        {test_files_[2]}  // Use local filename
-    };
-
-    auto result = client.upload_files(files);
-    EXPECT_TRUE(result.has_value());
-
-    auto& handle = result.value();
-    EXPECT_TRUE(handle.is_valid());
-    EXPECT_EQ(handle.get_total_files(), 3u);
-}
-
-TEST_F(BatchTransferTest, UploadFiles_WithCustomOptions) {
-    auto client_result = create_client();
-    ASSERT_TRUE(client_result.has_value());
-    auto& client = client_result.value();
-
-    (void)client.connect({"localhost", 8080});
-
-    std::vector<upload_entry> files{
-        {test_files_[0], "remote1.txt"},
-        {test_files_[1], "remote2.txt"}
-    };
-
-    batch_options options;
-    options.max_concurrent = 2;
-    options.overwrite = true;
-    options.compression = compression_mode::always;
-
-    auto result = client.upload_files(files, options);
-    EXPECT_TRUE(result.has_value());
-}
 
 // ============================================================================
 // download_files Tests
@@ -348,42 +284,9 @@ TEST_F(BatchTransferTest, DownloadFiles_NotConnected) {
     EXPECT_EQ(result.error().code, error_code::not_initialized);
 }
 
-TEST_F(BatchTransferTest, DownloadFiles_EmptyFileList) {
-    auto client_result = create_client();
-    ASSERT_TRUE(client_result.has_value());
-    auto& client = client_result.value();
 
-    (void)client.connect({"localhost", 8080});
 
-    std::vector<download_entry> files;
-    auto result = client.download_files(files);
-    EXPECT_FALSE(result.has_value());
-    EXPECT_EQ(result.error().code, error_code::invalid_file_path);
-}
 
-TEST_F(BatchTransferTest, DownloadFiles_ValidBatch) {
-    auto client_result = create_client();
-    ASSERT_TRUE(client_result.has_value());
-    auto& client = client_result.value();
-
-    (void)client.connect({"localhost", 8080});
-
-    auto download_dir = test_dir_ / "downloads";
-    std::filesystem::create_directories(download_dir);
-
-    std::vector<download_entry> files{
-        {"remote1.txt", download_dir / "local1.txt"},
-        {"remote2.txt", download_dir / "local2.txt"},
-        {"remote3.txt", download_dir / "local3.txt"}
-    };
-
-    auto result = client.download_files(files);
-    EXPECT_TRUE(result.has_value());
-
-    auto& handle = result.value();
-    EXPECT_TRUE(handle.is_valid());
-    EXPECT_EQ(handle.get_total_files(), 3u);
-}
 
 // ============================================================================
 // Batch Control Tests
@@ -438,134 +341,34 @@ TEST_F(BatchTransferTest, BatchControl_GetProgressNotFound) {
     EXPECT_EQ(progress.total_files, 0u);
 }
 
-TEST_F(BatchTransferTest, BatchControl_PauseBatchValid) {
-    auto client_result = create_client();
-    ASSERT_TRUE(client_result.has_value());
-    auto& client = client_result.value();
 
-    (void)client.connect({"localhost", 8080});
 
-    std::vector<upload_entry> files{
-        {test_files_[0], "remote1.txt"}
-    };
 
-    auto batch_result = client.upload_files(files);
-    ASSERT_TRUE(batch_result.has_value());
-
-    auto pause_result = batch_result.value().pause_all();
-    EXPECT_TRUE(pause_result.has_value());
-}
-
-TEST_F(BatchTransferTest, BatchControl_CancelBatchValid) {
-    auto client_result = create_client();
-    ASSERT_TRUE(client_result.has_value());
-    auto& client = client_result.value();
-
-    (void)client.connect({"localhost", 8080});
-
-    std::vector<upload_entry> files{
-        {test_files_[0], "remote1.txt"}
-    };
-
-    auto batch_result = client.upload_files(files);
-    ASSERT_TRUE(batch_result.has_value());
-
-    auto cancel_result = batch_result.value().cancel_all();
-    EXPECT_TRUE(cancel_result.has_value());
-}
 
 // ============================================================================
 // Batch Progress Tests
 // ============================================================================
 
-TEST_F(BatchTransferTest, BatchProgress_TrackProgress) {
-    auto client_result = create_client();
-    ASSERT_TRUE(client_result.has_value());
-    auto& client = client_result.value();
 
-    (void)client.connect({"localhost", 8080});
 
-    std::vector<upload_entry> files;
-    for (const auto& path : test_files_) {
-        files.emplace_back(path, path.filename().string());
-    }
 
-    auto batch_result = client.upload_files(files);
-    ASSERT_TRUE(batch_result.has_value());
-
-    auto& handle = batch_result.value();
-    auto progress = handle.get_batch_progress();
-
-    EXPECT_EQ(progress.total_files, test_files_.size());
-    EXPECT_GE(progress.total_bytes, 0u);
-}
-
-TEST_F(BatchTransferTest, BatchProgress_GetIndividualHandles) {
-    auto client_result = create_client();
-    ASSERT_TRUE(client_result.has_value());
-    auto& client = client_result.value();
-
-    (void)client.connect({"localhost", 8080});
-
-    std::vector<upload_entry> files{
-        {test_files_[0], "remote1.txt"},
-        {test_files_[1], "remote2.txt"}
-    };
-
-    auto batch_result = client.upload_files(files);
-    ASSERT_TRUE(batch_result.has_value());
-
-    auto& handle = batch_result.value();
-    auto individual_handles = handle.get_individual_handles();
-
-    // Should have handles for successfully started transfers
-    EXPECT_LE(individual_handles.size(), files.size());
-}
 
 // ============================================================================
 // Handle Copy/Move Tests
 // ============================================================================
 
-TEST_F(BatchTransferTest, BatchTransferHandle_Copy) {
-    auto client_result = create_client();
-    ASSERT_TRUE(client_result.has_value());
-    auto& client = client_result.value();
 
-    (void)client.connect({"localhost", 8080});
 
-    std::vector<upload_entry> files{
-        {test_files_[0], "remote1.txt"}
-    };
 
-    auto batch_result = client.upload_files(files);
-    ASSERT_TRUE(batch_result.has_value());
 
-    auto& handle1 = batch_result.value();
-    batch_transfer_handle handle2 = handle1;  // Copy
-
-    EXPECT_EQ(handle1.get_id(), handle2.get_id());
-    EXPECT_TRUE(handle2.is_valid());
+// Scheduling, validation, controls and progress use real endpoints in
+// tests/integration/test_public_batch.cpp.
+TEST_F(BatchTransferTest, HandleCopyAndMovePreserveIdentity) {
+    auto client = create_client(); ASSERT_TRUE(client);
+    batch_transfer_handle first{42, &client.value()};
+    auto copy = first;
+    batch_transfer_handle moved{std::move(copy)};
+    EXPECT_EQ(first.get_id(), 42); EXPECT_EQ(moved.get_id(), 42);
+    EXPECT_TRUE(moved.is_valid());
 }
-
-TEST_F(BatchTransferTest, BatchTransferHandle_Move) {
-    auto client_result = create_client();
-    ASSERT_TRUE(client_result.has_value());
-    auto& client = client_result.value();
-
-    (void)client.connect({"localhost", 8080});
-
-    std::vector<upload_entry> files{
-        {test_files_[0], "remote1.txt"}
-    };
-
-    auto batch_result = client.upload_files(files);
-    ASSERT_TRUE(batch_result.has_value());
-
-    auto handle1_id = batch_result.value().get_id();
-    batch_transfer_handle handle2 = std::move(batch_result.value());
-
-    EXPECT_EQ(handle2.get_id(), handle1_id);
-    EXPECT_TRUE(handle2.is_valid());
-}
-
 }  // namespace kcenon::file_transfer::test

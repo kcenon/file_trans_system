@@ -237,7 +237,7 @@ jobs:
 
     - name: Run tests
       working-directory: file_trans_system
-      run: ctest --test-dir build --output-on-failure --timeout 300 --exclude-regex "BatchTransferTest\."
+      run: ctest --test-dir build --output-on-failure --timeout 300
 
     - name: Upload test results
       if: failure()

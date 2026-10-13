@@ -224,6 +224,7 @@ struct download_context : transfer_context_base {
     uint64_t& received_chunks{transferred_chunks};
     uint64_t& bytes_received{transferred_bytes};
     bool cancelled{false};
+    bool output_committed{false};
     std::set<uint64_t> received_indices;
 };
 
@@ -238,67 +239,58 @@ enum class batch_direction {
 /**
  * @brief Batch transfer context
  */
+enum class batch_entry_state { pending, starting, running, terminal };
+
+struct batch_entry {
+    std::filesystem::path local_path;
+    std::string remote_name;
+    batch_entry_state state{batch_entry_state::pending};
+    std::optional<uint64_t> handle;
+    uint64_t known_size{};
+    uint64_t transferred{};
+    batch_file_result outcome;
+};
+
+// The scheduler alone advances entries. Controls change flags under the same
+// mutex; queries are snapshots, never consumers of completion events.
 struct batch_context {
     batch_direction direction;
     batch_options options;
-    std::chrono::steady_clock::time_point start_time;
-
-    // Transfer tracking
-    std::vector<uint64_t> transfer_ids;      // Individual transfer handle IDs
-    std::vector<std::string> filenames;      // Filenames for result reporting
-    std::atomic<std::size_t> completed_count{0};
-    std::atomic<std::size_t> failed_count{0};
-    std::atomic<std::size_t> in_progress_count{0};
-    std::atomic<uint64_t> total_bytes{0};
-    std::atomic<uint64_t> transferred_bytes{0};
-
-    // Synchronization
+    std::chrono::steady_clock::time_point start_time{std::chrono::steady_clock::now()};
+    std::chrono::steady_clock::time_point finished_at{};
+    std::vector<batch_entry> entries;
     mutable std::mutex mutex;
     std::condition_variable cv;
-    std::atomic<bool> cancelled{false};
-    std::atomic<bool> paused{false};
+    bool cancelled{}, paused{}, done{};
+    std::string stop_reason{"Batch cancelled"};
 
-    // Results
-    std::vector<batch_file_result> file_results;
-
-    [[nodiscard]] auto get_progress() const -> batch_progress {
+    auto progress_locked() const -> batch_progress {
         batch_progress progress;
-        progress.total_files = transfer_ids.size();
-        progress.completed_files = completed_count.load();
-        progress.failed_files = failed_count.load();
-        progress.in_progress_files = in_progress_count.load();
-        progress.total_bytes = total_bytes.load();
-        progress.transferred_bytes = transferred_bytes.load();
-
-        auto now = std::chrono::steady_clock::now();
-        auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            now - start_time);
-        if (elapsed_ms.count() > 0) {
-            progress.overall_rate = static_cast<double>(progress.transferred_bytes) /
-                                   (static_cast<double>(elapsed_ms.count()) / 1000.0);
+        progress.total_files = entries.size();
+        for (const auto& entry : entries) {
+            progress.total_bytes += entry.known_size;
+            progress.transferred_bytes += entry.transferred;
+            if (entry.state == batch_entry_state::terminal) {
+                if (entry.outcome.success) ++progress.completed_files;
+                else ++progress.failed_files;
+            } else if (entry.state != batch_entry_state::pending) ++progress.in_progress_files;
         }
-
+        auto elapsed = std::chrono::duration<double>((done ? finished_at :
+            std::chrono::steady_clock::now()) - start_time).count();
+        if (elapsed > 0) progress.overall_rate = progress.transferred_bytes / elapsed;
         return progress;
     }
-
-    [[nodiscard]] auto get_result() const -> batch_result {
-        std::lock_guard lock(mutex);
+    auto result_locked() const -> batch_result {
+        auto progress = progress_locked();
         batch_result result;
-        result.total_files = transfer_ids.size();
-        result.succeeded = completed_count.load();
-        result.failed = failed_count.load();
-        result.total_bytes = transferred_bytes.load();
-
-        auto now = std::chrono::steady_clock::now();
+        result.total_files = entries.size();
+        result.succeeded = progress.completed_files;
+        result.failed = progress.failed_files;
+        result.total_bytes = progress.transferred_bytes;
         result.elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-            now - start_time);
-
-        result.file_results = file_results;
+            finished_at - start_time);
+        for (const auto& entry : entries) result.file_results.push_back(entry.outcome);
         return result;
-    }
-
-    [[nodiscard]] auto is_complete() const -> bool {
-        return (completed_count.load() + failed_count.load()) >= transfer_ids.size();
     }
 };
 
@@ -384,7 +376,17 @@ struct file_transfer_client::impl {
     // Batch contexts
     mutable std::mutex batch_mutex;
     std::atomic<uint64_t> next_batch_id{1};
-    std::unordered_map<uint64_t, std::unique_ptr<batch_context>> batch_contexts;
+    std::unordered_map<uint64_t, std::shared_ptr<batch_context>> batch_contexts;
+    std::mutex batch_event_mutex;
+    std::condition_variable batch_events;
+    std::atomic<uint64_t> batch_epoch{0};
+    void notify_batches() { ++batch_epoch; batch_events.notify_all(); }
+    auto find_batch(uint64_t id) const -> std::shared_ptr<batch_context> {
+        std::lock_guard lock(batch_mutex);
+        auto found = batch_contexts.find(id);
+        return found == batch_contexts.end() ? nullptr : found->second;
+    }
+    void run_batch(const std::shared_ptr<batch_context>& batch);
 
     // Bandwidth limiters
     std::unique_ptr<bandwidth_limiter> upload_limiter;
@@ -411,14 +413,23 @@ struct file_transfer_client::impl {
     std::thread reconnect_worker;
     wire::stream_decoder decoder;
 
-    ~impl() {
-        closing = true;
+    ~impl() { shutdown(); }
+    void shutdown() {
+        if (closing.exchange(true)) return;
+        notify_batches();
         { std::lock_guard lock(reconnect_mutex); manual_disconnect=true; connection_stop.request_stop(); ++connection_generation; retry_pending=false; reconnect_cv.notify_all(); }
         if (transport) transport->cancel_pending();
         if (reconnect_worker.joinable()) reconnect_worker.join();
         fail_channels(error{error_code::connection_lost, "Client shut down"});
         if (transport) { std::lock_guard lock(connection_operation_mutex); (void)transport->disconnect(); }
-        for (auto& job : jobs) if (job.valid()) job.wait();
+        // A scheduler can enqueue a transfer while shutdown begins. Drain
+        // successive snapshots without holding the lock needed by launch().
+        for (;;) {
+            std::vector<std::future<void>> pending;
+            { std::lock_guard lock(jobs_mutex); pending.swap(jobs); }
+            if (pending.empty()) break;
+            for (auto& job : pending) if (job.valid()) job.wait();
+        }
     }
     void state_locked(connection_state value) {
         if (current_state.exchange(value) != value && !closing) state_events.push_back(value);
@@ -611,6 +622,7 @@ struct file_transfer_client::impl {
             outcome = {success, ctx->remote_name, ctx->transferred_bytes, message};
             ctx->cv.notify_all();
         }
+        notify_batches();
         if (auto callback = completion_callback()) { try { callback(outcome); } catch (...) {} }
     }
 
@@ -623,6 +635,7 @@ struct file_transfer_client::impl {
             if(!ctx->checkpoint) { std::error_code ec; std::filesystem::remove(ctx->temp_path,ec); }
             outcome = {false, ctx->remote_name, ctx->transferred_bytes, message}; ctx->cv.notify_all();
         }
+        notify_batches();
         if (auto callback = completion_callback()) { try { callback(outcome); } catch (...) {} }
     }
 
@@ -796,15 +809,16 @@ file_transfer_client::file_transfer_client(file_transfer_client&& other) noexcep
 auto file_transfer_client::operator=(file_transfer_client&& other) noexcept
     -> file_transfer_client& {
     if (this != &other) {
+        if (impl_) impl_->shutdown();
         impl_ = std::move(other.impl_);
         if (impl_) impl_->owner = this;
     }
     return *this;
 }
 file_transfer_client::~file_transfer_client() {
-    if (impl_ && is_connected()) {
-        (void)disconnect();
-    }
+    // Workers call public control helpers through owner. Join them while
+    // impl_ still points to the implementation (before unique_ptr resets it).
+    if (impl_) impl_->shutdown();
 }
 
 auto file_transfer_client::connect(const endpoint& server_addr) -> result<void> {
@@ -1214,7 +1228,7 @@ auto file_transfer_client::download_file(
         try {
             msg_download_request request{};
             request.transfer_id = ctx->tid.bytes; request.filename = ctx->remote_name;
-            request.compression = static_cast<wire_compression_mode>(ctx->checkpoint ? ctx->checkpoint->compression : static_cast<uint8_t>(state->config.compression));
+            request.compression = static_cast<wire_compression_mode>(ctx->checkpoint ? ctx->checkpoint->compression : static_cast<uint8_t>(ctx->options.compression.value_or(state->config.compression)));
             request.resumable=ctx->options.resumable; request.resuming=ctx->recovering;
             if(ctx->recovering) {
                 request.resume_from=detail::checkpoint_prefix(*ctx->checkpoint).value();
@@ -1297,8 +1311,9 @@ auto file_transfer_client::download_file(
                     if (completed.value().total_chunks != metadata.total_chunks ||
                         completed.value().bytes_sent != metadata.file_size || completed.value().bytes_on_wire != wire_bytes)
                         throw std::runtime_error("Download completion totals mismatch");
-                    checked(state->owner.load()->finalize_download(handle_id));
+                    checked(state->owner.load()->finalize_download_impl(handle_id, true));
                     send(message_type::download_ack, msg_download_ack{ctx->tid.bytes, 1, metadata.file_size});
+                    checked(state->owner.load()->finalize_download(handle_id));
                     state->close_channel(ctx->tid); return;
                 } else throw std::runtime_error("Unexpected download response");
             }
@@ -1350,7 +1365,7 @@ auto file_transfer_client::process_download_chunk_impl(
     if (is_terminal_status(to_transfer_status(ctx->state)))
         return unexpected{error{error_code::transfer_already_completed, "Download is already terminal"}};
     const auto& h = received_chunk.header;
-    if (ctx->state != download_state::transferring || h.chunk_index >= ctx->total_chunks ||
+    if ((ctx->state != download_state::transferring && ctx->state != download_state::paused) || h.chunk_index >= ctx->total_chunks ||
         ctx->received_indices.contains(h.chunk_index) || h.chunk_offset != h.chunk_index * ctx->chunk_size ||
         h.original_size != std::min<uint64_t>(ctx->chunk_size, ctx->file_size - h.chunk_offset) ||
         h.compressed_size != received_chunk.data.size() || is_encrypted(h.flags) ||
@@ -1386,7 +1401,7 @@ auto file_transfer_client::process_download_chunk_impl(
     ctx->received_indices.insert(h.chunk_index);
     ++ctx->received_chunks;
     ctx->bytes_received += data.size();
-    ctx->state = download_state::transferring;
+    if (ctx->state != download_state::paused) ctx->state = download_state::transferring;
     const bool complete = ctx->received_chunks >= ctx->total_chunks;
     transfer_progress progress{ctx->remote_name, ctx->bytes_received, ctx->file_size,
         ctx->file_size ? 100.0 * ctx->bytes_received / ctx->file_size : 100.0};
@@ -1397,6 +1412,10 @@ auto file_transfer_client::process_download_chunk_impl(
 }
 
 auto file_transfer_client::finalize_download(uint64_t handle_id) -> result<void> {
+    return finalize_download_impl(handle_id, false);
+}
+
+auto file_transfer_client::finalize_download_impl(uint64_t handle_id, bool defer_terminal) -> result<void> {
     std::shared_ptr<download_context> ctx;
     {
         std::lock_guard lock(impl_->download_mutex);
@@ -1410,6 +1429,7 @@ auto file_transfer_client::finalize_download(uint64_t handle_id) -> result<void>
     if (is_terminal_status(to_transfer_status(ctx->state)))
         return unexpected{error{error_code::transfer_already_completed, "Download is already terminal"}};
     error failure;
+    if (!ctx->output_committed) {
     ctx->state = download_state::verifying;
     if (ctx->received_chunks != ctx->total_chunks || ctx->bytes_received != ctx->file_size)
         failure = error{error_code::missing_chunks, "Download is incomplete"};
@@ -1421,6 +1441,9 @@ auto file_transfer_client::finalize_download(uint64_t handle_id) -> result<void>
         auto committed = commit_file(ctx->temp_path, ctx->local_path, ctx->options.overwrite);
         if (!committed) failure = committed.error();
     }
+    if (!failure) ctx->output_committed = true;
+    }
+    if (!failure && defer_terminal) return {};
     if(!failure && ctx->checkpoint) {
         auto synced=sync_directory(ctx->local_path.parent_path());
         if(!synced) failure=synced.error();
@@ -1437,6 +1460,7 @@ auto file_transfer_client::finalize_download(uint64_t handle_id) -> result<void>
     transfer_result outcome{!failure, ctx->remote_name, ctx->bytes_received, failure.message};
     ctx->cv.notify_all();
     lock.unlock();
+    impl_->notify_batches();
     if (auto callback = impl_->completion_callback()) { try { callback(outcome); } catch (...) {} }
     return failure ? result<void>{unexpected{failure}} : result<void>{};
 }
@@ -1467,6 +1491,7 @@ auto file_transfer_client::cancel_download(uint64_t handle_id) -> result<void> {
     ctx->cv.notify_all();
     lock.unlock();
     impl_->fail_channel(ctx->tid, error{error_code::invalid_state_transition, "Download cancelled"});
+    impl_->notify_batches();
     if (auto callback = impl_->completion_callback()) { try { callback(outcome); } catch (...) {} }
     return {};
 }
@@ -1808,7 +1833,8 @@ auto file_transfer_client::cancel_transfer(uint64_t handle_id) -> result<void> {
         }
         (void)impl_->send(message_type::transfer_cancel,msg_transfer_cancel{upload->tid.bytes,0,"Upload abandoned"});
         impl_->fail_channel(upload->tid, error{error_code::invalid_state_transition, "Upload cancelled"});
-        if (auto callback = impl_->completion_callback()) { try { callback(outcome); } catch (...) {} }
+        impl_->notify_batches();
+    if (auto callback = impl_->completion_callback()) { try { callback(outcome); } catch (...) {} }
         return {};
     }
 
@@ -1979,406 +2005,217 @@ auto transfer_handle::wait_for(std::chrono::milliseconds timeout)
 // Batch transfer methods
 // ============================================================================
 
-auto file_transfer_client::upload_files(
-    std::span<const upload_entry> files,
-    const batch_options& options) -> result<batch_transfer_handle> {
-
-    if (!is_connected()) {
-        return unexpected{error{error_code::not_initialized,
-                               "Client is not connected"}};
-    }
-
-    if (files.empty()) {
-        return unexpected{error{error_code::invalid_file_path,
-                               "No files specified for upload"}};
-    }
-
-    // Validate all files exist before starting
-    for (const auto& entry : files) {
-        if (!std::filesystem::exists(entry.local_path)) {
-            return unexpected{error{error_code::file_not_found,
-                "File not found: " + entry.local_path.string()}};
-        }
-    }
-
-    // Create batch context
-    auto batch_id = impl_->next_batch_id++;
-    auto ctx = std::make_unique<batch_context>();
-    ctx->direction = batch_direction::upload;
-    ctx->options = options;
-    ctx->start_time = std::chrono::steady_clock::now();
-    ctx->file_results.resize(files.size());
-
-    // Calculate total bytes and prepare filenames
-    uint64_t total = 0;
-    for (std::size_t i = 0; i < files.size(); ++i) {
-        std::error_code ec;
-        auto size = std::filesystem::file_size(files[i].local_path, ec);
-        if (!ec) {
-            total += size;
-        }
-        ctx->filenames.push_back(files[i].remote_name.empty()
-            ? files[i].local_path.filename().string()
-            : files[i].remote_name);
-    }
-    ctx->total_bytes = total;
-
-    // Start transfers up to max_concurrent
-    std::size_t started = 0;
-    for (std::size_t i = 0; i < files.size() && started < options.max_concurrent; ++i) {
-        const auto& entry = files[i];
-        std::string remote_name = entry.remote_name.empty()
-            ? entry.local_path.filename().string()
-            : entry.remote_name;
-
-        upload_options upload_opts;
-        upload_opts.overwrite = options.overwrite;
-        if (options.compression.has_value()) {
-            upload_opts.compression = options.compression;
-        }
-
-        auto handle_result = upload_file(entry.local_path, remote_name, upload_opts);
-        if (handle_result.has_value()) {
-            ctx->transfer_ids.push_back(handle_result.value().get_id());
-            ctx->in_progress_count++;
-            started++;
-        } else {
-            // Record failure immediately
-            ctx->transfer_ids.push_back(0);  // Invalid ID
-            ctx->failed_count++;
-
-            batch_file_result file_result;
-            file_result.filename = remote_name;
-            file_result.success = false;
-            file_result.error_message = handle_result.error().message;
-            ctx->file_results[i] = file_result;
-
-            if (!options.continue_on_error) {
-                return unexpected{error{error_code::internal_error,
-                    "Failed to start upload: " + handle_result.error().message}};
+void file_transfer_client::impl::run_batch(const std::shared_ptr<batch_context>& batch) {
+    for (;;) {
+        auto observed = batch_epoch.load();
+        std::vector<uint64_t> cancel;
+        std::optional<std::size_t> next;
+        {
+            std::lock_guard lock(batch->mutex);
+            if (closing) { batch->cancelled = true; batch->stop_reason = "Client shut down"; }
+            for (auto& entry : batch->entries) {
+                if (entry.state != batch_entry_state::running) continue;
+                auto info = owner.load()->get_transfer_progress(*entry.handle);
+                entry.known_size = info.total_bytes;
+                entry.transferred = info.bytes_transferred;
+                if (!is_terminal_status(owner.load()->get_transfer_status(*entry.handle))) continue;
+                auto finished = owner.load()->wait_for_transfer(*entry.handle, std::chrono::milliseconds(0));
+                entry.state = batch_entry_state::terminal;
+                if (finished) {
+                    entry.outcome.success = finished.value().success;
+                    entry.outcome.bytes_transferred = finished.value().bytes_transferred;
+                    entry.outcome.elapsed = finished.value().elapsed;
+                    entry.outcome.error_message = finished.value().error_message;
+                    entry.transferred = finished.value().bytes_transferred;
+                } else entry.outcome.error_message = finished.error().message;
+                if (!entry.outcome.success && !batch->options.continue_on_error) {
+                    batch->cancelled = true;
+                    batch->stop_reason = "Skipped after batch error";
+                }
+            }
+            std::size_t active = 0, terminal = 0;
+            for (auto& entry : batch->entries) {
+                if (batch->cancelled && entry.state == batch_entry_state::pending) {
+                    entry.state = batch_entry_state::terminal;
+                    entry.outcome.error_message = batch->stop_reason;
+                }
+                if (entry.state == batch_entry_state::terminal) ++terminal;
+                else if (entry.state != batch_entry_state::pending) {
+                    ++active;
+                    if (batch->cancelled && entry.handle) cancel.push_back(*entry.handle);
+                }
+            }
+            if (terminal == batch->entries.size()) {
+                batch->done = true; batch->finished_at = std::chrono::steady_clock::now();
+                batch->cv.notify_all(); return;
+            }
+            if (!batch->paused && !batch->cancelled && active < batch->options.max_concurrent) {
+                for (std::size_t i = 0; i < batch->entries.size(); ++i) {
+                    if (batch->entries[i].state == batch_entry_state::pending) {
+                        batch->entries[i].state = batch_entry_state::starting; next = i; break;
+                    }
+                }
             }
         }
+        for (auto id : cancel) (void)owner.load()->cancel_transfer(id);
+        if (next) {
+            // Entry paths/options are immutable. No batch lock is held while
+            // starting work, cancelling it, or invoking application callbacks.
+            const auto& input = batch->entries[*next];
+            auto started = [&]() -> result<transfer_handle> {
+                try {
+                if (batch->direction == batch_direction::upload) {
+                    upload_options options;
+                    options.overwrite = batch->options.overwrite;
+                    options.compression = batch->options.compression;
+                    return owner.load()->upload_file(input.local_path, input.remote_name, options);
+                }
+                download_options options;
+                options.overwrite = batch->options.overwrite;
+                options.compression = batch->options.compression;
+                return owner.load()->download_file(input.remote_name, input.local_path, options);
+                } catch (const std::exception& failure) {
+                    return unexpected{error{error_code::internal_error, failure.what()}};
+                }
+            }();
+            bool cancel_started = false;
+            {
+                std::lock_guard lock(batch->mutex);
+                auto& entry = batch->entries[*next];
+                if (started) {
+                    entry.handle = started.value().get_id();
+                    entry.state = batch_entry_state::running;
+                    cancel_started = batch->cancelled || closing;
+                    if (batch->paused && !cancel_started) (void)owner.load()->pause_transfer(*entry.handle);
+                } else {
+                    entry.state = batch_entry_state::terminal;
+                    entry.outcome.error_message = started.error().message;
+                    if (!batch->options.continue_on_error) {
+                        batch->cancelled = true; batch->stop_reason = "Skipped after batch error";
+                    }
+                }
+            }
+            if (started && cancel_started) (void)owner.load()->cancel_transfer(started.value().get_id());
+            continue;
+        }
+        // Completion events refill slots immediately. The bounded timer only
+        // refreshes progress snapshots while active transfers are nonterminal.
+        std::unique_lock lock(batch_event_mutex);
+        batch_events.wait_for(lock, std::chrono::milliseconds(25),
+                              [&] { return batch_epoch.load() != observed || closing; });
     }
+}
 
-    // Queue remaining files (they'll be started as others complete)
-    for (std::size_t i = started; i < files.size(); ++i) {
-        ctx->transfer_ids.push_back(0);  // Pending, not started yet
+auto file_transfer_client::upload_files(
+    std::span<const upload_entry> files, const batch_options& options) -> result<batch_transfer_handle> {
+    if (!is_connected())
+        return unexpected{error{error_code::not_initialized, "Client is not connected"}};
+    if (files.empty() || options.max_concurrent == 0 || options.max_concurrent > 256)
+        return unexpected{error{error_code::invalid_configuration, "Batch requires files and concurrency in [1, 256]"}};
+    auto ctx = std::make_shared<batch_context>();
+    ctx->direction = batch_direction::upload; ctx->options = options;
+    for (const auto& input : files) {
+        batch_entry entry;
+        entry.local_path = input.local_path;
+        entry.remote_name = input.remote_name.empty() ? input.local_path.filename().string() : input.remote_name;
+        entry.outcome.filename = entry.remote_name;
+        std::error_code ec;
+        auto size = std::filesystem::file_size(input.local_path, ec);
+        if (!ec) entry.known_size = size;
+        ctx->entries.push_back(std::move(entry));
     }
-
-    // Store pending files info for later processing
-    // (In a real implementation, we'd have a worker thread to manage the queue)
-
-    // Store batch context
-    {
-        std::lock_guard lock(impl_->batch_mutex);
-        impl_->batch_contexts[batch_id] = std::move(ctx);
-    }
-
-    return batch_transfer_handle{batch_id, this};
+    auto id = impl_->next_batch_id++;
+    { std::lock_guard lock(impl_->batch_mutex); impl_->batch_contexts[id] = ctx; }
+    impl_->launch([state = impl_.get(), ctx] { state->run_batch(ctx); });
+    return batch_transfer_handle{id, this};
 }
 
 auto file_transfer_client::download_files(
-    std::span<const download_entry> files,
-    const batch_options& options) -> result<batch_transfer_handle> {
-
-    if (!is_connected()) {
-        return unexpected{error{error_code::not_initialized,
-                               "Client is not connected"}};
+    std::span<const download_entry> files, const batch_options& options) -> result<batch_transfer_handle> {
+    if (!is_connected())
+        return unexpected{error{error_code::not_initialized, "Client is not connected"}};
+    if (files.empty() || options.max_concurrent == 0 || options.max_concurrent > 256)
+        return unexpected{error{error_code::invalid_configuration, "Batch requires files and concurrency in [1, 256]"}};
+    auto ctx = std::make_shared<batch_context>();
+    ctx->direction = batch_direction::download; ctx->options = options;
+    for (const auto& input : files) {
+        batch_entry entry; entry.local_path = input.local_path; entry.remote_name = input.remote_name;
+        entry.outcome.filename = entry.remote_name; ctx->entries.push_back(std::move(entry));
     }
-
-    if (files.empty()) {
-        return unexpected{error{error_code::invalid_file_path,
-                               "No files specified for download"}};
-    }
-
-    // Create batch context
-    auto batch_id = impl_->next_batch_id++;
-    auto ctx = std::make_unique<batch_context>();
-    ctx->direction = batch_direction::download;
-    ctx->options = options;
-    ctx->start_time = std::chrono::steady_clock::now();
-    ctx->file_results.resize(files.size());
-
-    // Prepare filenames
-    for (const auto& entry : files) {
-        ctx->filenames.push_back(entry.remote_name);
-    }
-
-    // Start transfers up to max_concurrent
-    std::size_t started = 0;
-    for (std::size_t i = 0; i < files.size() && started < options.max_concurrent; ++i) {
-        const auto& entry = files[i];
-
-        download_options download_opts;
-        download_opts.overwrite = options.overwrite;
-
-        auto handle_result = download_file(entry.remote_name, entry.local_path, download_opts);
-        if (handle_result.has_value()) {
-            ctx->transfer_ids.push_back(handle_result.value().get_id());
-            ctx->in_progress_count++;
-            started++;
-        } else {
-            // Record failure immediately
-            ctx->transfer_ids.push_back(0);  // Invalid ID
-            ctx->failed_count++;
-
-            batch_file_result file_result;
-            file_result.filename = entry.remote_name;
-            file_result.success = false;
-            file_result.error_message = handle_result.error().message;
-            ctx->file_results[i] = file_result;
-
-            if (!options.continue_on_error) {
-                return unexpected{error{error_code::internal_error,
-                    "Failed to start download: " + handle_result.error().message}};
-            }
-        }
-    }
-
-    // Queue remaining files
-    for (std::size_t i = started; i < files.size(); ++i) {
-        ctx->transfer_ids.push_back(0);  // Pending, not started yet
-    }
-
-    // Store batch context
-    {
-        std::lock_guard lock(impl_->batch_mutex);
-        impl_->batch_contexts[batch_id] = std::move(ctx);
-    }
-
-    return batch_transfer_handle{batch_id, this};
+    auto id = impl_->next_batch_id++;
+    { std::lock_guard lock(impl_->batch_mutex); impl_->batch_contexts[id] = ctx; }
+    impl_->launch([state = impl_.get(), ctx] { state->run_batch(ctx); });
+    return batch_transfer_handle{id, this};
 }
 
-auto file_transfer_client::get_batch_progress(uint64_t batch_id) const
-    -> batch_progress {
-    std::lock_guard lock(impl_->batch_mutex);
-    auto it = impl_->batch_contexts.find(batch_id);
-    if (it == impl_->batch_contexts.end() || !it->second) {
-        return batch_progress{};
-    }
-
-    auto progress = it->second->get_progress();
-
-    // Update transferred bytes from individual transfers
-    uint64_t transferred = 0;
-    for (auto transfer_id : it->second->transfer_ids) {
-        if (transfer_id != 0) {
-            auto info = get_transfer_progress(transfer_id);
-            transferred += info.bytes_transferred;
-        }
-    }
-    progress.transferred_bytes = transferred;
-
-    return progress;
+auto file_transfer_client::get_batch_progress(uint64_t batch_id) const -> batch_progress {
+    auto ctx = impl_->find_batch(batch_id);
+    if (!ctx) return {};
+    std::lock_guard lock(ctx->mutex); return ctx->progress_locked();
 }
-
-auto file_transfer_client::get_batch_total_files(uint64_t batch_id) const
-    -> std::size_t {
-    std::lock_guard lock(impl_->batch_mutex);
-    auto it = impl_->batch_contexts.find(batch_id);
-    if (it == impl_->batch_contexts.end() || !it->second) {
-        return 0;
-    }
-    return it->second->transfer_ids.size();
+auto file_transfer_client::get_batch_total_files(uint64_t id) const -> std::size_t {
+    return get_batch_progress(id).total_files;
 }
-
-auto file_transfer_client::get_batch_completed_files(uint64_t batch_id) const
-    -> std::size_t {
-    std::lock_guard lock(impl_->batch_mutex);
-    auto it = impl_->batch_contexts.find(batch_id);
-    if (it == impl_->batch_contexts.end() || !it->second) {
-        return 0;
-    }
-    return it->second->completed_count.load();
+auto file_transfer_client::get_batch_completed_files(uint64_t id) const -> std::size_t {
+    return get_batch_progress(id).completed_files;
 }
-
-auto file_transfer_client::get_batch_failed_files(uint64_t batch_id) const
-    -> std::size_t {
-    std::lock_guard lock(impl_->batch_mutex);
-    auto it = impl_->batch_contexts.find(batch_id);
-    if (it == impl_->batch_contexts.end() || !it->second) {
-        return 0;
-    }
-    return it->second->failed_count.load();
+auto file_transfer_client::get_batch_failed_files(uint64_t id) const -> std::size_t {
+    return get_batch_progress(id).failed_files;
 }
-
-auto file_transfer_client::get_batch_individual_handles(uint64_t batch_id) const
-    -> std::vector<transfer_handle> {
+auto file_transfer_client::get_batch_individual_handles(uint64_t id) const -> std::vector<transfer_handle> {
     std::vector<transfer_handle> handles;
-
-    std::lock_guard lock(impl_->batch_mutex);
-    auto it = impl_->batch_contexts.find(batch_id);
-    if (it == impl_->batch_contexts.end() || !it->second) {
-        return handles;
-    }
-
-    handles.reserve(it->second->transfer_ids.size());
-    for (auto transfer_id : it->second->transfer_ids) {
-        if (transfer_id != 0) {
-            handles.emplace_back(transfer_id,
-                const_cast<file_transfer_client*>(this));
-        }
-    }
-
+    auto ctx = impl_->find_batch(id); if (!ctx) return handles;
+    std::lock_guard lock(ctx->mutex);
+    for (const auto& entry : ctx->entries)
+        if (entry.handle) handles.emplace_back(*entry.handle, const_cast<file_transfer_client*>(this));
     return handles;
 }
 
-auto file_transfer_client::pause_batch(uint64_t batch_id) -> result<void> {
-    batch_context* ctx = nullptr;
+auto file_transfer_client::pause_batch(uint64_t id) -> result<void> {
+    auto ctx = impl_->find_batch(id);
+    if (!ctx) return unexpected{error{error_code::transfer_not_found, "Batch not found"}};
     {
-        std::lock_guard lock(impl_->batch_mutex);
-        auto it = impl_->batch_contexts.find(batch_id);
-        if (it == impl_->batch_contexts.end() || !it->second) {
-            return unexpected{error{error_code::transfer_not_found,
-                "Batch not found: " + std::to_string(batch_id)}};
-        }
-        ctx = it->second.get();
+        std::lock_guard lock(ctx->mutex); ctx->paused = true;
+        for (const auto& entry : ctx->entries)
+            if (entry.state == batch_entry_state::running) (void)pause_transfer(*entry.handle);
     }
-
-    ctx->paused = true;
-
-    // Pause all active transfers
-    for (auto transfer_id : ctx->transfer_ids) {
-        if (transfer_id != 0) {
-            auto status = get_transfer_status(transfer_id);
-            if (status == transfer_status::in_progress) {
-                (void)pause_transfer(transfer_id);
-            }
-        }
-    }
-
-    return {};
+    impl_->notify_batches(); return {};
 }
 
-auto file_transfer_client::resume_batch(uint64_t batch_id) -> result<void> {
-    batch_context* ctx = nullptr;
+auto file_transfer_client::resume_batch(uint64_t id) -> result<void> {
+    auto ctx = impl_->find_batch(id);
+    if (!ctx) return unexpected{error{error_code::transfer_not_found, "Batch not found"}};
     {
-        std::lock_guard lock(impl_->batch_mutex);
-        auto it = impl_->batch_contexts.find(batch_id);
-        if (it == impl_->batch_contexts.end() || !it->second) {
-            return unexpected{error{error_code::transfer_not_found,
-                "Batch not found: " + std::to_string(batch_id)}};
-        }
-        ctx = it->second.get();
+        std::lock_guard lock(ctx->mutex); ctx->paused = false;
+        for (const auto& entry : ctx->entries)
+            if (entry.state == batch_entry_state::running) (void)resume_transfer(*entry.handle);
     }
-
-    ctx->paused = false;
-
-    // Resume all paused transfers
-    for (auto transfer_id : ctx->transfer_ids) {
-        if (transfer_id != 0) {
-            auto status = get_transfer_status(transfer_id);
-            if (status == transfer_status::paused) {
-                (void)resume_transfer(transfer_id);
-            }
-        }
-    }
-
-    ctx->cv.notify_all();
-    return {};
+    impl_->notify_batches(); return {};
 }
 
-auto file_transfer_client::cancel_batch(uint64_t batch_id) -> result<void> {
-    batch_context* ctx = nullptr;
+auto file_transfer_client::cancel_batch(uint64_t id) -> result<void> {
+    auto ctx = impl_->find_batch(id);
+    if (!ctx) return unexpected{error{error_code::transfer_not_found, "Batch not found"}};
+    std::vector<uint64_t> handles;
     {
-        std::lock_guard lock(impl_->batch_mutex);
-        auto it = impl_->batch_contexts.find(batch_id);
-        if (it == impl_->batch_contexts.end() || !it->second) {
-            return unexpected{error{error_code::transfer_not_found,
-                "Batch not found: " + std::to_string(batch_id)}};
-        }
-        ctx = it->second.get();
+        std::lock_guard lock(ctx->mutex); ctx->cancelled = true;
+        for (const auto& entry : ctx->entries)
+            if (entry.state == batch_entry_state::running) handles.push_back(*entry.handle);
     }
-
-    ctx->cancelled = true;
-
-    // Cancel all active transfers
-    for (auto transfer_id : ctx->transfer_ids) {
-        if (transfer_id != 0) {
-            auto status = get_transfer_status(transfer_id);
-            if (!is_terminal_status(status)) {
-                (void)cancel_transfer(transfer_id);
-            }
-        }
-    }
-
-    ctx->cv.notify_all();
-    return {};
+    for (auto handle : handles) (void)cancel_transfer(handle);
+    impl_->notify_batches(); return {};
 }
-
-auto file_transfer_client::wait_for_batch(uint64_t batch_id)
-    -> result<batch_result> {
-    return wait_for_batch(batch_id, std::chrono::milliseconds::max());
+auto file_transfer_client::wait_for_batch(uint64_t id) -> result<batch_result> {
+    return wait_for_batch(id, std::chrono::milliseconds::max());
 }
-
-auto file_transfer_client::wait_for_batch(
-    uint64_t batch_id,
-    std::chrono::milliseconds timeout) -> result<batch_result> {
-
-    batch_context* ctx = nullptr;
-    {
-        std::lock_guard lock(impl_->batch_mutex);
-        auto it = impl_->batch_contexts.find(batch_id);
-        if (it == impl_->batch_contexts.end() || !it->second) {
-            return unexpected{error{error_code::transfer_not_found,
-                "Batch not found: " + std::to_string(batch_id)}};
-        }
-        ctx = it->second.get();
-    }
-
-    auto deadline = timeout == std::chrono::milliseconds::max()
-        ? std::chrono::steady_clock::time_point::max()
-        : std::chrono::steady_clock::now() + timeout;
-
-    // Wait for all transfers to complete
-    for (std::size_t i = 0; i < ctx->transfer_ids.size(); ++i) {
-        auto transfer_id = ctx->transfer_ids[i];
-        if (transfer_id == 0) {
-            continue;  // Already failed or not started
-        }
-
-        std::chrono::milliseconds remaining = timeout;
-        if (timeout != std::chrono::milliseconds::max()) {
-            remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
-                deadline - std::chrono::steady_clock::now());
-            if (remaining <= std::chrono::milliseconds::zero()) {
-                return unexpected{error{error_code::transfer_timeout,
-                    "Batch wait timed out"}};
-            }
-        }
-
-        auto result = wait_for_transfer(transfer_id, remaining);
-
-        batch_file_result file_result;
-        file_result.filename = ctx->filenames[i];
-
-        if (result.has_value()) {
-            file_result.success = result.value().success;
-            file_result.bytes_transferred = result.value().bytes_transferred;
-            file_result.elapsed = result.value().elapsed;
-            if (result.value().error_message.has_value()) {
-                file_result.error_message = result.value().error_message;
-            }
-
-            if (result.value().success) {
-                ctx->completed_count++;
-            } else {
-                ctx->failed_count++;
-            }
-        } else {
-            file_result.success = false;
-            file_result.error_message = result.error().message;
-            ctx->failed_count++;
-        }
-
-        {
-            std::lock_guard lock(ctx->mutex);
-            ctx->file_results[i] = file_result;
-        }
-        ctx->in_progress_count--;
-    }
-
-    return ctx->get_result();
+auto file_transfer_client::wait_for_batch(uint64_t id, std::chrono::milliseconds timeout) -> result<batch_result> {
+    auto ctx = impl_->find_batch(id);
+    if (!ctx) return unexpected{error{error_code::transfer_not_found, "Batch not found"}};
+    std::unique_lock lock(ctx->mutex);
+    if (timeout == std::chrono::milliseconds::max()) ctx->cv.wait(lock, [&] { return ctx->done; });
+    else if (!ctx->cv.wait_for(lock, timeout, [&] { return ctx->done; }))
+        return unexpected{error{error_code::transfer_timeout, "Batch wait timed out"}};
+    return ctx->result_locked();
 }
 
 // ============================================================================
