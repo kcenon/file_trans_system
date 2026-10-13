@@ -1,0 +1,12 @@
+{
+  "denominator": "All emitted executable lines in src/ and include/, across the complete production archive and all test binaries; no project path exclusions",
+  "configuration": "Clang source coverage; encryption/LZ4 enabled; QUIC dependency path disabled",
+  "minimum_percent": 80.0,
+  "covered_lines": 12986,
+  "executable_lines": 20338,
+  "line_coverage_percent": 63.85091946110729,
+  "passed": false,
+  "missing_production_translation_units": [],
+  "profiles": 3,
+  "invalid_profile_records": []
+}

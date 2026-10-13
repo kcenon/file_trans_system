@@ -1,0 +1,87 @@
+diff --git a/src/integration/io_context_thread_manager.cpp b/src/integration/io_context_thread_manager.cpp
+index b4f4b79..1356115 100644
+--- a/src/integration/io_context_thread_manager.cpp
++++ b/src/integration/io_context_thread_manager.cpp
+@@ -78,67 +78,28 @@ public:
+         std::shared_ptr<asio::io_context> io_context,
+         const std::string& component_name
+     ) {
+-        auto pool = get_thread_pool();
+-        if (!pool) {
+-            auto promise = std::make_shared<std::promise<void>>();
+-            promise->set_exception(
+-                std::make_exception_ptr(
+-                    std::runtime_error("Thread pool not available")
+-                )
+-            );
+-            return promise->get_future();
+-        }
+-
+-        // Submit io_context::run to thread pool
+-        auto ctx_weak = std::weak_ptr<asio::io_context>(io_context);
+-        auto name = component_name.empty() ? "unnamed" : component_name;
+-
+-        // Create a shared promise for the caller's future
+-        auto caller_promise = std::make_shared<std::promise<void>>();
+-        auto caller_future = caller_promise->get_future();
+-
+-        // Track the entry for metrics and stop_all functionality
++        // Each io_context::run is a long-lived task. Putting these on a
++        // bounded general-purpose pool starves connection N+1 when N runners
++        // occupy its workers, and stop() then waits forever on a queued runner.
++        // The caller owns the returned asynchronous future and joins it after
++        // stopping the context.
++        cleanup_expired();
+         {
+             std::lock_guard<std::mutex> lock(mutex_);
+-            context_entry entry;
+-            entry.context = io_context;
+-            entry.component_name = name;
+-            entries_.push_back(std::move(entry));
+-            total_started_.fetch_add(1, std::memory_order_relaxed);
++            entries_.push_back({io_context, component_name});
+         }
+-
+-        // Submit the io_context::run task - this is the ONLY task we submit
+-        // No separate monitoring task to avoid thread pool exhaustion
+-        // Note: Capture total_completed_ by pointer to avoid capturing 'this',
+-        // which can cause heap corruption during static destruction.
+-        auto* completed_ptr = &total_completed_;
+-        // Submit io_context::run task to thread pool
+-        // IMPORTANT: Avoid logging inside this task to prevent heap corruption during
+-        // static destruction. When common_system's GlobalLoggerRegistry is destroyed
+-        // before this thread pool task completes, logging causes heap corruption.
+-        // Use detail::static_destruction_guard::is_logging_safe() for any necessary logging.
+-        pool->submit([ctx_weak, caller_promise, completed_ptr]() {
+-            auto ctx = ctx_weak.lock();
+-            if (!ctx) {
+-                // io_context expired - this can happen during rapid shutdown
+-                caller_promise->set_value();
+-                return;
+-            }
+-
++        auto* completed = &total_completed_;
++        auto future = std::async(std::launch::async, [io_context, completed] {
+             try {
+-                ctx->run();
+-                caller_promise->set_value();
++                io_context->run();
+             } catch (...) {
+-                caller_promise->set_exception(std::current_exception());
++                completed->fetch_add(1, std::memory_order_relaxed);
++                throw;
+             }
+-
+-            completed_ptr->fetch_add(1, std::memory_order_relaxed);
++            completed->fetch_add(1, std::memory_order_relaxed);
+         });
+-
+-        // Clean up expired entries periodically
+-        cleanup_expired();
+-
+-        return caller_future;
++        total_started_.fetch_add(1, std::memory_order_relaxed);
++        return future;
+     }
+ 
+     void stop_io_context(std::shared_ptr<asio::io_context> io_context) {

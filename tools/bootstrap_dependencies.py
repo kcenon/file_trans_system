@@ -21,6 +21,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", type=Path, default=repo.parent)
     parser.add_argument("--jobs", type=int, default=4)
+    parser.add_argument("--build-directory", default="build", help="Separate dependency build directory name")
+    parser.add_argument("--sanitizer", choices=("", "address", "thread", "undefined"), default="")
     args = parser.parse_args()
     if args.jobs < 1:
         parser.error("--jobs must be positive")
@@ -37,12 +39,13 @@ def main():
         current = subprocess.check_output(["git", "-C", str(destination), "rev-parse", "HEAD"], text=True).strip()
         if current != revision:
             raise SystemExit(f"{destination} has another revision; use a separate --workspace")
-        if name == "network_system":
-            patch = repo / "cmake/patches/network-system-client-close.patch"
-            applied = subprocess.run(["git", "-C", str(destination), "apply", "--reverse", "--check", str(patch)], capture_output=True)
-            if applied.returncode:
-                run(["git", "-C", destination, "apply", "--check", patch])
-                run(["git", "-C", destination, "apply", patch])
+        if name in ("network_system", "thread_system"):
+            for patch in sorted((repo / "cmake/patches").glob(name.replace("_", "-") + "-*.patch")):
+                applied = subprocess.run(["git", "-C", str(destination), "apply", "--reverse", "--check", str(patch)], capture_output=True)
+                if applied.returncode:
+                    run(["git", "-C", destination, "apply", "--check", patch])
+                    run(["git", "-C", destination, "apply", patch])
+
 
     definitions = {
         "thread_system": ["-DBUILD_TESTING=OFF", "-DTHREAD_BUILD_INTEGRATION_TESTS=OFF", "-DBUILD_DOCUMENTATION=OFF", "-DBUILD_WITH_LOGGER_SYSTEM=OFF"],
@@ -51,9 +54,15 @@ def main():
     }
     for name, flags in definitions.items():
         source = workspace / name
-        run(["cmake", "-S", source, "-B", source / "build", "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Debug", *flags])
+        extra = []
+        if args.sanitizer:
+            instrumentation = f"-fsanitize={args.sanitizer} -fno-omit-frame-pointer -g"
+            extra = ["-DCMAKE_CXX_FLAGS=" + instrumentation, "-DCMAKE_C_FLAGS=" + instrumentation]
+        if name != "thread_system":
+            extra.append("-DTHREAD_SYSTEM_LIBRARY=" + str(workspace / "thread_system" / args.build_directory / "lib/libThreadSystem.a"))
+        run(["cmake", "-S", source, "-B", source / args.build_directory, "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Debug", *flags, *extra])
         target = {"thread_system": "ThreadSystem", "logger_system": "LoggerSystem", "network_system": "NetworkSystem"}[name]
-        run(["cmake", "--build", source / "build", "--target", target, "--parallel", args.jobs])
+        run(["cmake", "--build", source / args.build_directory, "--target", target, "--parallel", args.jobs])
     print("Dependencies built. Configure the project using their include and library paths.")
     print("When they are siblings of this checkout, FileTransDependencies.cmake finds them automatically.")
 

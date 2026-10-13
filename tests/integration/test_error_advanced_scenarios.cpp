@@ -1,845 +1,194 @@
-/**
- * @file test_error_advanced_scenarios.cpp
- * @brief Error handling and advanced scenario integration tests
- *
- * This file contains tests for:
- * - Error scenarios (connection failures, invalid filenames, quota exceeded, etc.)
- * - Advanced scenarios (large file transfers, batch transfers, pause/resume, etc.)
- * - Compression integration (enabled, disabled, adaptive)
- */
-
+/** Real terminal outcomes for failure, quota, size and compression scenarios. */
 #include "test_fixtures.h"
 
-#include <chrono>
-#include <thread>
-
 namespace kcenon::file_transfer::test {
-
-// =============================================================================
-// Error Scenario Tests
-// =============================================================================
-
-/**
- * @brief Test fixture for error scenario tests
- */
 class ErrorScenarioTest : public TempDirectoryFixture {};
-
 TEST_F(ErrorScenarioTest, ConnectionFailureWhenServerNotRunning) {
-    // Create client
-    auto client_result = file_transfer_client::builder()
-        .with_auto_reconnect(false)
-        .with_connect_timeout(std::chrono::milliseconds{1000})
-        .build();
-
-    ASSERT_TRUE(client_result.has_value()) << "Failed to create client";
-    auto client = std::make_unique<file_transfer_client>(std::move(client_result.value()));
-
-    // Try to connect to non-existent server
-    auto connect_result = client->connect(endpoint{"127.0.0.1", 59999});
-
-    // Note: Current stub implementation always succeeds on connect
-    // When real network implementation is added, this test should be updated
-    // to expect connection failure
-    if (!connect_result.has_value()) {
-        // Expected behavior with real implementation
-        auto err_code = connect_result.error().code;
-        EXPECT_TRUE(
-            err_code == error_code::connection_failed ||
-            err_code == error_code::connection_refused ||
-            err_code == error_code::connection_timeout ||
-            err_code == error_code::server_not_running
-        ) << "Expected connection error, got: " << to_string(err_code);
-
-        EXPECT_FALSE(client->is_connected());
-        EXPECT_EQ(client->state(), connection_state::disconnected);
-    } else {
-        // Stub implementation behavior - always succeeds
-        // This validates the API contract works
-        EXPECT_TRUE(client->is_connected());
-        (void)client->disconnect();
-    }
+    auto client = file_transfer_client::builder().with_connect_timeout(150ms).with_auto_reconnect(false).build();
+    ASSERT_TRUE(client); auto start = std::chrono::steady_clock::now();
+    EXPECT_FALSE(client.value().connect({"127.0.0.1", ServerFixture::get_available_port()}));
+    EXPECT_FALSE(client.value().is_connected()); EXPECT_LT(std::chrono::steady_clock::now() - start, 1s);
 }
-
 TEST_F(ErrorScenarioTest, ConnectionTimeoutWithShortTimeout) {
-    // Create client with very short timeout
-    auto client_result = file_transfer_client::builder()
-        .with_auto_reconnect(false)
-        .with_connect_timeout(std::chrono::milliseconds{100})
-        .build();
-
-    ASSERT_TRUE(client_result.has_value());
-    auto client = std::make_unique<file_transfer_client>(std::move(client_result.value()));
-
-    // Try to connect to a non-routable IP (will cause timeout)
-    // Using 10.255.255.1 which is typically non-routable
-    auto connect_result = client->connect(endpoint{"10.255.255.1", 8080});
-
-    // Note: Current stub implementation always succeeds on connect
-    // When real network implementation is added, this should timeout
-    if (!connect_result.has_value()) {
-        // Expected behavior with real implementation
-        EXPECT_FALSE(client->is_connected());
-    } else {
-        // Stub implementation behavior - validates API contract
-        EXPECT_TRUE(client->is_connected());
-        (void)client->disconnect();
-    }
+    asio::io_context context;
+    asio::ip::tcp::acceptor listener(context, {asio::ip::tcp::v4(), 0});
+    // A closed loopback port provides deterministic refusal without depending on
+    // an external network route. Scripted timeout policy has separate coverage.
+    auto port = listener.local_endpoint().port(); listener.close();
+    auto client = file_transfer_client::builder().with_connect_timeout(20ms).build(); ASSERT_TRUE(client);
+    auto start = std::chrono::steady_clock::now();
+    EXPECT_FALSE(client.value().connect({"127.0.0.1", port}));
+    EXPECT_LT(std::chrono::steady_clock::now() - start, 1s);
 }
 
-/**
- * @brief Test fixture for invalid filename tests with server
- */
 class InvalidFilenameTest : public IntegrationFixture {};
-
-TEST_F(InvalidFilenameTest, UploadWithEmptyFilename) {
-    ASSERT_TRUE(connect_client());
-
-    auto test_file = create_test_file("valid.bin", 100);
-    auto result = client_->upload_file(test_file, "");
-
-    // Note: Current stub implementation may not validate remote filename
-    // With real implementation, this should fail with invalid_file_path
-    if (!result.has_value()) {
-        EXPECT_EQ(result.error().code, error_code::invalid_file_path);
-    }
-    // Stub may accept empty filename - validates API contract works
+TEST_F(InvalidFilenameTest, UploadWithEmptyFilenameUsesLocalBasename) {
+    ASSERT_TRUE(connect_client()); auto source = create_test_file("basename.bin", 1000);
+    auto pending = client_->upload_file(source, "");
+    ASSERT_TRUE(transfer_matches(pending, source, storage_dir_ / "basename.bin"));
 }
-
-TEST_F(InvalidFilenameTest, UploadWithPathTraversal) {
-    ASSERT_TRUE(connect_client());
-
-    auto test_file = create_test_file("valid.bin", 100);
-
-    // Path traversal attempts should be rejected
-    // Note: Current stub implementation may not validate path traversal
-    // With real implementation, these should fail with invalid_file_path
-    auto result1 = client_->upload_file(test_file, "../../../etc/passwd");
-    if (!result1.has_value()) {
-        EXPECT_EQ(result1.error().code, error_code::invalid_file_path);
+TEST_F(InvalidFilenameTest, UploadWithPathTraversalOrAbsolutePathFailsWithoutCommit) {
+    ASSERT_TRUE(connect_client()); auto source = create_test_file("source", 1000);
+    for (auto name : {"../escape.bin", "a/../../escape.bin", "/absolute.bin"}) {
+        auto pending = client_->upload_file(source, name);
+        transfer_fails(pending);
     }
-
-    auto result2 = client_->upload_file(test_file, "..\\..\\windows\\system32\\config");
-    if (!result2.has_value()) {
-        EXPECT_EQ(result2.error().code, error_code::invalid_file_path);
-    }
+    EXPECT_FALSE(std::filesystem::exists(test_dir_ / "escape.bin"));
+    auto files = client_->list_files(); ASSERT_TRUE(files); EXPECT_TRUE(files.value().empty());
 }
-
-TEST_F(InvalidFilenameTest, UploadWithAbsolutePath) {
-    ASSERT_TRUE(connect_client());
-
-    auto test_file = create_test_file("valid.bin", 100);
-
-    // Absolute paths should be rejected as remote filenames
-    // Note: Current stub implementation may not validate absolute paths
-    // With real implementation, this should fail with invalid_file_path
-    auto result = client_->upload_file(test_file, "/absolute/path/file.bin");
-    if (!result.has_value()) {
-        EXPECT_EQ(result.error().code, error_code::invalid_file_path);
-    }
-}
-
 TEST_F(InvalidFilenameTest, DownloadWithEmptyFilename) {
     ASSERT_TRUE(connect_client());
-
-    auto result = client_->download_file("", download_dir_ / "output.bin");
-    EXPECT_FALSE(result.has_value());
-    EXPECT_EQ(result.error().code, error_code::invalid_file_path);
+    auto pending = client_->download_file("", download_dir_ / "empty");
+    ASSERT_FALSE(pending); EXPECT_EQ(pending.error().code, error_code::invalid_file_path);
 }
-
 TEST_F(InvalidFilenameTest, DownloadNonExistentFile) {
-    ASSERT_TRUE(connect_client());
-
-    // Request download of a file that doesn't exist on server
-    auto result = client_->download_file("nonexistent_file_12345.bin",
-                                          download_dir_ / "output.bin");
-
-    // The API returns a handle, but the actual download should fail
-    // depending on implementation, this could fail immediately or during transfer
-    if (!result.has_value()) {
-        auto err_code = result.error().code;
-        EXPECT_TRUE(
-            err_code == error_code::file_not_found ||
-            err_code == error_code::invalid_file_path
-        );
-    }
+    ASSERT_TRUE(connect_client()); auto pending = client_->download_file("missing", download_dir_ / "missing");
+    transfer_fails(pending); EXPECT_FALSE(std::filesystem::exists(download_dir_ / "missing"));
 }
 
-/**
- * @brief Test fixture for quota exceeded tests
- */
-class QuotaExceededTest : public TempDirectoryFixture {};
-
-TEST_F(QuotaExceededTest, UploadExceedsMaxFileSize) {
-    // Create server with small max file size
-    auto server_result = file_transfer_server::builder()
-        .with_storage_directory(storage_dir_)
-        .with_max_file_size(1024)  // 1KB limit
-        .build();
-
-    ASSERT_TRUE(server_result.has_value());
-    auto server = std::make_unique<file_transfer_server>(std::move(server_result.value()));
-
-    auto port = ServerFixture::get_available_port();
-    auto start_result = server->start(endpoint{port});
-    ASSERT_TRUE(start_result.has_value());
-
-    // Create client
-    auto client_result = file_transfer_client::builder()
-        .with_auto_reconnect(false)
-        .build();
-    ASSERT_TRUE(client_result.has_value());
-    auto client = std::make_unique<file_transfer_client>(std::move(client_result.value()));
-
-    // Connect
-    auto connect_result = client->connect(endpoint{"127.0.0.1", port});
-    ASSERT_TRUE(connect_result.has_value());
-
-    // Create file larger than limit
-    auto large_file = create_test_file("large.bin", 10 * 1024);  // 10KB
-
-    // Upload should fail
-    auto result = client->upload_file(large_file, "large.bin");
-    if (!result.has_value()) {
-        auto err_code = result.error().code;
-        EXPECT_TRUE(
-            err_code == error_code::file_too_large ||
-            err_code == error_code::quota_exceeded
-        );
-    }
-
-    // Cleanup
-    (void)client->disconnect();
-    (void)server->stop();
-}
-
-TEST_F(QuotaExceededTest, UploadExceedsStorageQuota) {
-    // Create server with small storage quota
-    auto server_result = file_transfer_server::builder()
-        .with_storage_directory(storage_dir_)
-        .with_storage_quota(5 * 1024)  // 5KB quota
-        .build();
-
-    ASSERT_TRUE(server_result.has_value());
-    auto server = std::make_unique<file_transfer_server>(std::move(server_result.value()));
-
-    auto port = ServerFixture::get_available_port();
-    auto start_result = server->start(endpoint{port});
-    ASSERT_TRUE(start_result.has_value());
-
-    // Create client
-    auto client_result = file_transfer_client::builder()
-        .with_auto_reconnect(false)
-        .build();
-    ASSERT_TRUE(client_result.has_value());
-    auto client = std::make_unique<file_transfer_client>(std::move(client_result.value()));
-
-    // Connect
-    auto connect_result = client->connect(endpoint{"127.0.0.1", port});
-    ASSERT_TRUE(connect_result.has_value());
-
-    // Upload files until quota is exceeded
-    auto file1 = create_test_file("file1.bin", 3 * 1024);  // 3KB
-    auto result1 = client->upload_file(file1, "file1.bin");
-    // First file should succeed or at least start
-    EXPECT_TRUE(result1.has_value());
-
-    auto file2 = create_test_file("file2.bin", 3 * 1024);  // 3KB
-    auto result2 = client->upload_file(file2, "file2.bin");
-    // Second file should fail due to quota
-    if (!result2.has_value()) {
-        auto err_code = result2.error().code;
-        EXPECT_TRUE(
-            err_code == error_code::quota_exceeded ||
-            err_code == error_code::storage_full
-        );
-    }
-
-    // Cleanup
-    (void)client->disconnect();
-    (void)server->stop();
-}
-
-/**
- * @brief Test fixture for reconnection tests
- */
-class ReconnectionTest : public TempDirectoryFixture {};
-
-TEST_F(ReconnectionTest, ReconnectAfterServerRestart) {
-    // Create and start server
-    auto server_result = file_transfer_server::builder()
-        .with_storage_directory(storage_dir_)
-        .build();
-    ASSERT_TRUE(server_result.has_value());
-    auto server = std::make_unique<file_transfer_server>(std::move(server_result.value()));
-
-    auto port = ServerFixture::get_available_port();
-    ASSERT_TRUE(server->start(endpoint{port}).has_value());
-
-    // Create client with auto-reconnect enabled
-    auto client_result = file_transfer_client::builder()
-        .with_auto_reconnect(true)
-        .build();
-    ASSERT_TRUE(client_result.has_value());
-    auto client = std::make_unique<file_transfer_client>(std::move(client_result.value()));
-
-    // Connect
-    ASSERT_TRUE(client->connect(endpoint{"127.0.0.1", port}).has_value());
-    EXPECT_TRUE(client->is_connected());
-
-    // Stop server
-    ASSERT_TRUE(server->stop().has_value());
-    server.reset();
-
-    // Wait a bit for connection to be detected as lost
-    std::this_thread::sleep_for(std::chrono::milliseconds{500});
-
-    // Recreate and restart server on same port
-    server_result = file_transfer_server::builder()
-        .with_storage_directory(storage_dir_)
-        .build();
-    ASSERT_TRUE(server_result.has_value());
-    server = std::make_unique<file_transfer_server>(std::move(server_result.value()));
-    ASSERT_TRUE(server->start(endpoint{port}).has_value());
-
-    // Wait for auto-reconnect
-    std::this_thread::sleep_for(std::chrono::milliseconds{2000});
-
-    // Client should have reconnected (depending on implementation)
-    // This test validates the auto-reconnect behavior
-    auto state = client->state();
-    EXPECT_TRUE(
-        state == connection_state::connected ||
-        state == connection_state::reconnecting ||
-        state == connection_state::disconnected  // May not have reconnected yet
-    );
-
-    // Cleanup
-    if (client->is_connected()) {
-        (void)client->disconnect();
-    }
-    if (server && server->is_running()) {
-        (void)server->stop();
-    }
-}
-
-TEST_F(ReconnectionTest, ManualReconnectAfterDisconnect) {
-    // Create and start server
-    auto server_result = file_transfer_server::builder()
-        .with_storage_directory(storage_dir_)
-        .build();
-    ASSERT_TRUE(server_result.has_value());
-    auto server = std::make_unique<file_transfer_server>(std::move(server_result.value()));
-
-    auto port = ServerFixture::get_available_port();
-    ASSERT_TRUE(server->start(endpoint{port}).has_value());
-
-    // Create client without auto-reconnect
-    auto client_result = file_transfer_client::builder()
-        .with_auto_reconnect(false)
-        .build();
-    ASSERT_TRUE(client_result.has_value());
-    auto client = std::make_unique<file_transfer_client>(std::move(client_result.value()));
-
-    // Connect, disconnect, then reconnect
-    ASSERT_TRUE(client->connect(endpoint{"127.0.0.1", port}).has_value());
-    EXPECT_TRUE(client->is_connected());
-
-    ASSERT_TRUE(client->disconnect().has_value());
-    EXPECT_FALSE(client->is_connected());
-
-    // Should be able to reconnect
-    ASSERT_TRUE(client->connect(endpoint{"127.0.0.1", port}).has_value());
-    EXPECT_TRUE(client->is_connected());
-
-    // Cleanup
-    (void)client->disconnect();
-    (void)server->stop();
-}
-
-// =============================================================================
-// Advanced Scenario Tests
-// =============================================================================
-
-/**
- * @brief Test fixture for large file transfer tests
- */
-class LargeFileTransferTest : public IntegrationFixture {
+class QuotaExceededTest : public IntegrationFixture {
 protected:
-    void SetUp() override {
-        TempDirectoryFixture::SetUp();
-
-        // Create server with larger limits
-        auto server_result = file_transfer_server::builder()
-            .with_storage_directory(storage_dir_)
-            .with_max_connections(10)
-            .with_max_file_size(2ULL * 1024 * 1024 * 1024)  // 2GB limit
-            .build();
-
-        ASSERT_TRUE(server_result.has_value());
-        server_ = std::make_unique<file_transfer_server>(std::move(server_result.value()));
-
-        // Create client
-        auto client_result = file_transfer_client::builder()
-            .with_compression(compression_mode::adaptive)
-            .with_auto_reconnect(false)
-            .build();
-
-        ASSERT_TRUE(client_result.has_value());
-        client_ = std::make_unique<file_transfer_client>(std::move(client_result.value()));
-
-        // Start server
-        server_port_ = ServerFixture::get_available_port();
-        auto start_result = server_->start(endpoint{server_port_});
-        ASSERT_TRUE(start_result.has_value());
+    void replace_server(uint64_t max_file, uint64_t quota) {
+        client_.reset(); ASSERT_TRUE(server_->stop()); server_.reset();
+        auto server = file_transfer_server::builder().with_storage_directory(storage_dir_)
+            .with_max_file_size(max_file).with_storage_quota(quota).build();
+        ASSERT_TRUE(server); server_ = std::make_unique<file_transfer_server>(std::move(server.value()));
+        ASSERT_TRUE(server_->start({"127.0.0.1", server_port_}));
+        auto client = file_transfer_client::builder().with_auto_reconnect(false).with_transfer_timeout(3s).build();
+        ASSERT_TRUE(client); client_ = std::make_unique<file_transfer_client>(std::move(client.value()));
+        ASSERT_TRUE(connect_client());
     }
 };
+TEST_F(QuotaExceededTest, UploadExceedsMaxFileSize) {
+    replace_server(1024, 10240);
+    auto source = create_test_file("large", 2048); auto pending = client_->upload_file(source, "rejected");
+    transfer_fails(pending); EXPECT_FALSE(std::filesystem::exists(storage_dir_ / "rejected"));
+    EXPECT_EQ(server_->get_statistics().total_files_uploaded, 0);
+}
+TEST_F(QuotaExceededTest, UploadExceedsStorageQuota) {
+    replace_server(4096, 3000); auto source = create_test_file("source", 2000);
+    auto first = client_->upload_file(source, "first"); ASSERT_TRUE(transfer_matches(first, source, storage_dir_ / "first"));
+    auto second = client_->upload_file(source, "second"); transfer_fails(second);
+    EXPECT_EQ(server_->get_storage_stats().used_size, 2000);
+    EXPECT_EQ(server_->get_statistics().total_files_uploaded, 1);
+    EXPECT_FALSE(std::filesystem::exists(storage_dir_ / "second"));
+}
 
+class ReconnectionTest : public IntegrationFixture {};
+TEST_F(ReconnectionTest, ManualReconnectAfterDisconnect) {
+    ASSERT_TRUE(connect_client()); ASSERT_TRUE(client_->disconnect());
+    ASSERT_TRUE(client_->connect({"127.0.0.1", server_port_})); ASSERT_TRUE(client_->list_files());
+    EXPECT_TRUE(client_->is_connected());
+}
+// Automatic stop/restart, deadlines, backoff and cancellation are exercised by
+// PublicReconnectTest, including a virtual clock for the exact retry sequence.
+
+class LargeFileTransferTest : public IntegrationFixture {};
 TEST_F(LargeFileTransferTest, UploadLargeFile100MB) {
-    ASSERT_TRUE(connect_client());
-
-    // Create 100MB file (reduced from 1GB for faster testing)
-    auto large_file = create_test_file("large_100mb.bin", test_data::large_file_size);
-    ASSERT_TRUE(std::filesystem::exists(large_file));
-    EXPECT_EQ(std::filesystem::file_size(large_file), test_data::large_file_size);
-
-    // Track progress
-    std::atomic<bool> progress_received{false};
-    client_->on_progress([&]([[maybe_unused]] const transfer_progress& progress) {
-        progress_received = true;
-    });
-
-    // Upload
-    auto result = client_->upload_file(large_file, "large_100mb.bin");
-    EXPECT_TRUE(result.has_value()) << "Large file upload should return a handle";
-
-    if (result.has_value()) {
-        EXPECT_TRUE(result.value().is_valid());
-    }
+    // The final response includes hashing 100 MiB; instrumented Debug builds
+    // need a larger response deadline than small-message fault tests.
+    auto configured = file_transfer_client::builder().with_auto_reconnect(false)
+        .with_connect_timeout(2s).with_transfer_timeout(30s).build();
+    ASSERT_TRUE(configured);
+    client_ = std::make_unique<file_transfer_client>(std::move(configured.value()));
+    ASSERT_TRUE(connect_client()); auto source = create_test_file("large", test_data::large_file_size);
+    std::atomic<unsigned> progress{};
+    client_->on_progress([&](const auto&) { ++progress; });
+    auto pending = client_->upload_file(source, "large");
+    auto matched = transfer_matches(pending, source, storage_dir_ / "large", 180s);
+    client_.reset();
+    EXPECT_TRUE(matched); EXPECT_GT(progress, 1);
 }
-
 TEST_F(LargeFileTransferTest, DownloadLargeFile) {
-    ASSERT_TRUE(connect_client());
-
-    auto download_path = download_dir_ / "downloaded_large.bin";
-
-    // Track progress
-    std::atomic<bool> progress_received{false};
-    client_->on_progress([&]([[maybe_unused]] const transfer_progress& progress) {
-        progress_received = true;
-    });
-
-    // Attempt download (may fail if file doesn't exist)
-    auto result = client_->download_file("large_file.bin", download_path);
-    EXPECT_TRUE(result.has_value()) << "Download should return a handle";
+    ASSERT_TRUE(connect_client()); auto source = create_test_file("large", test_data::medium_file_size);
+    std::filesystem::copy_file(source, storage_dir_ / "large");
+    auto pending = client_->download_file("large", download_dir_ / "large");
+    ASSERT_TRUE(transfer_matches(pending, source, download_dir_ / "large", 20s));
 }
 
-/**
- * @brief Test fixture for batch transfer tests
- */
-class BatchTransferTest : public IntegrationFixture {};
-
-TEST_F(BatchTransferTest, MultipleSequentialUploads) {
+class SequentialTransferTest : public IntegrationFixture {};
+TEST_F(SequentialTransferTest, MultipleSequentialUploadsAndDownloads) {
     ASSERT_TRUE(connect_client());
-
-    // Create multiple test files
-    std::vector<std::filesystem::path> test_files;
-    for (int i = 0; i < 5; ++i) {
-        auto file = create_test_file("batch_" + std::to_string(i) + ".bin",
-                                      test_data::small_file_size);
-        test_files.push_back(file);
+    for (unsigned i = 0; i < 5; ++i) {
+        auto name = "sequential-" + std::to_string(i);
+        auto source = create_test_file(name, 1000 + 17 * i);
+        auto up = client_->upload_file(source, name);
+        ASSERT_TRUE(transfer_matches(up, source, storage_dir_ / name));
+        auto down = client_->download_file(name, download_dir_ / name);
+        ASSERT_TRUE(transfer_matches(down, source, download_dir_ / name));
     }
-
-    // Upload all files sequentially
-    std::vector<transfer_handle> handles;
-    for (std::size_t i = 0; i < test_files.size(); ++i) {
-        auto result = client_->upload_file(test_files[i],
-                                            "remote_batch_" + std::to_string(i) + ".bin");
-        EXPECT_TRUE(result.has_value()) << "Upload " << i << " should succeed";
-        if (result.has_value()) {
-            handles.push_back(result.value());
-        }
-    }
-
-    EXPECT_EQ(handles.size(), test_files.size());
+    auto files = client_->list_files(); ASSERT_TRUE(files); ASSERT_EQ(files.value().size(), 5);
+    EXPECT_EQ(client_->get_statistics().total_files_uploaded, 5);
+    EXPECT_EQ(client_->get_statistics().total_files_downloaded, 5);
 }
 
-TEST_F(BatchTransferTest, MultipleSequentialDownloads) {
-    ASSERT_TRUE(connect_client());
-
-    // Attempt multiple downloads
-    std::vector<transfer_handle> handles;
-    for (int i = 0; i < 5; ++i) {
-        auto result = client_->download_file(
-            "file_" + std::to_string(i) + ".bin",
-            download_dir_ / ("download_" + std::to_string(i) + ".bin")
-        );
-        if (result.has_value()) {
-            handles.push_back(result.value());
-        }
-    }
-
-    // Note: Downloads may fail if files don't exist, but API should work
-}
-
-TEST_F(BatchTransferTest, MixedUploadAndDownload) {
-    ASSERT_TRUE(connect_client());
-
-    // Create test file
-    auto upload_file = create_test_file("mixed_upload.bin", test_data::small_file_size);
-
-    // Interleave upload and download operations
-    auto upload_result = client_->upload_file(upload_file, "mixed_remote.bin");
-    EXPECT_TRUE(upload_result.has_value());
-
-    auto download_result = client_->download_file(
-        "some_file.bin", download_dir_ / "mixed_download.bin");
-    EXPECT_TRUE(download_result.has_value());
-
-    auto upload_result2 = client_->upload_file(upload_file, "mixed_remote2.bin");
-    EXPECT_TRUE(upload_result2.has_value());
-}
-
-/**
- * @brief Test fixture for transfer control tests (pause/resume/cancel)
- */
 class TransferControlTest : public IntegrationFixture {};
-
 TEST_F(TransferControlTest, TransferProgressCallback) {
-    ASSERT_TRUE(connect_client());
-
-    std::atomic<int> progress_count{0};
-    std::atomic<bool> complete_called{false};
-
-    client_->on_progress([&]([[maybe_unused]] const transfer_progress& progress) {
-        progress_count++;
-    });
-
-    client_->on_complete([&]([[maybe_unused]] const transfer_result& result) {
-        complete_called = true;
-    });
-
-    // Create and upload a file
-    auto test_file = create_test_file("progress_test.bin", test_data::medium_file_size);
-    auto result = client_->upload_file(test_file, "progress_test.bin");
-    EXPECT_TRUE(result.has_value());
-
-    // Note: Progress callbacks depend on implementation
-    // This test validates that callbacks can be registered without error
+    ASSERT_TRUE(connect_client()); std::atomic<unsigned> progress{}, completed{};
+    client_->on_progress([&](const auto&) { ++progress; });
+    client_->on_complete([&](const auto& outcome) { EXPECT_TRUE(outcome.success); ++completed; });
+    auto source = create_test_file("progress", 800000); auto pending = client_->upload_file(source, "progress");
+    ASSERT_TRUE(transfer_matches(pending, source, storage_dir_ / "progress"));
+    EXPECT_TRUE(eventually([&] { return completed == 1; })); EXPECT_GT(progress, 1);
+    client_.reset();
 }
-
 TEST_F(TransferControlTest, ClientStatisticsAfterTransfer) {
-    ASSERT_TRUE(connect_client());
-
-    auto initial_stats = client_->get_statistics();
-    EXPECT_EQ(initial_stats.active_transfers, 0);
-
-    // Upload a file
-    auto test_file = create_test_file("stats_test.bin", test_data::small_file_size);
-    auto result = client_->upload_file(test_file, "stats_test.bin");
-    EXPECT_TRUE(result.has_value());
-
-    // Check statistics
+    ASSERT_TRUE(connect_client()); auto source = create_test_file("stats", 1000);
+    auto pending = client_->upload_file(source, "stats");
+    ASSERT_TRUE(transfer_matches(pending, source, storage_dir_ / "stats"));
     auto stats = client_->get_statistics();
-    // Note: In stub implementation, stats may not be updated
-    // This validates the API works
-    EXPECT_GE(stats.total_files_uploaded, initial_stats.total_files_uploaded);
+    EXPECT_EQ(stats.total_files_uploaded, 1); EXPECT_EQ(stats.total_bytes_uploaded, 1000);
+    EXPECT_EQ(stats.active_transfers, 0);
 }
 
-// =============================================================================
-// Compression Integration Tests
-// =============================================================================
-
-/**
- * @brief Test fixture for compression integration tests
- */
-class CompressionIntegrationTest : public TempDirectoryFixture {};
-
-TEST_F(CompressionIntegrationTest, TransferWithCompressionEnabled) {
-    // Create server
-    auto server_result = file_transfer_server::builder()
-        .with_storage_directory(storage_dir_)
-        .build();
-    ASSERT_TRUE(server_result.has_value());
-    auto server = std::make_unique<file_transfer_server>(std::move(server_result.value()));
-
-    auto port = ServerFixture::get_available_port();
-    ASSERT_TRUE(server->start(endpoint{port}).has_value());
-
-    // Create client with compression always enabled
-    auto client_result = file_transfer_client::builder()
-        .with_compression(compression_mode::always)
-        .with_compression_level(compression_level::fast)
-        .with_auto_reconnect(false)
-        .build();
-    ASSERT_TRUE(client_result.has_value());
-    auto client = std::make_unique<file_transfer_client>(std::move(client_result.value()));
-
-    // Verify configuration
-    EXPECT_EQ(client->config().compression, compression_mode::always);
-    EXPECT_EQ(client->config().comp_level, compression_level::fast);
-
-    // Connect
-    ASSERT_TRUE(client->connect(endpoint{"127.0.0.1", port}).has_value());
-
-    // Upload highly compressible text file
-    auto text_file = create_text_file("compressible.txt", 10 * 1024);  // 10KB text
-    auto result = client->upload_file(text_file, "compressible.txt");
-    EXPECT_TRUE(result.has_value());
-
-    // Check compression statistics
-    auto comp_stats = client->get_compression_stats();
-    // Note: In stub implementation, stats may not reflect actual compression
-    // This validates the API contract
-    EXPECT_GE(comp_stats.compression_ratio(), 0.0);
-
-    // Cleanup
-    (void)client->disconnect();
-    (void)server->stop();
+class CompressionIntegrationTest : public IntegrationFixture {};
+TEST_F(CompressionIntegrationTest, PerFileModesPersistExactBytesAndChangeWireVolume) {
+    ASSERT_TRUE(connect_client()); auto source = create_text_file("compressible", 800000);
+    std::vector<uint64_t> volumes;
+    for (auto mode : {compression_mode::none, compression_mode::always, compression_mode::adaptive}) {
+        auto name = "mode-" + std::to_string(static_cast<int>(mode));
+        upload_options options; options.compression = mode;
+        auto before = client_->network_bytes().first;
+        auto pending = client_->upload_file(source, name, options);
+        ASSERT_TRUE(transfer_matches(pending, source, storage_dir_ / name));
+        volumes.push_back(client_->network_bytes().first - before);
+        download_options download; download.compression = mode;
+        auto received = client_->download_file(name, download_dir_ / name, download);
+        ASSERT_TRUE(transfer_matches(received, source, download_dir_ / name));
+    }
+    EXPECT_GT(volumes[0], std::filesystem::file_size(source));
+#ifdef FILE_TRANS_ENABLE_LZ4
+    EXPECT_LT(volumes[1], volumes[0] / 10); EXPECT_LT(volumes[2], volumes[0] / 10);
+#else
+    EXPECT_GE(volumes[1], std::filesystem::file_size(source));
+#endif
 }
-
-TEST_F(CompressionIntegrationTest, TransferWithCompressionDisabled) {
-    // Create server
-    auto server_result = file_transfer_server::builder()
-        .with_storage_directory(storage_dir_)
-        .build();
-    ASSERT_TRUE(server_result.has_value());
-    auto server = std::make_unique<file_transfer_server>(std::move(server_result.value()));
-
-    auto port = ServerFixture::get_available_port();
-    ASSERT_TRUE(server->start(endpoint{port}).has_value());
-
-    // Create client with compression disabled
-    auto client_result = file_transfer_client::builder()
-        .with_compression(compression_mode::none)
-        .with_auto_reconnect(false)
-        .build();
-    ASSERT_TRUE(client_result.has_value());
-    auto client = std::make_unique<file_transfer_client>(std::move(client_result.value()));
-
-    // Verify configuration
-    EXPECT_EQ(client->config().compression, compression_mode::none);
-
-    // Connect
-    ASSERT_TRUE(client->connect(endpoint{"127.0.0.1", port}).has_value());
-
-    // Upload file
-    auto test_file = create_test_file("nocompress.bin", test_data::small_file_size);
-    auto result = client->upload_file(test_file, "nocompress.bin");
-    EXPECT_TRUE(result.has_value());
-
-    // Compression stats should show ratio of 1.0 (no compression)
-    auto comp_stats = client->get_compression_stats();
-    // With compression disabled, compressed bytes should equal uncompressed
-    // or both should be 0 if not tracked
-    EXPECT_DOUBLE_EQ(comp_stats.compression_ratio(), 1.0);
-
-    // Cleanup
-    (void)client->disconnect();
-    (void)server->stop();
-}
-
-TEST_F(CompressionIntegrationTest, AdaptiveCompressionBehavior) {
-    // Create server
-    auto server_result = file_transfer_server::builder()
-        .with_storage_directory(storage_dir_)
-        .build();
-    ASSERT_TRUE(server_result.has_value());
-    auto server = std::make_unique<file_transfer_server>(std::move(server_result.value()));
-
-    auto port = ServerFixture::get_available_port();
-    ASSERT_TRUE(server->start(endpoint{port}).has_value());
-
-    // Create client with adaptive compression
-    auto client_result = file_transfer_client::builder()
-        .with_compression(compression_mode::adaptive)
-        .with_auto_reconnect(false)
-        .build();
-    ASSERT_TRUE(client_result.has_value());
-    auto client = std::make_unique<file_transfer_client>(std::move(client_result.value()));
-
-    // Verify configuration
-    EXPECT_EQ(client->config().compression, compression_mode::adaptive);
-
-    // Connect
-    ASSERT_TRUE(client->connect(endpoint{"127.0.0.1", port}).has_value());
-
-    // Upload text file (should be compressed)
-    auto text_file = create_text_file("adaptive_text.txt", 10 * 1024);
-    auto result1 = client->upload_file(text_file, "adaptive_text.txt");
-    EXPECT_TRUE(result1.has_value());
-
-    // Upload random binary file (may not benefit from compression)
-    auto binary_file = create_binary_file("adaptive_binary.bin", 10 * 1024);
-    auto result2 = client->upload_file(binary_file, "adaptive_binary.bin");
-    EXPECT_TRUE(result2.has_value());
-
-    // Get compression stats - adaptive mode should use compression when beneficial
-    auto comp_stats = client->get_compression_stats();
-    // Compression ratio depends on implementation
-    EXPECT_GE(comp_stats.compression_ratio(), 0.0);
-    EXPECT_LE(comp_stats.compression_ratio(), 10.0);  // Sanity check
-
-    // Cleanup
-    (void)client->disconnect();
-    (void)server->stop();
-}
-
 TEST_F(CompressionIntegrationTest, CompressionLevelComparison) {
-    // Create server
-    auto server_result = file_transfer_server::builder()
-        .with_storage_directory(storage_dir_)
-        .build();
-    ASSERT_TRUE(server_result.has_value());
-    auto server = std::make_unique<file_transfer_server>(std::move(server_result.value()));
-
-    auto port = ServerFixture::get_available_port();
-    ASSERT_TRUE(server->start(endpoint{port}).has_value());
-
-    // Test different compression levels
-    std::vector<compression_level> levels = {
-        compression_level::fast,
-        compression_level::balanced,
-        compression_level::best
-    };
-
-    for (auto level : levels) {
-        auto client_result = file_transfer_client::builder()
-            .with_compression(compression_mode::always)
-            .with_compression_level(level)
-            .with_auto_reconnect(false)
-            .build();
-        ASSERT_TRUE(client_result.has_value());
-        auto client = std::make_unique<file_transfer_client>(std::move(client_result.value()));
-
-        EXPECT_EQ(client->config().comp_level, level);
-
-        // Connect and upload
-        ASSERT_TRUE(client->connect(endpoint{"127.0.0.1", port}).has_value());
-
-        auto text_file = create_text_file("level_test.txt", 5 * 1024);
-        auto result = client->upload_file(text_file, "level_test.txt");
-        EXPECT_TRUE(result.has_value());
-
-        (void)client->disconnect();
+    auto source = create_text_file("source", 200000);
+    for (auto level : {compression_level::fast, compression_level::best}) {
+        auto client = file_transfer_client::builder().with_compression_level(level).build(); ASSERT_TRUE(client);
+        ASSERT_TRUE(client.value().connect({"127.0.0.1", server_port_}));
+        auto name = "level-" + std::to_string(static_cast<int>(level));
+        auto pending = client.value().upload_file(source, name);
+        ASSERT_TRUE(transfer_matches(pending, source, storage_dir_ / name));
     }
-
-    (void)server->stop();
 }
 
-TEST_F(CompressionIntegrationTest, UploadWithPerFileCompressionOverride) {
-    // Create server
-    auto server_result = file_transfer_server::builder()
-        .with_storage_directory(storage_dir_)
-        .build();
-    ASSERT_TRUE(server_result.has_value());
-    auto server = std::make_unique<file_transfer_server>(std::move(server_result.value()));
-
-    auto port = ServerFixture::get_available_port();
-    ASSERT_TRUE(server->start(endpoint{port}).has_value());
-
-    // Create client with compression disabled by default
-    auto client_result = file_transfer_client::builder()
-        .with_compression(compression_mode::none)
-        .with_auto_reconnect(false)
-        .build();
-    ASSERT_TRUE(client_result.has_value());
-    auto client = std::make_unique<file_transfer_client>(std::move(client_result.value()));
-
-    // Connect
-    ASSERT_TRUE(client->connect(endpoint{"127.0.0.1", port}).has_value());
-
-    auto text_file = create_text_file("override_test.txt", 5 * 1024);
-
-    // Upload with per-file compression override
-    upload_options options;
-    options.compression = compression_mode::always;
-    auto result = client->upload_file(text_file, "override_test.txt", options);
-    EXPECT_TRUE(result.has_value());
-
-    // Cleanup
-    (void)client->disconnect();
-    (void)server->stop();
-}
-
-// =============================================================================
-// Stress Tests
-// =============================================================================
-
-/**
- * @brief Test fixture for stress tests
- */
-class StressTest : public TempDirectoryFixture {};
-
+class StressTest : public IntegrationFixture {};
 TEST_F(StressTest, RapidConnectDisconnectLoop) {
-    // Create server
-    auto server_result = file_transfer_server::builder()
-        .with_storage_directory(storage_dir_)
-        .with_max_connections(50)
-        .build();
-    ASSERT_TRUE(server_result.has_value());
-    auto server = std::make_unique<file_transfer_server>(std::move(server_result.value()));
-
-    auto port = ServerFixture::get_available_port();
-    ASSERT_TRUE(server->start(endpoint{port}).has_value());
-
-    // Rapidly connect and disconnect
-    constexpr int iterations = 10;
-    for (int i = 0; i < iterations; ++i) {
-        auto client_result = file_transfer_client::builder()
-            .with_auto_reconnect(false)
-            .build();
-        ASSERT_TRUE(client_result.has_value());
-        auto client = std::make_unique<file_transfer_client>(std::move(client_result.value()));
-
-        auto connect_result = client->connect(endpoint{"127.0.0.1", port});
-        EXPECT_TRUE(connect_result.has_value()) << "Iteration " << i;
-
-        if (client->is_connected()) {
-            auto disconnect_result = client->disconnect();
-            EXPECT_TRUE(disconnect_result.has_value()) << "Iteration " << i;
-        }
+    for (unsigned i = 0; i < 20; ++i) {
+        ASSERT_TRUE(connect_client()); ASSERT_TRUE(client_->list_files()); ASSERT_TRUE(client_->disconnect());
+        ASSERT_TRUE(eventually([&] { return server_->get_statistics().active_connections == 0; }));
     }
-
-    (void)server->stop();
 }
-
 TEST_F(StressTest, MultipleSmallFileUploads) {
-    // Create server
-    auto server_result = file_transfer_server::builder()
-        .with_storage_directory(storage_dir_)
-        .build();
-    ASSERT_TRUE(server_result.has_value());
-    auto server = std::make_unique<file_transfer_server>(std::move(server_result.value()));
-
-    auto port = ServerFixture::get_available_port();
-    ASSERT_TRUE(server->start(endpoint{port}).has_value());
-
-    // Create client
-    auto client_result = file_transfer_client::builder()
-        .with_auto_reconnect(false)
-        .build();
-    ASSERT_TRUE(client_result.has_value());
-    auto client = std::make_unique<file_transfer_client>(std::move(client_result.value()));
-
-    ASSERT_TRUE(client->connect(endpoint{"127.0.0.1", port}).has_value());
-
-    // Upload many small files
-    constexpr int file_count = 20;
-    int success_count = 0;
-
-    for (int i = 0; i < file_count; ++i) {
-        auto test_file = create_test_file("stress_" + std::to_string(i) + ".bin", 512);
-        auto result = client->upload_file(test_file, "stress_" + std::to_string(i) + ".bin");
-        if (result.has_value()) {
-            success_count++;
-        }
+    ASSERT_TRUE(connect_client()); auto source = create_test_file("source", 512);
+    for (unsigned i = 0; i < 50; ++i) {
+        auto name = "small-" + std::to_string(i);
+        auto pending = client_->upload_file(source, name);
+        ASSERT_TRUE(transfer_matches(pending, source, storage_dir_ / name));
     }
-
-    // Most uploads should succeed
-    EXPECT_GT(success_count, file_count / 2);
-
-    (void)client->disconnect();
-    (void)server->stop();
+    auto files = client_->list_files(); ASSERT_TRUE(files); EXPECT_EQ(files.value().size(), 50);
+    EXPECT_EQ(server_->get_statistics().total_files_uploaded, 50);
 }
-
-}  // namespace kcenon::file_transfer::test
+} // namespace kcenon::file_transfer::test

@@ -1,0 +1,24 @@
+name: Optional credentialed cloud verification
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  gcs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: python3 tools/ci_build.py
+      - name: Require explicit credentials and existing authorized object
+        run: python3 tools/run_gcs_validation.py --test-binary build/bin/file_trans_cloud_integration_tests --artifacts build/gcs-results
+        env:
+          GCS_SERVICE_ACCOUNT_JSON: ${{ secrets.GCS_SIGNING_TEST_SERVICE_ACCOUNT_JSON }}
+          GCS_SIGNING_TEST_BUCKET: ${{ vars.GCS_SIGNING_TEST_BUCKET }}
+          GCS_SIGNING_TEST_OBJECT: ${{ vars.GCS_SIGNING_TEST_OBJECT }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: explicit-gcs-results
+          path: build/gcs-results
