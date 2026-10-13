@@ -503,6 +503,11 @@ if(FILE_TRANS_BUILD_BENCHMARKS)
     add_subdirectory(benchmarks)
 endif()
 
+option(FILE_TRANS_BUILD_TRANSFER_BENCHMARKS "Build separate-process public API benchmark" OFF)
+if(FILE_TRANS_BUILD_TRANSFER_BENCHMARKS)
+    add_subdirectory(benchmarks/public_api)
+endif()
+
 ##################################################
 # Installation
 ##################################################

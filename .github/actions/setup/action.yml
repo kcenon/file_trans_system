@@ -1,6 +1,9 @@
 name: Compatible dependencies
 description: Install tools and build pinned ecosystem revisions with required patches.
 inputs:
+  build-type:
+    description: Dependency build type
+    default: Debug
   sanitizer:
     description: Optional ASAN, TSAN or UBSAN instrumentation for dependencies
     default: ''
@@ -22,6 +25,7 @@ runs:
     - shell: bash
       env:
         FTS_SANITIZER: ${{ inputs.sanitizer }}
+        FTS_BUILD_TYPE: ${{ inputs.build-type }}
       run: |
         case "$FTS_SANITIZER" in
           ASAN) instrumentation=address ;;
@@ -32,5 +36,5 @@ runs:
         if [[ -n "$instrumentation" ]]; then
           python3 tools/bootstrap_dependencies.py --jobs 4 --build-directory build-instrumented --sanitizer "$instrumentation"
         else
-          python3 tools/bootstrap_dependencies.py --jobs 4
+          python3 tools/bootstrap_dependencies.py --jobs 4 --build-type "$FTS_BUILD_TYPE" --build-directory build
         fi

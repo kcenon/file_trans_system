@@ -128,3 +128,5 @@ vcpkg-manifest-install.log
 
 .cache/
 .npm-cache/
+# Local release measurement builds
+build-release/

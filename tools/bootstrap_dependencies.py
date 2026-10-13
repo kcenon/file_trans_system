@@ -21,6 +21,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", type=Path, default=repo.parent)
     parser.add_argument("--jobs", type=int, default=4)
+    parser.add_argument("--build-type", choices=("Debug", "Release"), default="Debug")
     parser.add_argument("--build-directory", default="build", help="Separate dependency build directory name")
     parser.add_argument("--sanitizer", choices=("", "address", "thread", "undefined"), default="")
     args = parser.parse_args()
@@ -60,7 +61,7 @@ def main():
             extra = ["-DCMAKE_CXX_FLAGS=" + instrumentation, "-DCMAKE_C_FLAGS=" + instrumentation]
         if name != "thread_system":
             extra.append("-DTHREAD_SYSTEM_LIBRARY=" + str(workspace / "thread_system" / args.build_directory / "lib/libThreadSystem.a"))
-        run(["cmake", "-S", source, "-B", source / args.build_directory, "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Debug", *flags, *extra])
+        run(["cmake", "-S", source, "-B", source / args.build_directory, "-G", "Ninja", "-DCMAKE_BUILD_TYPE=" + args.build_type, *flags, *extra])
         target = {"thread_system": "ThreadSystem", "logger_system": "LoggerSystem", "network_system": "NetworkSystem"}[name]
         run(["cmake", "--build", source / args.build_directory, "--target", target, "--parallel", args.jobs])
     print("Dependencies built. Configure the project using their include and library paths.")
