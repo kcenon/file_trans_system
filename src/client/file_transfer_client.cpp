@@ -14,6 +14,7 @@
 #include <kcenon/file_transfer/core/chunk_config.h>
 #include <kcenon/file_transfer/core/compression_engine.h>
 #include <kcenon/file_transfer/core/file_commit.h>
+#include <kcenon/file_transfer/core/transfer_checkpoint.h>
 #include <kcenon/file_transfer/encryption/transfer_crypto.h>
 #include <kcenon/file_transfer/core/logging.h>
 
@@ -142,6 +143,8 @@ using download_state = internal_transfer_state;
 struct transfer_context_base {
     transfer_id tid;
     std::shared_ptr<transfer_crypto> crypto;
+    std::optional<transfer_state> checkpoint;
+    bool recovering=false;
     internal_transfer_state state{internal_transfer_state::idle};
 
     // Progress tracking
@@ -340,6 +343,7 @@ struct batch_context {
 struct file_transfer_client::impl {
     std::atomic<file_transfer_client*> owner{nullptr};
     client_config config;
+    std::unique_ptr<resume_handler> checkpoints;
     std::atomic<connection_state> current_state{connection_state::disconnected};
     endpoint server_endpoint;
 
@@ -430,11 +434,14 @@ struct file_transfer_client::impl {
         return !closing && !manual_disconnect && connection_generation==generation;
     }
     void connection_lost() {
-        fail_channels(error{error_code::connection_lost, "Connection lost"});
-        std::lock_guard lock(reconnect_mutex);
-        if (closing || manual_disconnect || current_state != connection_state::connected) return;
-        retry_pending=config.auto_reconnect && config.reconnect.max_attempts>0;
-        state_locked(retry_pending ? connection_state::reconnecting : connection_state::disconnected);
+        {
+            std::lock_guard lock(reconnect_mutex);
+            if(!closing && !manual_disconnect && current_state==connection_state::connected) {
+                retry_pending=config.auto_reconnect && config.reconnect.max_attempts>0;
+                state_locked(retry_pending ? connection_state::reconnecting : connection_state::disconnected);
+            }
+        }
+        fail_channels(error{error_code::connection_lost,"Connection lost"});
     }
     void run_connections() {
         for (;;) {
@@ -479,6 +486,29 @@ struct file_transfer_client::impl {
                 if (!closing && !manual_disconnect && generation==connection_generation) state_locked(connection_state::disconnected);
             }
         }
+    }
+    auto restore_checkpoint(const transfer_id& id,bool upload,const std::filesystem::path& local,const std::string& remote)
+        -> result<transfer_state> {
+        if(!checkpoints) return unexpected{error{error_code::invalid_configuration,"Configure a checkpoint directory before resuming"}};
+        auto state=detail::load_checkpoint(*checkpoints,id); if(!state) return state;
+        auto prefix=detail::checkpoint_prefix(state.value());
+        std::lock_guard lock(connection_operation_mutex);
+        if(!prefix || state.value().upload!=upload || state.value().filename!=remote ||
+           state.value().local_path!=std::filesystem::absolute(local).lexically_normal().string() ||
+           state.value().endpoint_host!=server_endpoint.host || state.value().endpoint_port!=server_endpoint.port)
+            return unexpected{error{error_code::invalid_configuration,"Checkpoint endpoint, file, or direction mismatch"}};
+        return state;
+    }
+    void identify_checkpoint(transfer_state& checkpoint,const std::filesystem::path& local) {
+        std::lock_guard lock(connection_operation_mutex);
+        checkpoint.local_path=std::filesystem::absolute(local).lexically_normal().string();
+        checkpoint.endpoint_host=server_endpoint.host; checkpoint.endpoint_port=server_endpoint.port;
+    }
+    bool wait_for_reconnection() {
+        std::unique_lock lock(reconnect_mutex);
+        if(manual_disconnect || closing || !config.auto_reconnect) return false;
+        reconnect_cv.wait(lock,[&] { return closing || manual_disconnect || current_state!=connection_state::reconnecting; });
+        return !closing && !manual_disconnect && current_state==connection_state::connected;
     }
     auto open_channel(const transfer_id& id) -> std::shared_ptr<channel> {
         auto response = std::make_shared<channel>();
@@ -571,6 +601,7 @@ struct file_transfer_client::impl {
         {
             std::lock_guard lock(ctx->mutex);
             if (is_terminal_status(to_transfer_status(ctx->state))) return;
+            if(success && ctx->checkpoint) (void)checkpoints->delete_state(ctx->tid);
             if (success) {
                 std::lock_guard stats_lock(stats_mutex);
                 ++statistics.total_files_uploaded; statistics.total_bytes_uploaded += ctx->transferred_bytes;
@@ -589,13 +620,17 @@ struct file_transfer_client::impl {
             std::lock_guard lock(ctx->mutex);
             if (is_terminal_status(to_transfer_status(ctx->state))) return;
             ctx->state = internal_transfer_state::failed; ctx->error_message = message;
-            std::error_code ec; std::filesystem::remove(ctx->temp_path, ec);
+            if(!ctx->checkpoint) { std::error_code ec; std::filesystem::remove(ctx->temp_path,ec); }
             outcome = {false, ctx->remote_name, ctx->transferred_bytes, message}; ctx->cv.notify_all();
         }
         if (auto callback = completion_callback()) { try { callback(outcome); } catch (...) {} }
     }
 
     explicit impl(client_config cfg) : config(std::move(cfg)) {
+        if(!config.checkpoint_directory.empty()) {
+            resume_handler_config settings(config.checkpoint_directory); settings.checkpoint_interval=1; settings.auto_cleanup=false;
+            checkpoints=std::make_unique<resume_handler>(settings);
+        }
         // Initialize bandwidth limiters if limits are configured
         if (config.upload_bandwidth_limit.has_value()) {
             upload_limiter = std::make_unique<bandwidth_limiter>(
@@ -694,6 +729,10 @@ auto file_transfer_client::builder::with_encryption_key(
     return *this;
 }
 
+auto file_transfer_client::builder::with_checkpoint_directory(std::filesystem::path directory) -> builder& {
+    config_.checkpoint_directory=std::move(directory); return *this;
+}
+
 auto file_transfer_client::builder::with_transport(transfer_transport_config config) -> builder& {
     config_.transport = std::move(config); return *this;
 }
@@ -704,6 +743,10 @@ auto file_transfer_client::builder::build() -> result<file_transfer_client> {
         return unexpected{error{error_code::invalid_configuration, "QUIC transport is disabled in this build"}};
 #endif
 
+    if(!config_.checkpoint_directory.empty()) {
+        std::error_code ec; std::filesystem::create_directories(config_.checkpoint_directory,ec);
+        if(ec) return unexpected{error{error_code::file_write_error,ec.message()}};
+    }
     if (!detail::valid_reconnect_policy(config_.reconnect))
         return unexpected{error{error_code::invalid_configuration, "Invalid reconnect delay or multiplier"}};
     if (config_.enable_encryption) {
@@ -741,7 +784,7 @@ file_transfer_client::file_transfer_client(client_config config)
         } else if (event.event == transport_event::disconnected) {
             state->connection_lost();
         } else if (event.event == transport_event::error) {
-            state->fail_channels(error{error_code::connection_lost, event.error_message});
+            state->connection_lost();
         }
     });
     impl_->reconnect_worker=std::thread([state] { state->run_connections(); });
@@ -817,6 +860,10 @@ auto file_transfer_client::network_bytes() const -> std::pair<uint64_t, uint64_t
     auto stats = impl_->transport->get_statistics(); return {stats.bytes_sent, stats.bytes_received};
 }
 
+auto file_transfer_client::resumable_transfers() const -> std::vector<transfer_state> {
+    return impl_->checkpoints ? impl_->checkpoints->list_resumable_transfers() : std::vector<transfer_state>{};
+}
+
 auto file_transfer_client::state() const -> connection_state {
     return impl_->current_state;
 }
@@ -834,16 +881,39 @@ auto file_transfer_client::upload_file(
         return unexpected{error{error_code::file_not_found, "Local file not found: " + local_path.string()}};
     auto size = std::filesystem::file_size(local_path, ec);
     if (ec) return unexpected{error{error_code::file_read_error, ec.message()}};
+    const auto name=remote_name.empty() ? local_path.filename().string() : remote_name;
+    std::optional<transfer_state> restored;
+    if((options.resumable || options.resume_id) && !impl_->checkpoints)
+        return unexpected{error{error_code::invalid_configuration,"Resumable transfers require a checkpoint directory"}};
+    if(options.resume_id) {
+        auto loaded=impl_->restore_checkpoint(*options.resume_id,true,local_path,name);
+        if(!loaded) return unexpected{loaded.error()};
+        if(size!=loaded.value().total_size || !checksum::verify_sha256(local_path,loaded.value().sha256))
+            return unexpected{error{error_code::file_hash_mismatch,"Upload source changed since checkpoint"}};
+        restored=std::move(loaded.value());
+        if(options.encrypt && *options.encrypt!=restored->encrypted)
+            return unexpected{error{error_code::invalid_configuration,"Cannot change encryption while resuming"}};
+        if(restored->encrypted) {
+            auto valid=transfer_crypto::validate_secret(impl_->config.encryption_key,impl_->config.encryption_password);
+            if(!valid) return unexpected{valid.error()};
+        }
+    }
     auto handle_id = impl_->next_transfer_id++;
     auto ctx = std::make_shared<upload_context>();
     ctx->tid = transfer_id::generate(); ctx->local_path = local_path;
     ctx->remote_name = remote_name.empty() ? local_path.filename().string() : remote_name;
-    ctx->options = options; ctx->state = internal_transfer_state::initializing;
+    ctx->options = options; ctx->checkpoint=std::move(restored);
+    if(ctx->checkpoint) {
+        ctx->tid=ctx->checkpoint->id; ctx->recovering=true; ctx->options.resumable=true;
+        ctx->options.compression=static_cast<compression_mode>(ctx->checkpoint->compression);
+        ctx->options.encrypt=ctx->checkpoint->encrypted; ctx->options.overwrite=ctx->checkpoint->overwrite;
+    }
+    ctx->state = internal_transfer_state::initializing;
     ctx->file_size = size; ctx->start_time = std::chrono::steady_clock::now();
     { std::lock_guard lock(impl_->upload_mutex); impl_->upload_contexts[handle_id] = ctx; }
     auto response = impl_->open_channel(ctx->tid);
     auto* state = impl_.get();
-    state->launch([state, ctx, response] {
+    state->launch([state, ctx, response]() mutable {
         auto send = [&](message_type type, auto value) {
             if constexpr (requires { value.auth_tag; }) {
                 if (ctx->crypto) {
@@ -870,10 +940,17 @@ auto file_transfer_client::upload_file(
             }
             return std::move(value.value());
         };
+        for(;;) {
         try {
             auto hash = checksum::sha256_file(ctx->local_path);
             if (!hash) throw std::runtime_error(hash.error().message);
+            if(ctx->checkpoint && hash.value()!=ctx->checkpoint->sha256) throw std::runtime_error("Upload source changed since checkpoint");
             msg_upload_request request{};
+            request.resumable=ctx->options.resumable; request.resuming=ctx->recovering;
+            if(ctx->recovering) {
+                request.resume_from=detail::checkpoint_prefix(*ctx->checkpoint).value();
+                request.resume_chunk_size=ctx->checkpoint->chunk_size;
+            }
             request.transfer_id = ctx->tid.bytes; request.filename = ctx->remote_name; request.file_size = ctx->file_size;
             for (std::size_t i = 0; i < 32; ++i)
                 request.sha256_hash[i] = static_cast<uint8_t>(std::stoul(hash.value().substr(i * 2, 2), nullptr, 16));
@@ -895,7 +972,9 @@ auto file_transfer_client::upload_file(
             if (!state->wait_active(ctx)) throw std::runtime_error("Upload interrupted");
             send(message_type::upload_request, request);
             auto accepted = receive.template operator()<msg_upload_accept>(message_type::upload_accept);
-            if (!chunk_config{accepted.chunk_size}.validate() || accepted.resume_offset ||
+            if (!chunk_config{accepted.chunk_size}.validate() || accepted.resume_offset>ctx->file_size ||
+                (!request.resuming && accepted.resume_offset) || accepted.resumable!=request.resumable ||
+                (accepted.resume_offset!=ctx->file_size && accepted.resume_offset%accepted.chunk_size) ||
                 accepted.encryption != request.encryption || accepted.compression != request.compression)
                 throw std::runtime_error("Invalid upload negotiation response");
             if (ctx->crypto) {
@@ -906,18 +985,33 @@ auto file_transfer_client::upload_file(
                 auto verified = ctx->crypto->verify(message_type::upload_accept, accepted);
                 if (!verified) throw std::runtime_error(verified.error().message);
             }
+            const auto start_index=accepted.resume_offset/accepted.chunk_size+(accepted.resume_offset%accepted.chunk_size!=0);
+            if(ctx->options.resumable) {
+                std::lock_guard lock(ctx->mutex);
+                if(is_terminal_status(to_transfer_status(ctx->state))) throw std::runtime_error("Upload interrupted");
+                if(!ctx->checkpoint) {
+                    ctx->checkpoint=detail::new_checkpoint(ctx->tid,ctx->remote_name,ctx->file_size,accepted.chunk_size,hash.value(),
+                        true,static_cast<uint8_t>(request.compression),static_cast<bool>(ctx->crypto),ctx->options.overwrite);
+                    state->identify_checkpoint(*ctx->checkpoint,ctx->local_path);
+                } else if(accepted.chunk_size!=ctx->checkpoint->chunk_size || accepted.resume_offset<ctx->checkpoint->transferred_bytes)
+                    throw std::runtime_error("Server lost acknowledged upload chunks");
+                detail::mark_prefix(*ctx->checkpoint,start_index);
+                auto saved=state->checkpoints->save_state(*ctx->checkpoint); if(!saved) throw std::runtime_error(saved.error().message);
+            }
             {
                 std::lock_guard lock(ctx->mutex);
                 if (is_terminal_status(to_transfer_status(ctx->state))) throw std::runtime_error("Upload interrupted");
                 ctx->chunk_size = accepted.chunk_size;
                 ctx->total_chunks = ctx->file_size / accepted.chunk_size + (ctx->file_size % accepted.chunk_size != 0);
+                ctx->transferred_chunks=start_index; ctx->transferred_bytes=accepted.resume_offset;
                 ctx->file_hash = hash.value(); ctx->state = internal_transfer_state::transferring;
             }
             std::ifstream file(ctx->local_path, std::ios::binary);
             if (!file) throw std::runtime_error("Unable to open upload source");
+            file.seekg(static_cast<std::streamoff>(accepted.resume_offset));
             compression_engine compressor(state->config.comp_level);
             uint64_t wire_bytes = 0;
-            for (uint64_t index = 0; index < ctx->total_chunks; ++index) {
+            for (uint64_t index = start_index; index < ctx->total_chunks; ++index) {
                 if (!state->wait_active(ctx)) throw std::runtime_error("Upload interrupted");
                 chunk data; auto& h = data.header;
                 h.id = ctx->tid; h.chunk_index = index; h.chunk_offset = index * accepted.chunk_size;
@@ -947,6 +1041,10 @@ auto file_transfer_client::upload_file(
                 {
                     std::lock_guard lock(ctx->mutex);
                     if (is_terminal_status(to_transfer_status(ctx->state))) throw std::runtime_error("Upload interrupted");
+                    if(ctx->checkpoint) {
+                        detail::mark_prefix(*ctx->checkpoint,index+1);
+                        auto saved=state->checkpoints->save_state(*ctx->checkpoint); if(!saved) throw std::runtime_error(saved.error().message);
+                    }
                     ++ctx->transferred_chunks; ctx->transferred_bytes += h.original_size;
                     progress = {ctx->remote_name, ctx->transferred_bytes, ctx->file_size, ctx->file_size ? 100.0 * ctx->transferred_bytes / ctx->file_size : 100.0};
                 }
@@ -957,10 +1055,26 @@ auto file_transfer_client::upload_file(
             send(message_type::upload_complete, msg_upload_complete{ctx->tid.bytes, ctx->total_chunks, ctx->file_size, wire_bytes});
             auto ack = receive.template operator()<msg_upload_ack>(message_type::upload_ack);
             if (ack.verified != 1) throw std::runtime_error("Server did not verify uploaded file");
-            state->finish_upload(ctx, true);
+            state->finish_upload(ctx, true); break;
         } catch (const std::exception& err) {
-            (void)state->send(message_type::transfer_cancel, msg_transfer_cancel{ctx->tid.bytes, 0, err.what()});
-            state->finish_upload(ctx, false, err.what());
+            if(ctx->checkpoint && state->current_state==connection_state::reconnecting && state->wait_for_reconnection()) {
+                bool cancelled;
+                { std::lock_guard lock(ctx->mutex); cancelled=is_terminal_status(to_transfer_status(ctx->state)); }
+                if(!cancelled) {
+                    auto loaded=detail::load_checkpoint(*state->checkpoints,ctx->tid);
+                    if(loaded) {
+                        {
+                            std::lock_guard lock(ctx->mutex);
+                            if(is_terminal_status(to_transfer_status(ctx->state))) break;
+                            ctx->checkpoint=std::move(loaded.value()); ctx->recovering=true; ctx->crypto.reset();
+                        }
+                        state->close_channel(ctx->tid); response=state->open_channel(ctx->tid); continue;
+                    }
+                }
+            }
+            if(!ctx->checkpoint) (void)state->send(message_type::transfer_cancel,msg_transfer_cancel{ctx->tid.bytes,0,err.what()});
+            state->finish_upload(ctx,false,err.what()); break;
+        }
         }
         state->close_channel(ctx->tid);
     });
@@ -998,8 +1112,28 @@ auto file_transfer_client::download_file(
                                "Local path is empty"}};
     }
 
+    std::optional<transfer_state> restored;
+    bool already_committed=false;
+    if((options.resumable || options.resume_id) && (!impl_->checkpoints || !options.verify_hash))
+        return unexpected{error{error_code::invalid_configuration,"Resumable downloads require checkpoints and final hash verification"}};
+    if(options.resume_id) {
+        auto loaded=impl_->restore_checkpoint(*options.resume_id,false,local_path,remote_name);
+        if(!loaded) return unexpected{loaded.error()};
+        auto temporary=local_path; temporary+="."+loaded.value().id.to_string()+".part";
+        auto valid=detail::validate_partial(temporary,loaded.value());
+        already_committed=loaded.value().is_complete() && checksum::verify_sha256(local_path,loaded.value().sha256);
+        if(!valid && !already_committed) return unexpected{valid.error()};
+        restored=std::move(loaded.value());
+        if(options.encrypt && *options.encrypt!=restored->encrypted)
+            return unexpected{error{error_code::invalid_configuration,"Cannot change encryption while resuming"}};
+        if(restored->encrypted) {
+            auto secret=transfer_crypto::validate_secret(impl_->config.encryption_key,impl_->config.encryption_password);
+            if(!secret) return unexpected{secret.error()};
+        }
+    }
+
     // Check if file already exists (unless overwrite is enabled)
-    if (!options.overwrite && std::filesystem::exists(local_path)) {
+    if (!options.overwrite && !already_committed && std::filesystem::exists(local_path)) {
         FT_LOG_ERROR(log_category::client,
             "Download failed: file already exists: " + local_path.string());
         return unexpected{error{error_code::file_already_exists,
@@ -1028,7 +1162,11 @@ auto file_transfer_client::download_file(
     ctx->tid = transfer_id::generate();
     ctx->remote_name = remote_name;
     ctx->local_path = local_path;
-    ctx->options = options;
+    ctx->options = options; ctx->checkpoint=std::move(restored);
+    if(ctx->checkpoint) {
+        ctx->tid=ctx->checkpoint->id; ctx->recovering=true; ctx->options.resumable=true;
+        ctx->options.encrypt=ctx->checkpoint->encrypted; ctx->options.overwrite=ctx->checkpoint->overwrite;
+    }
     ctx->state = internal_transfer_state::initializing;
     ctx->start_time = std::chrono::steady_clock::now();
 
@@ -1048,9 +1186,23 @@ auto file_transfer_client::download_file(
         impl_->download_contexts[handle_id] = ctx;
     }
 
+    if(already_committed) {
+        {
+            std::lock_guard lock(ctx->mutex);
+            ctx->file_size=ctx->checkpoint->total_size; ctx->total_chunks=ctx->checkpoint->total_chunks;
+            ctx->received_chunks=ctx->total_chunks; ctx->bytes_received=ctx->file_size;
+            ctx->chunk_size=ctx->checkpoint->chunk_size; ctx->expected_sha256=ctx->checkpoint->sha256;
+            ctx->state=internal_transfer_state::completed;
+            (void)impl_->checkpoints->delete_state(ctx->tid);
+        }
+        { std::lock_guard lock(impl_->stats_mutex); ++impl_->statistics.total_files_downloaded; impl_->statistics.total_bytes_downloaded+=ctx->file_size; }
+        if(auto callback=impl_->completion_callback()) { try { callback({true,ctx->remote_name,ctx->file_size,{}}); } catch(...) {} }
+        return handle;
+    }
+
     auto response = impl_->open_channel(ctx->tid);
     auto* state = impl_.get();
-    state->launch([state, ctx, response, handle_id] {
+    state->launch([state, ctx, response, handle_id]() mutable {
         auto checked = [](auto result) {
             if (!result) throw std::runtime_error(result.error().message);
         };
@@ -1058,10 +1210,17 @@ auto file_transfer_client::download_file(
             if (ctx->crypto) checked(ctx->crypto->sign(type, value));
             checked(state->send(type, value));
         };
+        for(;;) {
         try {
             msg_download_request request{};
             request.transfer_id = ctx->tid.bytes; request.filename = ctx->remote_name;
-            request.compression = static_cast<wire_compression_mode>(state->config.compression);
+            request.compression = static_cast<wire_compression_mode>(ctx->checkpoint ? ctx->checkpoint->compression : static_cast<uint8_t>(state->config.compression));
+            request.resumable=ctx->options.resumable; request.resuming=ctx->recovering;
+            if(ctx->recovering) {
+                request.resume_from=detail::checkpoint_prefix(*ctx->checkpoint).value();
+                request.resume_chunk_size=ctx->checkpoint->chunk_size;
+                for(size_t i=0;i<32;++i) request.resume_hash[i]=static_cast<uint8_t>(std::stoul(ctx->checkpoint->sha256.substr(i*2,2),nullptr,16));
+            }
             if (ctx->options.encrypt.value_or(state->config.enable_encryption)) {
                 request.encryption = wire_encryption_algorithm::aes_256_gcm;
                 auto salt = transfer_crypto::random_salt();
@@ -1084,7 +1243,8 @@ auto file_transfer_client::download_file(
             auto accepted = wire::decode<msg_download_accept>(first.value().payload);
             if (!accepted) throw std::runtime_error(accepted.error().message);
             const auto& metadata = accepted.value();
-            if (metadata.compression != request.compression || metadata.resume_offset ||
+            if (metadata.compression != request.compression || metadata.resumable!=request.resumable ||
+                metadata.resume_offset!=(ctx->recovering ? ctx->checkpoint->transferred_bytes : 0) ||
                 metadata.encryption != request.encryption)
                 throw std::runtime_error("Invalid download negotiation response");
             if (ctx->crypto) {
@@ -1097,6 +1257,20 @@ auto file_transfer_client::download_file(
             std::string hash;
             for (auto byte : metadata.sha256_hash) {
                 hash += "0123456789abcdef"[byte >> 4]; hash += "0123456789abcdef"[byte & 15];
+            }
+            {
+                std::lock_guard lock(ctx->mutex);
+                if(is_terminal_status(to_transfer_status(ctx->state))) throw std::runtime_error("Download interrupted");
+                if(ctx->recovering && (metadata.file_size!=ctx->checkpoint->total_size ||
+                   hash!=ctx->checkpoint->sha256 || metadata.chunk_size!=ctx->checkpoint->chunk_size ||
+                   metadata.total_chunks!=ctx->checkpoint->total_chunks))
+                    throw std::runtime_error("Download source metadata changed since checkpoint");
+                if(ctx->options.resumable && !ctx->checkpoint) {
+                    ctx->checkpoint=detail::new_checkpoint(ctx->tid,ctx->remote_name,metadata.file_size,metadata.chunk_size,hash,
+                        false,static_cast<uint8_t>(request.compression),static_cast<bool>(ctx->crypto),ctx->options.overwrite);
+                    state->identify_checkpoint(*ctx->checkpoint,ctx->local_path);
+                }
+                ctx->state=internal_transfer_state::initializing;
             }
             checked(state->owner.load()->set_download_metadata(handle_id, metadata.file_size,
                 metadata.total_chunks, metadata.chunk_size, hash));
@@ -1130,8 +1304,24 @@ auto file_transfer_client::download_file(
             }
             throw std::runtime_error("Download interrupted");
         } catch (const std::exception& err) {
-            (void)state->send(message_type::transfer_cancel, msg_transfer_cancel{ctx->tid.bytes, 0, err.what()});
-            state->fail_download(ctx, err.what());
+            if(ctx->checkpoint && state->current_state==connection_state::reconnecting && state->wait_for_reconnection()) {
+                bool cancelled;
+                { std::lock_guard lock(ctx->mutex); cancelled=is_terminal_status(to_transfer_status(ctx->state)); }
+                if(!cancelled) {
+                    auto loaded=detail::load_checkpoint(*state->checkpoints,ctx->tid);
+                    if(loaded) {
+                        {
+                            std::lock_guard lock(ctx->mutex);
+                            if(is_terminal_status(to_transfer_status(ctx->state))) break;
+                            ctx->checkpoint=std::move(loaded.value()); ctx->recovering=true; ctx->crypto.reset();
+                        }
+                        state->close_channel(ctx->tid); response=state->open_channel(ctx->tid); continue;
+                    }
+                }
+            }
+            if(!ctx->checkpoint) (void)state->send(message_type::transfer_cancel,msg_transfer_cancel{ctx->tid.bytes,0,err.what()});
+            state->fail_download(ctx,err.what()); break;
+        }
         }
         state->close_channel(ctx->tid);
     });
@@ -1184,6 +1374,15 @@ auto file_transfer_client::process_download_chunk_impl(
     file.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
     file.close();
     if (!file) return unexpected{error{error_code::file_write_error, "Failed to write download chunk"}};
+    if(ctx->checkpoint) {
+        if(h.chunk_index!=ctx->received_chunks)
+            return unexpected{error{error_code::invalid_configuration,"Resumable download chunks must be ordered"}};
+        auto flushed=sync_file(ctx->temp_path); if(!flushed) return flushed;
+        auto checkpoint=*ctx->checkpoint; detail::mark_prefix(checkpoint,h.chunk_index+1);
+        checkpoint.prefix_hash=detail::chain_hash(checkpoint.prefix_hash,data);
+        auto saved=impl_->checkpoints->save_state(checkpoint); if(!saved) return saved;
+        ctx->checkpoint=std::move(checkpoint);
+    }
     ctx->received_indices.insert(h.chunk_index);
     ++ctx->received_chunks;
     ctx->bytes_received += data.size();
@@ -1222,6 +1421,11 @@ auto file_transfer_client::finalize_download(uint64_t handle_id) -> result<void>
         auto committed = commit_file(ctx->temp_path, ctx->local_path, ctx->options.overwrite);
         if (!committed) failure = committed.error();
     }
+    if(!failure && ctx->checkpoint) {
+        auto synced=sync_directory(ctx->local_path.parent_path());
+        if(!synced) failure=synced.error();
+        else (void)impl_->checkpoints->delete_state(ctx->tid);
+    }
     if (!failure) {
         std::lock_guard stats_lock(impl_->stats_mutex);
         ++impl_->statistics.total_files_downloaded;
@@ -1229,10 +1433,7 @@ auto file_transfer_client::finalize_download(uint64_t handle_id) -> result<void>
     }
     ctx->state = failure ? download_state::failed : download_state::completed;
     ctx->error_message = failure.message;
-    if (failure) {
-        std::error_code ec;
-        std::filesystem::remove(ctx->temp_path, ec);
-    }
+    if(failure && !ctx->checkpoint) { std::error_code ec; std::filesystem::remove(ctx->temp_path,ec); }
     transfer_result outcome{!failure, ctx->remote_name, ctx->bytes_received, failure.message};
     ctx->cv.notify_all();
     lock.unlock();
@@ -1260,6 +1461,8 @@ auto file_transfer_client::cancel_download(uint64_t handle_id) -> result<void> {
     // observers see one fully established terminal outcome.
     std::error_code ec;
     std::filesystem::remove(ctx->temp_path, ec);
+    if(ctx->checkpoint) (void)impl_->checkpoints->delete_state(ctx->tid);
+    (void)impl_->send(message_type::transfer_cancel,msg_transfer_cancel{ctx->tid.bytes,0,"Download abandoned"});
     transfer_result outcome{false, ctx->remote_name, ctx->bytes_received, ctx->error_message};
     ctx->cv.notify_all();
     lock.unlock();
@@ -1297,6 +1500,20 @@ auto file_transfer_client::set_download_metadata(
     ctx->chunk_size = chunk_size;
     ctx->expected_sha256 = sha256_hash;
     ctx->state = download_state::transferring;
+
+    if(ctx->checkpoint) {
+        if(ctx->recovering) {
+            auto valid=detail::validate_partial(ctx->temp_path,*ctx->checkpoint); if(!valid) return valid;
+        } else {
+            auto allocated=detail::allocate_partial(ctx->temp_path,file_size); if(!allocated) return allocated;
+        }
+        auto prefix=detail::checkpoint_prefix(*ctx->checkpoint); if(!prefix) return unexpected{prefix.error()};
+        ctx->received_indices.clear();
+        for(uint64_t i=0;i<prefix.value();++i) ctx->received_indices.insert(i);
+        ctx->received_chunks=prefix.value(); ctx->bytes_received=ctx->checkpoint->transferred_bytes;
+        auto saved=impl_->checkpoints->save_state(*ctx->checkpoint); if(!saved) return saved;
+        return {};
+    }
 
     // Pre-allocate temp file for better performance
     std::ofstream file(ctx->temp_path, std::ios::binary);
@@ -1584,9 +1801,12 @@ auto file_transfer_client::cancel_transfer(uint64_t handle_id) -> result<void> {
             if (is_terminal_status(to_transfer_status(upload->state)))
                 return unexpected{error{error_code::transfer_already_completed, "Upload already terminal"}};
             upload->state = internal_transfer_state::cancelled;
-            upload->error_message = "Upload cancelled"; upload->cv.notify_all();
+            upload->error_message = "Upload cancelled";
+            if(upload->checkpoint) (void)impl_->checkpoints->delete_state(upload->tid);
+            upload->cv.notify_all();
             outcome = {false, upload->remote_name, upload->transferred_bytes, upload->error_message};
         }
+        (void)impl_->send(message_type::transfer_cancel,msg_transfer_cancel{upload->tid.bytes,0,"Upload abandoned"});
         impl_->fail_channel(upload->tid, error{error_code::invalid_state_transition, "Upload cancelled"});
         if (auto callback = impl_->completion_callback()) { try { callback(outcome); } catch (...) {} }
         return {};

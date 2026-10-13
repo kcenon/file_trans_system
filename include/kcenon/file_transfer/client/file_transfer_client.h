@@ -6,6 +6,7 @@
 #ifndef KCENON_FILE_TRANSFER_CLIENT_FILE_TRANSFER_CLIENT_H
 #define KCENON_FILE_TRANSFER_CLIENT_FILE_TRANSFER_CLIENT_H
 
+#include <kcenon/file_transfer/core/resume_handler.h>
 #include <atomic>
 #include <functional>
 #include <memory>
@@ -44,6 +45,7 @@ public:
     class builder {
     public:
         builder();
+        auto with_checkpoint_directory(std::filesystem::path directory) -> builder&;
         auto with_transport(transfer_transport_config config) -> builder&;
 
         /**
@@ -171,6 +173,7 @@ public:
     [[nodiscard]] auto is_connected() const -> bool;
     [[nodiscard]] auto network_bytes() const -> std::pair<uint64_t, uint64_t>;
     [[nodiscard]] auto transport_name() const -> std::string;
+    [[nodiscard]] auto resumable_transfers() const -> std::vector<transfer_state>;
 
     /**
      * @brief Get current connection state

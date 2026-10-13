@@ -136,6 +136,7 @@ struct cloud_storage_server_config {
  * @brief Server configuration
  */
 struct server_config {
+    std::filesystem::path checkpoint_directory;
     transfer_transport_config transport = tcp_transport_config{};
     std::filesystem::path storage_directory;
     std::size_t max_connections = 100;

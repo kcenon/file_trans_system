@@ -207,6 +207,10 @@ auto file_transfer_server::builder::with_cloud_cache_directory(
     return *this;
 }
 
+auto file_transfer_server::builder::with_checkpoint_directory(std::filesystem::path directory) -> builder& {
+    config_.checkpoint_directory=std::move(directory); return *this;
+}
+
 auto file_transfer_server::builder::with_transport(transfer_transport_config config) -> builder& {
     config_.transport = std::move(config); return *this;
 }
@@ -366,8 +370,6 @@ auto file_transfer_server::stop() -> result<void> {
         return unexpected{error{error_code::internal_error,
                                "Failed to stop network server: " + result.error().message}};
     }
-
-    if (impl_->runtime) impl_->runtime->stop();
 
     impl_->current_state = server_state::stopped;
     impl_->listen_port = 0;

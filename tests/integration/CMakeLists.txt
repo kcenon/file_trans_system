@@ -10,6 +10,7 @@ set(INTEGRATION_TEST_SOURCES
     test_public_listing.cpp
     test_public_transport.cpp
     test_public_reconnect.cpp
+    test_public_resume.cpp
     test_basic_scenarios.cpp
     test_error_advanced_scenarios.cpp
     test_concurrency.cpp
@@ -24,6 +25,20 @@ if(FILE_TRANS_ENABLE_ENCRYPTION AND OpenSSL_FOUND)
 endif()
 
 add_executable(file_trans_integration_tests ${INTEGRATION_TEST_SOURCES})
+
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+add_executable(file_trans_resume_process resume_process.cpp)
+target_link_libraries(file_trans_resume_process PRIVATE FileTransSystem Threads::Threads)
+set_target_properties(file_trans_resume_process PROPERTIES
+    CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+set(RESUME_CRYPTO_ARGUMENT)
+if(FILE_TRANS_ENABLE_ENCRYPTION)
+    set(RESUME_CRYPTO_ARGUMENT --crypto)
+endif()
+add_test(NAME ProcessRestartResume
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_process_resume.py
+    $<TARGET_FILE:file_trans_resume_process> --artifacts ${CMAKE_BINARY_DIR}/resume-results ${RESUME_CRYPTO_ARGUMENT})
+set_tests_properties(ProcessRestartResume PROPERTIES TIMEOUT 90 LABELS "integration;resume;process")
 
 ##################################################
 # Cloud Integration Tests (S3/MinIO)

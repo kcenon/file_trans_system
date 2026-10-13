@@ -3,6 +3,8 @@
  * @brief Implementation of resume_handler for transfer state persistence
  */
 
+#include <kcenon/file_transfer/core/file_commit.h>
+#include <kcenon/file_transfer/core/checksum.h>
 #include <kcenon/file_transfer/core/resume_handler.h>
 #include <kcenon/file_transfer/core/logging.h>
 
@@ -190,6 +192,18 @@ auto hex_string_to_bitmap(const std::string& hex, uint32_t total_bits)
     return bitmap;
 }
 
+
+auto hex_text(std::string_view text) -> std::string {
+    const char* digits="0123456789abcdef"; std::string out;
+    for(unsigned char c:text) { out+=digits[c>>4]; out+=digits[c&15]; } return out;
+}
+auto unhex_text(std::string_view text) -> std::string {
+    auto nibble=[](char c) -> int { if(c>='0'&&c<='9') return c-'0'; if(c>='a'&&c<='f') return c-'a'+10; throw std::invalid_argument("Invalid checkpoint hex"); };
+    if(text.size()%2) throw std::invalid_argument("Odd checkpoint hex length");
+    std::string out; for(size_t i=0;i<text.size();i+=2) out+=static_cast<char>(nibble(text[i])*16+nibble(text[i+1])); return out;
+}
+auto text_hash(std::string_view text) -> std::string { return checksum::sha256(std::as_bytes(std::span{text.data(),text.size()})); }
+
 auto serialize_state_to_json(const transfer_state& state) -> std::string {
     std::ostringstream oss;
     oss << "{\n";
@@ -201,7 +215,19 @@ auto serialize_state_to_json(const transfer_state& state) -> std::string {
     oss << "  \"chunk_bitmap\": \"" << bitmap_to_hex_string(state.chunk_bitmap) << "\",\n";
     oss << "  \"sha256\": \"" << state.sha256 << "\",\n";
     oss << "  \"started_at\": " << time_point_to_int64(state.started_at) << ",\n";
+    oss << "  \"checkpoint_version\": " << state.checkpoint_version << ",\n";
+    oss << "  \"chunk_size\": " << state.chunk_size << ",\n";
+    oss << "  \"compression\": " << static_cast<unsigned>(state.compression) << ",\n";
+    oss << "  \"upload\": " << state.upload << ",\n";
+    oss << "  \"encrypted\": " << state.encrypted << ",\n";
+    oss << "  \"overwrite\": " << state.overwrite << ",\n";
+    oss << "  \"local_path_hex\": \"" << hex_text(state.local_path) << "\",\n";
+    oss << "  \"endpoint_host_hex\": \"" << hex_text(state.endpoint_host) << "\",\n";
+    oss << "  \"endpoint_port\": " << state.endpoint_port << ",\n";
+    oss << "  \"prefix_hash\": \"" << state.prefix_hash << "\",\n";
     oss << "  \"last_activity\": " << time_point_to_int64(state.last_activity) << "\n";
+    auto digest = text_hash(oss.str());
+    oss << ",  \"record_sha256\": \"" << digest << "\"\n";
     oss << "}";
     return oss.str();
 }
@@ -261,6 +287,13 @@ auto extract_json_value(const std::string& json, const std::string& key)
 
 auto deserialize_state_from_json(const std::string& json)
     -> result<transfer_state> {
+    auto marker=json.rfind(",  \"record_sha256\": \"");
+    if (marker != std::string::npos) {
+        const auto digest = text_hash(std::string_view{json}.substr(0, marker));
+        const auto trailer = ",  \"record_sha256\": \"" + digest + "\"\n}";
+        if (json.substr(marker) != trailer)
+            return unexpected{error{error_code::file_hash_mismatch,"Checkpoint integrity check failed"}};
+    }
     transfer_state state;
 
     // Parse id
@@ -282,8 +315,23 @@ auto deserialize_state_from_json(const std::string& json)
         state.total_size = std::stoull(extract_json_value(json, "total_size"));
         state.transferred_bytes = std::stoull(
             extract_json_value(json, "transferred_bytes"));
-        state.total_chunks = static_cast<uint32_t>(
-            std::stoul(extract_json_value(json, "total_chunks")));
+        auto chunks=std::stoull(extract_json_value(json,"total_chunks"));
+        if(chunks>3900000) throw std::invalid_argument("Checkpoint bitmap exceeds size budget");
+        state.total_chunks=static_cast<uint32_t>(chunks);
+        auto version=extract_json_value(json,"checkpoint_version");
+        if(!version.empty()) {
+            state.checkpoint_version=static_cast<uint32_t>(std::stoul(version));
+            if(state.checkpoint_version && marker==std::string::npos) throw std::invalid_argument("Missing checkpoint integrity hash");
+            state.chunk_size=static_cast<uint32_t>(std::stoul(extract_json_value(json,"chunk_size")));
+            state.compression=static_cast<uint8_t>(std::stoul(extract_json_value(json,"compression")));
+            state.upload=extract_json_value(json,"upload")=="1";
+            state.encrypted=extract_json_value(json,"encrypted")=="1";
+            state.overwrite=extract_json_value(json,"overwrite")=="1";
+            state.local_path=unhex_text(extract_json_value(json,"local_path_hex"));
+            state.endpoint_host=unhex_text(extract_json_value(json,"endpoint_host_hex"));
+            state.endpoint_port=static_cast<uint16_t>(std::stoul(extract_json_value(json,"endpoint_port")));
+            state.prefix_hash=extract_json_value(json,"prefix_hash");
+        }
 
         auto started_ms = std::stoll(extract_json_value(json, "started_at"));
         auto activity_ms = std::stoll(extract_json_value(json, "last_activity"));
@@ -298,7 +346,11 @@ auto deserialize_state_from_json(const std::string& json)
 
     // Parse chunk bitmap
     auto bitmap_hex = extract_json_value(json, "chunk_bitmap");
-    state.chunk_bitmap = hex_string_to_bitmap(bitmap_hex, state.total_chunks);
+    try {
+        if(bitmap_hex.size()!=2*((state.total_chunks+7)/8)) throw std::invalid_argument("Invalid checkpoint bitmap length");
+        (void)unhex_text(bitmap_hex);
+        state.chunk_bitmap=hex_string_to_bitmap(bitmap_hex,state.total_chunks);
+    } catch(const std::exception& e) { return unexpected{error{error_code::invalid_configuration,e.what()}}; }
 
     return state;
 }
@@ -324,36 +376,22 @@ public:
     }
 
     auto save_state(const transfer_state& state) -> result<void> {
-        std::unique_lock lock(mutex_);
-
+        std::unique_lock lock(mutex_); return persist_state(state);
+    }
+    // Caller holds mutex_, including the chunk-tracking update.
+    auto persist_state(const transfer_state& state) -> result<void> {
         FT_LOG_DEBUG(log_category::resume,
             "Saving transfer state: " + state.id.to_string() +
             " (" + std::to_string(state.received_chunk_count()) + "/" +
             std::to_string(state.total_chunks) + " chunks)");
 
-        // Update cache
-        cache_[state.id] = state;
-
-        // Write to file
-        auto path = get_state_file_path(config_.state_directory, state.id);
-        std::ofstream file(path);
-        if (!file) {
-            FT_LOG_ERROR(log_category::resume,
-                "Failed to open state file for writing: " + path.string());
-            return unexpected(error(error_code::file_write_error,
-                "failed to open state file for writing"));
-        }
-
-        file << serialize_state_to_json(state);
-        if (!file) {
-            FT_LOG_ERROR(log_category::resume,
-                "Failed to write state file: " + path.string());
-            return unexpected(error(error_code::file_write_error,
-                "failed to write state file"));
-        }
-
-        FT_LOG_TRACE(log_category::resume,
-            "State persisted to: " + path.string());
+        if(state.total_chunks>3900000 || state.chunk_bitmap.size()!=state.total_chunks)
+            return unexpected{error{error_code::invalid_configuration,"Invalid checkpoint bitmap"}};
+        auto encoded=serialize_state_to_json(state);
+        if(encoded.size()>1024*1024) return unexpected{error{error_code::invalid_configuration,"Checkpoint exceeds 1 MiB"}};
+        auto saved=durable_write(get_state_file_path(config_.state_directory,state.id),encoded);
+        if(!saved) return saved;
+        cache_[state.id]=state;
         return {};
     }
 
@@ -381,6 +419,9 @@ public:
                 "state file not found"));
         }
 
+        std::error_code file_error;
+        if(std::filesystem::is_symlink(path,file_error) || std::filesystem::file_size(path,file_error)>1024*1024 || file_error)
+            return unexpected{error{error_code::invalid_configuration,"Invalid checkpoint file or size"}};
         std::ifstream file(path);
         if (!file) {
             FT_LOG_ERROR(log_category::resume,
@@ -405,6 +446,7 @@ public:
             std::to_string(result.value().total_chunks) + " chunks, " +
             std::to_string(result.value().completion_percentage()) + "% complete)");
 
+        if(result.value().id!=id) return unexpected{error{error_code::invalid_configuration,"Checkpoint transfer ID mismatch"}};
         // Update cache
         {
             std::unique_lock lock(mutex_);
@@ -488,8 +530,7 @@ public:
         // Auto-checkpoint
         if (chunks_since_checkpoint_ >= config_.checkpoint_interval) {
             chunks_since_checkpoint_ = 0;
-            lock.unlock();
-            return save_state(state);
+            return persist_state(state);
         }
 
         return {};
@@ -528,9 +569,7 @@ public:
 
         state.last_activity = std::chrono::system_clock::now();
 
-        // Save after batch update
-        lock.unlock();
-        return save_state(state);
+        return persist_state(state);
     }
 
     auto get_missing_chunks(const transfer_id& id)

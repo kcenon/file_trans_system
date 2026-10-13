@@ -355,6 +355,10 @@ struct msg_upload_request {
     std::array<uint8_t, 32> encryption_salt{}; // Random client/server salt; never a secret key
     std::array<uint8_t, 32> auth_tag{}; // Optional authenticated-transfer extension
 
+    uint8_t resumable = 0, resuming = 0;
+    uint32_t resume_chunk_size = 0;
+    std::array<uint8_t,32> resume_hash{};
+
     static constexpr std::size_t min_serialized_size = 72;
 };
 
@@ -370,6 +374,8 @@ struct msg_upload_accept {
 
     std::array<uint8_t, 32> encryption_salt{}; // Random client/server salt; never a secret key
     std::array<uint8_t, 32> auth_tag{}; // Optional authenticated-transfer extension
+
+    uint8_t resumable = 0;
 
     static constexpr std::size_t serialized_size = 30;
 };
@@ -425,6 +431,10 @@ struct msg_download_request {
     std::array<uint8_t, 32> encryption_salt{}; // Random client/server salt; never a secret key
     std::array<uint8_t, 32> auth_tag{}; // Optional authenticated-transfer extension
 
+    uint8_t resumable = 0, resuming = 0;
+    uint32_t resume_chunk_size = 0;
+    std::array<uint8_t,32> resume_hash{};
+
     static constexpr std::size_t min_serialized_size = 28;
 };
 
@@ -444,6 +454,8 @@ struct msg_download_accept {
 
     std::array<uint8_t, 32> encryption_salt{}; // Random client/server salt; never a secret key
     std::array<uint8_t, 32> auth_tag{}; // Optional authenticated-transfer extension
+
+    uint8_t resumable = 0;
 
     static constexpr std::size_t serialized_size = 86;
 };

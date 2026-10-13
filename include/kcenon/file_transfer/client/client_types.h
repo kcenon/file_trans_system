@@ -79,6 +79,7 @@ struct progress_config {
  * @brief Client configuration
  */
 struct client_config {
+    std::filesystem::path checkpoint_directory;
     transfer_transport_config transport = tcp_transport_config{};
     compression_mode compression = compression_mode::adaptive;
     compression_level comp_level = compression_level::fast;
@@ -101,6 +102,8 @@ struct client_config {
  * @brief Upload options
  */
 struct upload_options {
+    bool resumable = false;
+    std::optional<transfer_id> resume_id; ///< Recover this durable transfer, including after restart
     std::optional<compression_mode> compression;
     bool overwrite = false;
     std::optional<bool> encrypt;  ///< Override encryption setting for this transfer
@@ -110,6 +113,8 @@ struct upload_options {
  * @brief Download options
  */
 struct download_options {
+    bool resumable = false;
+    std::optional<transfer_id> resume_id; ///< Recover this durable transfer, including after restart
     bool overwrite = false;
     bool verify_hash = true;
     std::optional<bool> encrypt;  ///< Override encryption setting for this transfer

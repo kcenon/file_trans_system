@@ -26,10 +26,14 @@ FT_FIELDS(msg_disconnect, v.reason_code, v.message)
 template<class Archive> void fields(Archive& a, msg_upload_request& v) {
     a(v.transfer_id, v.filename, v.file_size, v.sha256_hash, v.compression, v.encryption, v.options, v.resume_from);
     if (v.encryption != wire_encryption_algorithm::none) a(v.encryption_salt, v.auth_tag);
+    if constexpr (Archive::reading) { if(a.remaining()) a(v.resumable, v.resuming, v.resume_chunk_size, v.resume_hash); }
+    else if(v.resumable) a(v.resumable, v.resuming, v.resume_chunk_size, v.resume_hash);
 }
 template<class Archive> void fields(Archive& a, msg_upload_accept& v) {
     a(v.transfer_id, v.compression, v.encryption, v.chunk_size, v.resume_offset);
     if (v.encryption != wire_encryption_algorithm::none) a(v.encryption_salt, v.auth_tag);
+    if constexpr (Archive::reading) { if(a.remaining()) a(v.resumable); }
+    else if(v.resumable) a(v.resumable);
 }
 FT_FIELDS(msg_upload_reject, v.transfer_id, v.reason_code, v.message)
 template<class Archive> void fields(Archive& a, msg_upload_complete& v) {
@@ -45,10 +49,14 @@ template<class Archive> void fields(Archive& a, msg_upload_ack& v) {
 template<class Archive> void fields(Archive& a, msg_download_request& v) {
     a(v.transfer_id, v.filename, v.compression, v.encryption, v.resume_from);
     if (v.encryption != wire_encryption_algorithm::none) a(v.encryption_salt, v.auth_tag);
+    if constexpr (Archive::reading) { if(a.remaining()) a(v.resumable, v.resuming, v.resume_chunk_size, v.resume_hash); }
+    else if(v.resumable) a(v.resumable, v.resuming, v.resume_chunk_size, v.resume_hash);
 }
 template<class Archive> void fields(Archive& a, msg_download_accept& v) {
     a(v.transfer_id, v.file_size, v.sha256_hash, v.compression, v.encryption, v.chunk_size, v.total_chunks, v.resume_offset, v.modified_time);
     if (v.encryption != wire_encryption_algorithm::none) a(v.encryption_salt, v.auth_tag);
+    if constexpr (Archive::reading) { if(a.remaining()) a(v.resumable); }
+    else if(v.resumable) a(v.resumable);
 }
 FT_FIELDS(msg_download_reject, v.transfer_id, v.reason_code, v.message)
 template<class Archive> void fields(Archive& a, msg_download_complete& v) {

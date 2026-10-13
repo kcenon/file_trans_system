@@ -45,6 +45,7 @@ public:
     class builder {
     public:
         builder();
+        auto with_checkpoint_directory(std::filesystem::path directory) -> builder&;
         auto with_transport(transfer_transport_config config) -> builder&;
 
         /**

@@ -31,6 +31,13 @@ namespace kcenon::file_transfer {
  */
 struct transfer_state {
     transfer_id id;                    ///< Unique transfer identifier
+    uint32_t checkpoint_version = 0;   ///< 1 for integrated durable FTS1 transfers
+    uint32_t chunk_size = 0;
+    uint8_t compression = 0;
+    bool upload = false, encrypted = false, overwrite = false;
+    std::string local_path, endpoint_host;
+    uint16_t endpoint_port = 0;
+    std::string prefix_hash;           ///< Hash chain of durable original chunks
     std::string filename;              ///< Original filename
     uint64_t total_size = 0;           ///< Total file size in bytes
     uint64_t transferred_bytes = 0;    ///< Bytes successfully transferred

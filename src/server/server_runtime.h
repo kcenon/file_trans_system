@@ -5,6 +5,7 @@
 #include "kcenon/file_transfer/core/chunk_config.h"
 #include "kcenon/file_transfer/core/compression_engine.h"
 #include "kcenon/file_transfer/core/protocol_codec.h"
+#include "kcenon/file_transfer/core/transfer_checkpoint.h"
 #include "kcenon/file_transfer/encryption/transfer_crypto.h"
 #include "kcenon/file_transfer/server/server_pipeline.h"
 #include "kcenon/file_transfer/server/server_types.h"
@@ -57,7 +58,8 @@ class server_runtime : public std::enable_shared_from_this<server_runtime> {
         std::string hash;
         wire_compression_mode compression{};
         std::shared_ptr<transfer_crypto> crypto;
-        bool upload{}, overwrite{}, existed{}, paused{};
+        std::optional<transfer_state> checkpoint;
+        bool upload{}, overwrite{}, existed{}, paused{}, already_committed{};
         std::set<uint64_t> received;
     };
     struct peer { std::weak_ptr<session> connection; client_info info; };
@@ -67,6 +69,8 @@ class server_runtime : public std::enable_shared_from_this<server_runtime> {
     std::filesystem::path staging_;
     std::unique_ptr<storage_manager> storage_;
     std::unique_ptr<chunk_assembler> assembler_;
+    std::unique_ptr<resume_handler> checkpoints_;
+    std::map<transfer_id,uint64_t> retained_;
     std::unique_ptr<server_pipeline> pipeline_;
     std::map<session*, peer> peers_;
     std::map<transfer_id, operation> operations_;
@@ -145,19 +149,24 @@ class server_runtime : public std::enable_shared_from_this<server_runtime> {
             catch (...) { /* observer exceptions do not change transfer state */ }
         }
     }
-    void finish(transfer_id id, bool success, std::string message = {}) {
+    void finish(transfer_id id, bool success, std::string message = {}, bool preserve = false) {
         auto it = operations_.find(id);
         if (it == operations_.end()) return;
         auto op = std::move(it->second);
         operations_.erase(it);
-        if (op.upload) { reserved_ -= op.size; assembler_->cancel_session(id); }
+        preserve = preserve && op.checkpoint.has_value() && !success;
+        if (op.upload) {
+            if(!preserve) { if(!op.already_committed) reserved_ -= op.size; retained_.erase(id); }
+            assembler_->cancel_session(id);
+        }
         std::error_code ec;
-        std::filesystem::remove(op.path, ec);
+        if(!preserve || !op.upload) std::filesystem::remove(op.path,ec);
+        if(op.checkpoint && !preserve) (void)checkpoints_->delete_state(id);
         {
             std::lock_guard lock(stats_mutex_);
             --stats_.active_transfers;
             if (op.upload) --stats_.active_uploads; else --stats_.active_downloads;
-            if (success) {
+            if (success && !op.already_committed) {
                 if (op.upload) {
                     ++stats_.total_files_uploaded;
                     stats_.total_bytes_received += op.size;
@@ -184,7 +193,7 @@ class server_runtime : public std::enable_shared_from_this<server_runtime> {
         peers_.erase(it);
         std::vector<transfer_id> ids;
         for (const auto& [id, op] : operations_) if (op.owner == client) ids.push_back(id);
-        for (auto id : ids) finish(id, false, "Client disconnected");
+        for (auto id : ids) finish(id, false, "Client disconnected", true);
         { std::lock_guard lock(stats_mutex_); stats_.active_connections = peers_.size(); }
         auto cb = snapshot_callbacks().disconnected;
         if (cb) cb(info);
@@ -217,16 +226,52 @@ class server_runtime : public std::enable_shared_from_this<server_runtime> {
         if (!valid_filename(request.filename)) return fail(error_code::invalid_file_path, "Invalid filename");
         auto negotiated = negotiate_crypto(request, true);
         if (!negotiated) return fail(negotiated.error().code, negotiated.error().message);
-        if (request.resume_from) return fail(error_code::invalid_configuration, "Durable resume is not negotiated");
+        if(request.resumable>1 || request.resuming>1 || (request.resuming && !request.resumable) ||
+           (request.resumable && !checkpoints_) || (!request.resumable && request.resume_from))
+            return fail(error_code::invalid_configuration,"Durable resume is not available or invalid");
+        std::optional<transfer_state> checkpoint;
+        uint64_t resume_index=0;
+        bool already_committed=false;
+        if(request.resuming) {
+            auto loaded=load_checkpoint(*checkpoints_,id);
+            if(!loaded && loaded.error().code==error_code::file_not_found) {
+                auto stored=storage_->get_metadata(request.filename);
+                if(stored && stored.value().size==request.file_size && stored.value().content_hash==hash_hex(request.sha256_hash)) {
+                    checkpoint=new_checkpoint(id,request.filename,request.file_size,config_.chunk_size,hash_hex(request.sha256_hash),
+                        true,static_cast<uint8_t>(request.compression),request.encryption!=wire_encryption_algorithm::none,
+                        has_option(request.options,transfer_options::overwrite_existing));
+                    mark_prefix(*checkpoint,checkpoint->total_chunks); already_committed=true;
+                }
+            }
+            if(!loaded && !already_committed) return fail(loaded.error().code,loaded.error().message);
+            if(loaded) checkpoint=loaded.value();
+            auto prefix=checkpoint_prefix(*checkpoint);
+            if(!prefix || !checkpoint->upload || checkpoint->filename!=request.filename ||
+               checkpoint->total_size!=request.file_size || checkpoint->sha256!=hash_hex(request.sha256_hash) ||
+               checkpoint->chunk_size!=config_.chunk_size || checkpoint->chunk_size!=request.resume_chunk_size ||
+               checkpoint->compression!=static_cast<uint8_t>(request.compression) ||
+               checkpoint->encrypted!=(request.encryption!=wire_encryption_algorithm::none) ||
+               checkpoint->overwrite!=has_option(request.options,transfer_options::overwrite_existing) ||
+               request.resume_from>prefix.value())
+                return fail(error_code::invalid_configuration,"Upload checkpoint identity or prefix mismatch");
+            if(!already_committed) {
+                auto valid=validate_partial(config_.checkpoint_directory/(id.to_string()+".part"),*checkpoint);
+                if(!valid) return fail(valid.error().code,valid.error().message);
+            }
+            resume_index=prefix.value();
+        } else if(request.resumable && checkpoints_->has_state(id))
+            return fail(error_code::already_initialized,"Checkpoint already exists; explicitly request resume");
         if (static_cast<uint8_t>(request.compression) > 2)
             return fail(error_code::invalid_configuration, "Invalid compression mode");
         if (config_.max_file_size && request.file_size > config_.max_file_size)
             return fail(error_code::file_too_large, "File exceeds configured maximum");
         auto usage = storage_statistics();
-        if (request.file_size > UINT64_MAX - reserved_ ||
+        const auto previously_reserved=retained_.contains(id) ? retained_.at(id) : 0;
+        const auto other_reserved=reserved_-previously_reserved;
+        if (!already_committed && (request.file_size > UINT64_MAX - other_reserved ||
             (config_.storage_quota && (usage.used_size > config_.storage_quota ||
-             reserved_ > config_.storage_quota - usage.used_size ||
-             request.file_size > config_.storage_quota - usage.used_size - reserved_)))
+             other_reserved > config_.storage_quota - usage.used_size ||
+             request.file_size > config_.storage_quota - usage.used_size - other_reserved))))
             return fail(error_code::quota_exceeded, "Storage quota is reserved or exhausted");
         for (const auto& [_, active] : operations_)
             if (active.upload && active.filename == request.filename)
@@ -234,7 +279,7 @@ class server_runtime : public std::enable_shared_from_this<server_runtime> {
         auto exists = storage_->exists(request.filename);
         if (!exists) return fail(exists.error().code, exists.error().message);
         bool overwrite = has_option(request.options, transfer_options::overwrite_existing);
-        if (exists.value() && !overwrite) return fail(error_code::file_already_exists, "File already exists");
+        if (exists.value() && !overwrite && !already_committed) return fail(error_code::file_already_exists, "File already exists");
         uint64_t previous_size = 0;
         if (exists.value()) {
             auto metadata = storage_->get_metadata(request.filename);
@@ -245,18 +290,39 @@ class server_runtime : public std::enable_shared_from_this<server_runtime> {
         auto cb = snapshot_callbacks().upload;
         if (cb && !cb({request.filename, request.file_size, chunks, hash_hex(request.sha256_hash), peers_.at(&client).info.id}))
             return fail(error_code::file_access_denied, "Upload rejected by application");
-        auto started = assembler_->start_session(id, id.to_string(), request.file_size, chunks);
-        if (!started) return fail(started.error().code, started.error().message);
+        if(request.resumable && !checkpoint) {
+            checkpoint=new_checkpoint(id,request.filename,request.file_size,config_.chunk_size,hash_hex(request.sha256_hash),
+                true,static_cast<uint8_t>(request.compression),request.encryption!=wire_encryption_algorithm::none,overwrite);
+            auto allocated=allocate_partial(config_.checkpoint_directory/(id.to_string()+".part"),request.file_size);
+            if(!allocated) return fail(allocated.error().code,allocated.error().message);
+            auto saved=checkpoints_->save_state(*checkpoint);
+            if(!saved) {
+                std::error_code ec; std::filesystem::remove(config_.checkpoint_directory/(id.to_string()+".part"),ec);
+                return fail(saved.error().code,saved.error().message);
+            }
+        }
+        if(!request.resumable) {
+            auto started=assembler_->start_session(id,id.to_string(),request.file_size,chunks);
+            if(!started) return fail(started.error().code,started.error().message);
+        }
         operation op;
         op.id = id; op.owner = &client; op.filename = request.filename;
         op.path = staging_ / id.to_string(); op.size = request.file_size; op.chunks = chunks;
         op.hash = hash_hex(request.sha256_hash); op.upload = true; op.overwrite = overwrite;
         op.existed = exists.value(); op.previous_size = previous_size; op.compression = request.compression;
-        op.crypto = negotiated.value().cipher;
+        op.crypto = negotiated.value().cipher; op.checkpoint=std::move(checkpoint);
+        if(op.checkpoint) {
+            op.path=config_.checkpoint_directory/(id.to_string()+".part");
+            op.bytes=op.checkpoint->transferred_bytes;
+            for(uint64_t i=0;i<resume_index;++i) op.received.insert(i);
+            if(!already_committed) retained_[id]=op.size;
+        }
+        op.already_committed=already_committed;
         operations_.emplace(id, std::move(op));
-        reserved_ += request.file_size;
+        if(!already_committed) reserved_ += request.file_size-previously_reserved;
         { std::lock_guard lock(stats_mutex_); ++stats_.active_transfers; ++stats_.active_uploads; }
-        msg_upload_accept accepted{id.bytes, request.compression, request.encryption, static_cast<uint32_t>(config_.chunk_size), 0};
+        msg_upload_accept accepted{id.bytes, request.compression, request.encryption, static_cast<uint32_t>(config_.chunk_size), std::min<uint64_t>(request.file_size,resume_index*config_.chunk_size)};
+        accepted.resumable=request.resumable;
         accepted.encryption_salt = negotiated.value().server_salt;
         if (!signed_send(client, message_type::upload_accept, accepted, negotiated.value().cipher))
             finish(id, false, "Failed to send upload acceptance");
@@ -284,8 +350,20 @@ class server_runtime : public std::enable_shared_from_this<server_runtime> {
             data.data = std::move(processed.value().data);
             data.header.flags &= ~chunk_flags::compressed;
             data.header.compressed_size = static_cast<uint32_t>(data.data.size());
-            auto assembled = assembler_->process_chunk(data);
-            if (!assembled) throw std::invalid_argument(assembled.error().message);
+            if(op.checkpoint) {
+                if(h.chunk_index!=op.received.size()) throw std::invalid_argument("Resumable uploads require ordered chunks");
+                std::fstream file(op.path,std::ios::binary|std::ios::in|std::ios::out);
+                file.seekp(h.chunk_offset); file.write(reinterpret_cast<const char*>(data.data.data()),data.data.size()); file.close();
+                if(!file) throw std::invalid_argument("Cannot write durable upload chunk");
+                auto flushed=sync_file(op.path); if(!flushed) throw std::invalid_argument(flushed.error().message);
+                auto checkpoint=*op.checkpoint; mark_prefix(checkpoint,h.chunk_index+1);
+                checkpoint.prefix_hash=chain_hash(checkpoint.prefix_hash,data.data);
+                auto saved=checkpoints_->save_state(checkpoint); if(!saved) throw std::invalid_argument(saved.error().message);
+                op.checkpoint=std::move(checkpoint);
+            } else {
+                auto assembled=assembler_->process_chunk(data);
+                if(!assembled) throw std::invalid_argument(assembled.error().message);
+            }
             op.received.insert(h.chunk_index);
             op.bytes += h.original_size;
             op.wire_bytes += wire_size;
@@ -301,8 +379,16 @@ class server_runtime : public std::enable_shared_from_this<server_runtime> {
         if (!op.upload || complete.total_chunks != op.chunks || complete.bytes_sent != op.size ||
             op.bytes != op.size || op.received.size() != op.chunks || complete.bytes_on_wire != op.wire_bytes)
             throw std::invalid_argument("Upload is incomplete");
-        auto assembled = assembler_->finalize(id, op.hash);
-        if (!assembled) throw std::invalid_argument(assembled.error().message);
+        if(op.already_committed) {
+            auto filename=op.filename; auto crypto=op.crypto;
+            finish(id,true);
+            signed_send(client,message_type::upload_ack,msg_upload_ack{id.bytes,1,filename},crypto); return;
+        }
+        result<std::filesystem::path> assembled=op.path;
+        if(op.checkpoint) {
+            if(!checksum::verify_sha256(op.path,op.hash)) throw std::invalid_argument("Resumed upload SHA-256 mismatch");
+        } else assembled=assembler_->finalize(id,op.hash);
+        if(!assembled) throw std::invalid_argument(assembled.error().message);
         store_options options;
         options.overwrite = op.overwrite; options.content_hash = op.hash;
         auto stored = storage_->store_file(op.filename, assembled.value(), options);
@@ -367,7 +453,21 @@ class server_runtime : public std::enable_shared_from_this<server_runtime> {
         if (!valid_filename(request.filename)) return fail(error_code::invalid_file_path, "Invalid filename");
         auto negotiated = negotiate_crypto(request, false);
         if (!negotiated) return fail(negotiated.error().code, negotiated.error().message);
-        if (request.resume_from) return fail(error_code::invalid_configuration, "Durable resume is not negotiated");
+        if(request.resumable>1 || request.resuming>1 || (request.resuming && !request.resumable) ||
+           (request.resumable && !checkpoints_) || (!request.resumable && request.resume_from))
+            return fail(error_code::invalid_configuration,"Durable resume is not available or invalid");
+        std::optional<transfer_state> checkpoint;
+        if(request.resuming) {
+            auto loaded=load_checkpoint(*checkpoints_,id);
+            if(!loaded) return fail(loaded.error().code,loaded.error().message);
+            checkpoint=loaded.value();
+            if(!checkpoint_prefix(*checkpoint) || checkpoint->upload || checkpoint->filename!=request.filename ||
+               checkpoint->chunk_size!=config_.chunk_size || checkpoint->chunk_size!=request.resume_chunk_size ||
+               checkpoint->sha256!=hash_hex(request.resume_hash) || request.resume_from>checkpoint->total_chunks ||
+               checkpoint->compression!=static_cast<uint8_t>(request.compression) ||
+               checkpoint->encrypted!=(request.encryption!=wire_encryption_algorithm::none))
+                return fail(error_code::invalid_configuration,"Download checkpoint identity mismatch");
+        }
         if (static_cast<uint8_t>(request.compression) > 2) return fail(error_code::invalid_configuration, "Invalid compression mode");
         auto cb = snapshot_callbacks().download;
         if (cb && !cb({request.filename, peers_.at(&client).info.id})) return fail(error_code::file_access_denied, "Download rejected by application");
@@ -379,16 +479,28 @@ class server_runtime : public std::enable_shared_from_this<server_runtime> {
         if (!retrieved) return fail(retrieved.error().code, retrieved.error().message);
         auto hash = checksum::sha256_file(path);
         if (!hash) { std::error_code ec; std::filesystem::remove(path, ec); return fail(hash.error().code, hash.error().message); }
+        if(checkpoint && (checkpoint->sha256!=hash.value() || checkpoint->total_size!=retrieved.value().bytes_retrieved)) {
+            std::error_code ec; std::filesystem::remove(path,ec);
+            return fail(error_code::file_hash_mismatch,"Download source changed since checkpoint");
+        }
+        if(request.resumable && !checkpoint) {
+            checkpoint=new_checkpoint(id,request.filename,retrieved.value().bytes_retrieved,config_.chunk_size,hash.value(),
+                false,static_cast<uint8_t>(request.compression),request.encryption!=wire_encryption_algorithm::none,false);
+            auto saved=checkpoints_->save_state(*checkpoint); if(!saved) return fail(saved.error().code,saved.error().message);
+        }
         operation op;
         op.id = id; op.owner = &client; op.filename = request.filename; op.path = path;
         op.size = retrieved.value().bytes_retrieved; op.hash = hash.value(); op.compression = request.compression;
         op.crypto = negotiated.value().cipher;
         op.chunks = op.size / config_.chunk_size + (op.size % config_.chunk_size != 0);
+        op.checkpoint=std::move(checkpoint); op.index=request.resume_from;
+        op.bytes=std::min<uint64_t>(op.size,op.index*config_.chunk_size);
         operations_.emplace(id, std::move(op));
         { std::lock_guard lock(stats_mutex_); ++stats_.active_transfers; ++stats_.active_downloads; }
         auto& active = operations_.at(id);
         msg_download_accept accepted{id.bytes, active.size, hash_bytes(active.hash), active.compression,
-            request.encryption, static_cast<uint32_t>(config_.chunk_size), active.chunks, 0, 0};
+            request.encryption, static_cast<uint32_t>(config_.chunk_size), active.chunks, active.bytes, 0};
+        accepted.resumable=request.resumable;
         accepted.encryption_salt = negotiated.value().server_salt;
         if (!signed_send(client, message_type::download_accept, accepted, active.crypto)) { finish(id, false, "Failed to accept download"); return; }
         send_next(client, active);
@@ -486,6 +598,10 @@ class server_runtime : public std::enable_shared_from_this<server_runtime> {
                 if (op.crypto) { auto verified = op.crypto->verify(message_type::chunk_ack, ack); if (!verified) throw std::invalid_argument(verified.error().message); }
                 if (op.upload || op.index >= op.chunks || ack.chunk_index != op.index) throw std::invalid_argument("Unexpected chunk acknowledgement");
                 ++op.index; op.bytes = std::min<uint64_t>(op.size, op.index * config_.chunk_size);
+                if(op.checkpoint) {
+                    mark_prefix(*op.checkpoint,op.index);
+                    auto saved=checkpoints_->save_state(*op.checkpoint); if(!saved) throw std::invalid_argument(saved.error().message);
+                }
                 report_progress(op); send_next(*client, op); break;
             }
             case message_type::download_ack: {
@@ -531,6 +647,18 @@ public:
     auto start() -> result<void> {
         auto chunk_validation = chunk_config{config_.chunk_size}.validate();
         if (!chunk_validation) return chunk_validation;
+        if(!config_.checkpoint_directory.empty()) {
+            std::error_code ec; std::filesystem::create_directories(config_.checkpoint_directory,ec);
+            if(ec) return unexpected{error{error_code::file_write_error,ec.message()}};
+            resume_handler_config cfg(config_.checkpoint_directory); cfg.checkpoint_interval=1; cfg.auto_cleanup=false;
+            checkpoints_=std::make_unique<resume_handler>(cfg);
+            for(const auto& entry:std::filesystem::directory_iterator(config_.checkpoint_directory)) {
+                if(entry.path().extension()!=".part" || entry.is_symlink() || !entry.is_regular_file()) continue;
+                auto id=transfer_id::from_string(entry.path().stem().string()); if(!id) continue;
+                auto size=entry.file_size(); if(size>UINT64_MAX-reserved_) return unexpected{error{error_code::quota_exceeded,"Retained resume quota overflow"}};
+                retained_[*id]=size; reserved_+=size;
+            }
+        }
         staging_ = std::filesystem::temp_directory_path() / ("fts-" + transfer_id::generate().to_string());
         std::error_code ec;
         std::filesystem::create_directories(staging_, ec);
@@ -584,7 +712,7 @@ public:
                 }
                 try { next.run(); } catch (const std::exception&) { /* application callbacks cannot terminate the executor */ }
             }
-            while (!operations_.empty()) finish(operations_.begin()->first, false, "Server stopped");
+            while (!operations_.empty()) finish(operations_.begin()->first, false, "Server stopped", true);
             while (!peers_.empty()) remove_peer(peers_.begin()->first);
         });
         return {};
