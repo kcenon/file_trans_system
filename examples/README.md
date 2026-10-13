@@ -1,3 +1,5 @@
+> Maintained README examples: [quick_start_server.cpp](quick_start_server.cpp) and [quick_start_client.cpp](quick_start_client.cpp). CI compiles all enabled examples and executes these two with exact-file verification. Compiling other examples is not live service validation; see [current status](../docs/IMPLEMENTATION_STATUS.md).
+
 # file_trans_system Examples
 
 Complete, compilable examples demonstrating the file transfer system library features.

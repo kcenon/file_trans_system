@@ -11,7 +11,7 @@ python3 tools/bootstrap_dependencies.py --jobs 6
 python3 tools/ci_build.py --build build
 python3 tools/run_ci_tests.py --build build --artifacts artifacts/tests
 python3 tools/check_regression_mutations.py --build build --artifacts artifacts/mutations
-python3 tools/run_minio_tests.py --build build --artifacts artifacts/minio
+python3 tools/run_minio_tests.py --test-binary build/bin/file_trans_cloud_integration_tests --artifacts artifacts/minio
 ```
 
 Use the scripts' --help for installed MinIO, sanitizer, crypto-disabled, and

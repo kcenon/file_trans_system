@@ -20,7 +20,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
       - name: Build pinned configuration
-        run: python3 tools/ci_build.py --encryption ${{ matrix.encryption }}
+        run: python3 tools/ci_build.py --examples --encryption ${{ matrix.encryption }}
+      - name: Compile-backed README synchronization and verified examples
+        run: |
+          python3 tools/sync_readme_snippets.py
+          python3 tools/check_quick_start.py --artifacts build/quick-start-results
       - name: Full unit, TCP, batch, failure, crypto and process recovery suites
         run: python3 tools/run_ci_tests.py --artifacts build/test-results
       - name: Prove no-op transfers and incorrect results fail the regressions
@@ -34,6 +38,7 @@ jobs:
             build/test-results
             build/resume-results
             build/mutation-results
+            build/quick-start-results
   minio:
     runs-on: ubuntu-24.04
     timeout-minutes: 35

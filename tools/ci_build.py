@@ -9,6 +9,7 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--build", default="build")
 parser.add_argument("--sanitizer", choices=("", "ASAN", "TSAN", "UBSAN"), default="")
 parser.add_argument("--coverage", action="store_true")
+parser.add_argument("--examples", action="store_true")
 parser.add_argument("--encryption", choices=("ON", "OFF"), default="ON")
 parser.add_argument("--dependency-build")
 args = parser.parse_args()
@@ -16,7 +17,7 @@ repo = Path(__file__).resolve().parents[1]
 dependency_build = args.dependency_build or ("build-instrumented" if args.sanitizer else "build")
 asio = repo.parent / "network_system" / dependency_build / "_deps/network_system_asio-src/asio/include"
 flags = ["-DCMAKE_BUILD_TYPE=Debug", "-DFILE_TRANS_BUILD_TESTS=ON",
-         "-DFILE_TRANS_BUILD_INTEGRATION_TESTS=ON", "-DFILE_TRANS_BUILD_EXAMPLES=OFF",
+         "-DFILE_TRANS_BUILD_INTEGRATION_TESTS=ON", "-DFILE_TRANS_BUILD_EXAMPLES=" + ("ON" if args.examples else "OFF"),
          "-DFILE_TRANS_ENABLE_QUIC=OFF", "-DFILE_TRANS_ENABLE_LZ4=ON",
          "-DFILE_TRANS_ENABLE_ENCRYPTION=" + args.encryption,
          "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"]
