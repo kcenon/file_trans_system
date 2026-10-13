@@ -19,12 +19,14 @@
 #include <functional>
 #include <memory>
 #include <thread>
+#include <stop_token>
 
 #include "kcenon/file_transfer/core/chunk_types.h"
 #include "kcenon/file_transfer/core/types.h"
 #include "kcenon/file_transfer/encryption/encryption_config.h"
 
 namespace kcenon::file_transfer {
+namespace detail { struct pipeline_reservation; }
 
 /**
  * @brief Pipeline processing stages
@@ -69,7 +71,9 @@ struct pipeline_config {
     std::size_t compression_workers = 4;   ///< Number of compression worker threads
     std::size_t network_workers = 2;       ///< Number of network worker threads
     std::size_t encryption_workers = 2;    ///< Number of encryption worker threads
-    std::size_t queue_size = 64;           ///< Maximum queue size per stage
+    std::size_t queue_size = 64;           ///< Maximum admitted chunks across all stages
+    std::size_t worker_threads = 0;       ///< Shared pool size; zero uses the sum of stage workers
+    std::size_t max_buffered_bytes = 64 * 1024 * 1024; ///< Global conservative buffer reservation budget
     std::size_t max_memory_per_transfer = 32 * 1024 * 1024;  ///< ~32MB per transfer
 
     // Bandwidth limiting (0 = unlimited)
@@ -105,6 +109,11 @@ struct pipeline_stats {
     std::atomic<uint64_t> stalls_detected{0};
     std::atomic<uint64_t> backpressure_events{0};
 
+    std::atomic<uint64_t> admitted_chunks{0};
+    std::atomic<uint64_t> reserved_bytes{0};
+    std::atomic<uint64_t> peak_admitted_chunks{0};
+    std::atomic<uint64_t> peak_reserved_bytes{0};
+
     // Encryption statistics
     std::atomic<uint64_t> chunks_encrypted{0};
     std::atomic<uint64_t> chunks_decrypted{0};
@@ -120,6 +129,13 @@ struct pipeline_stats {
  * @brief Chunk data for pipeline processing
  */
 struct pipeline_chunk {
+private:
+    // Copies belong to callers and do not retain pipeline admission. Stage
+    // handoffs move this token with the buffer until its final job is destroyed.
+    std::shared_ptr<detail::pipeline_reservation> admission_;
+    friend class server_pipeline;
+    friend class read_job;
+public:
     transfer_id id;
     uint64_t chunk_index;
     std::vector<std::byte> data;
@@ -233,6 +249,9 @@ public:
      * @return Result indicating success or backpressure
      */
     [[nodiscard]] auto submit_upload_chunk(pipeline_chunk data) -> result<void>;
+    [[nodiscard]] auto submit_upload_chunk(
+        pipeline_chunk data, std::chrono::milliseconds timeout,
+        std::stop_token cancellation = {}) -> result<void>;
 
     /**
      * @brief Try to submit a chunk without blocking
@@ -261,6 +280,10 @@ public:
         const std::filesystem::path& file_path,
         uint64_t offset,
         std::size_t size) -> result<void>;
+    [[nodiscard]] auto submit_download_request(
+        const transfer_id& id, uint64_t chunk_index,
+        const std::filesystem::path& file_path, uint64_t offset, std::size_t size,
+        std::chrono::milliseconds timeout, std::stop_token cancellation = {}) -> result<void>;
 
     // Callbacks
 

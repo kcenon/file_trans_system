@@ -15,6 +15,8 @@
 #include <fstream>
 #include <random>
 #include <thread>
+#include <future>
+#include <condition_variable>
 
 namespace kcenon::file_transfer {
 namespace {
@@ -405,58 +407,158 @@ TEST_F(ServerPipelineTest, StageCompleteCallback) {
 
 // Backpressure tests
 
-// TODO: Re-enable once backpressure is implemented with thread_pool
-// thread_pool uses unbounded queue, so bounded_job_queue backpressure doesn't apply
-TEST_F(ServerPipelineTest, DISABLED_BackpressureWithSmallQueue) {
-    pipeline_config config;
-    config.io_workers = 1;
-    config.compression_workers = 1;
-    config.network_workers = 1;
-    config.queue_size = 2;  // Very small queue
-
-    auto pipeline_result = server_pipeline::create(config);
-    ASSERT_TRUE(pipeline_result.has_value());
-    auto& pipeline = pipeline_result.value();
-
-    ASSERT_TRUE(pipeline.start().has_value());
-
-    // Use multiple threads to overwhelm the queue and trigger backpressure
-    std::atomic<int> submitted{0};
-    std::atomic<int> rejected{0};
-    auto id = transfer_id::generate();
-
-    constexpr int num_threads = 8;
-    constexpr int chunks_per_thread = 50;
-    std::vector<std::thread> threads;
-
-    for (int t = 0; t < num_threads; ++t) {
-        threads.emplace_back([&, t]() {
-            for (int i = 0; i < chunks_per_thread; ++i) {
-                std::vector<std::byte> data(100, std::byte{0x42});
-                auto chunk = create_pipeline_chunk(
-                    id, static_cast<uint64_t>(t * chunks_per_thread + i), data);
-                if (pipeline.try_submit_upload_chunk(std::move(chunk))) {
-                    submitted++;
-                } else {
-                    rejected++;
-                }
-            }
-        });
+struct consumer_gate {
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool entered{}, released{};
+    void block() {
+        std::unique_lock lock(mutex); entered = true; cv.notify_all();
+        cv.wait(lock, [&] { return released; });
     }
+    bool wait() { std::unique_lock lock(mutex); return cv.wait_for(lock, std::chrono::seconds(3), [&] { return entered; }); }
+    void release() { std::lock_guard lock(mutex); released = true; cv.notify_all(); }
+    ~consumer_gate() { release(); }
+};
 
-    for (auto& t : threads) {
-        t.join();
+TEST_F(ServerPipelineTest, BackpressureWithSmallQueue) {
+    using namespace std::chrono_literals;
+    pipeline_config config; config.worker_threads = 1; config.queue_size = 2;
+    auto built = server_pipeline::create(config); ASSERT_TRUE(built); auto& pipeline = built.value();
+    consumer_gate gate;
+    pipeline.on_stage_complete([&](auto stage, const auto& chunk) {
+        if (stage == pipeline_stage::decompress && chunk.chunk_index == 0) gate.block();
+    });
+    ASSERT_TRUE(pipeline.start());
+    auto id = transfer_id::generate(); std::vector<std::byte> bytes(100, std::byte{0x42});
+    ASSERT_TRUE(pipeline.submit_upload_chunk(create_pipeline_chunk(id, 0, bytes)));
+    EXPECT_TRUE(gate.wait());
+    EXPECT_TRUE(pipeline.try_submit_upload_chunk(create_pipeline_chunk(id, 1, bytes)));
+    EXPECT_FALSE(pipeline.try_submit_upload_chunk(create_pipeline_chunk(id, 2, bytes)));
+    EXPECT_EQ(pipeline.stats().backpressure_events, 1);
+    EXPECT_EQ(pipeline.stats().admitted_chunks, 2);
+    EXPECT_EQ(pipeline.stats().reserved_bytes, 2 * (4 * bytes.size() + 4096));
+    for (const auto& [stage, count] : pipeline.queue_sizes())
+        EXPECT_EQ(count, stage == pipeline_stage::decompress ? 1 : 0);
+    auto timed = pipeline.submit_upload_chunk(create_pipeline_chunk(id, 2, bytes), 15ms);
+    EXPECT_FALSE(timed); EXPECT_EQ(timed.error().code, error_code::transfer_timeout);
+    auto blocked = std::async(std::launch::async, [&] {
+        return pipeline.submit_upload_chunk(create_pipeline_chunk(id, 2, bytes));
+    });
+    EXPECT_EQ(blocked.wait_for(20ms), std::future_status::timeout);
+    gate.release();
+    EXPECT_TRUE(blocked.get()); ASSERT_TRUE(pipeline.stop(true));
+    EXPECT_EQ(pipeline.stats().chunks_processed, 3); EXPECT_EQ(pipeline.stats().backpressure_events, 3);
+    EXPECT_EQ(pipeline.stats().peak_admitted_chunks, 2);
+    EXPECT_EQ(pipeline.stats().admitted_chunks, 0); EXPECT_EQ(pipeline.stats().reserved_bytes, 0);
+    for (const auto& [stage, count] : pipeline.queue_sizes()) EXPECT_EQ(count, 0);
+}
+
+TEST_F(ServerPipelineTest, CancellationWakesBlockedProducerWithoutReleasingOthersCapacity) {
+    using namespace std::chrono_literals;
+    pipeline_config config; config.worker_threads = 1; config.queue_size = 1;
+    auto built = server_pipeline::create(config); ASSERT_TRUE(built); auto& pipeline = built.value();
+    consumer_gate gate;
+    pipeline.on_stage_complete([&](auto stage, const auto&) { if (stage == pipeline_stage::decompress) gate.block(); });
+    ASSERT_TRUE(pipeline.start());
+    auto id = transfer_id::generate(); std::vector<std::byte> bytes(100);
+    ASSERT_TRUE(pipeline.submit_upload_chunk(create_pipeline_chunk(id, 0, bytes))); EXPECT_TRUE(gate.wait());
+    std::stop_source cancellation;
+    auto blocked = std::async(std::launch::async, [&] {
+        return pipeline.submit_upload_chunk(create_pipeline_chunk(id, 1, bytes), std::chrono::milliseconds::max(), cancellation.get_token());
+    });
+    EXPECT_EQ(blocked.wait_for(20ms), std::future_status::timeout); cancellation.request_stop();
+    EXPECT_EQ(blocked.wait_for(1s), std::future_status::ready); EXPECT_FALSE(blocked.get());
+    EXPECT_EQ(pipeline.stats().admitted_chunks, 1); EXPECT_EQ(pipeline.stats().backpressure_events, 1);
+    gate.release(); EXPECT_TRUE(pipeline.stop()); EXPECT_EQ(pipeline.stats().admitted_chunks, 0);
+}
+
+TEST_F(ServerPipelineTest, SaturatedGracefulAndImmediateShutdownWakeProducersAndReleaseCapacity) {
+    using namespace std::chrono_literals;
+    for (bool graceful : {false, true}) {
+        pipeline_config config; config.worker_threads = 1; config.queue_size = 2;
+        auto built = server_pipeline::create(config); ASSERT_TRUE(built); auto& pipeline = built.value();
+        consumer_gate gate;
+        pipeline.on_stage_complete([&](auto stage, const auto&) { if (stage == pipeline_stage::decompress) gate.block(); });
+        ASSERT_TRUE(pipeline.start());
+        auto id = transfer_id::generate(); std::vector<std::byte> bytes(100);
+        EXPECT_TRUE(pipeline.submit_upload_chunk(create_pipeline_chunk(id, 0, bytes))); EXPECT_TRUE(gate.wait());
+        EXPECT_TRUE(pipeline.submit_upload_chunk(create_pipeline_chunk(id, 1, bytes)));
+        auto blocked = std::async(std::launch::async, [&] { return pipeline.submit_upload_chunk(create_pipeline_chunk(id, 2, bytes)); });
+        EXPECT_EQ(blocked.wait_for(20ms), std::future_status::timeout);
+        auto stopping = std::async(std::launch::async, [&] { return pipeline.stop(graceful); });
+        EXPECT_EQ(blocked.wait_for(1s), std::future_status::ready); EXPECT_FALSE(blocked.get());
+        gate.release(); EXPECT_EQ(stopping.wait_for(2s), std::future_status::ready); EXPECT_TRUE(stopping.get());
+        EXPECT_EQ(pipeline.stats().admitted_chunks, 0); EXPECT_EQ(pipeline.stats().reserved_bytes, 0);
+        if (graceful) EXPECT_EQ(pipeline.stats().chunks_processed, 2);
+        for (const auto& [stage, count] : pipeline.queue_sizes()) EXPECT_EQ(count, 0);
     }
+}
 
-    // Should hit backpressure: either some were rejected or backpressure events recorded
-    // With 8 threads submitting 50 chunks each (400 total) to a queue of size 2,
-    // backpressure should definitely occur
-    EXPECT_TRUE(rejected > 0 || pipeline.stats().backpressure_events.load() > 0)
-        << "Expected backpressure but got: submitted=" << submitted
-        << ", rejected=" << rejected
-        << ", backpressure_events=" << pipeline.stats().backpressure_events.load();
+TEST_F(ServerPipelineTest, SingleWorkerStreamsSixtyFourMiBAgainstHalfMiBBufferBudget) {
+    constexpr std::size_t chunk_size = 65536;
+    constexpr std::size_t charge = 4 * chunk_size + 4096;
+    pipeline_config config; config.worker_threads = 1; config.queue_size = 4;
+    config.max_buffered_bytes = 2 * charge; config.max_memory_per_transfer = 2 * charge;
+    auto built = server_pipeline::create(config); ASSERT_TRUE(built); auto& pipeline = built.value();
+    auto source = create_test_file("bounded-source", 1024 * 1024);
+    std::atomic<unsigned> completed{}; std::atomic<uint64_t> bytes{};
+    pipeline.on_download_ready([&](const auto& chunk) {
+        EXPECT_LE(pipeline.stats().reserved_bytes, config.max_buffered_bytes);
+        EXPECT_LE(pipeline.stats().admitted_chunks, 2);
+        if (chunk.is_compressed) {
+            compression_engine engine;
+            auto decoded = engine.decompress(chunk.data, chunk.original_size); ASSERT_TRUE(decoded);
+            EXPECT_EQ(checksum::crc32(decoded.value()), chunk.checksum);
+        } else EXPECT_EQ(checksum::crc32(chunk.data), chunk.checksum);
+        bytes += chunk.original_size; ++completed;
+    });
+    ASSERT_TRUE(pipeline.start()); auto id = transfer_id::generate();
+    for (unsigned i = 0; i < 1024; ++i)
+        ASSERT_TRUE(pipeline.submit_download_request(id, i, source, (i % 16) * chunk_size, chunk_size));
+    ASSERT_TRUE(pipeline.stop());
+    EXPECT_EQ(completed, 1024); EXPECT_EQ(bytes, 64 * 1024 * 1024);
+    EXPECT_GT(pipeline.stats().backpressure_events, 0);
+    EXPECT_LE(pipeline.stats().peak_reserved_bytes, config.max_buffered_bytes);
+    EXPECT_EQ(pipeline.stats().reserved_bytes, 0);
+}
 
-    (void)pipeline.stop();
+TEST_F(ServerPipelineTest, PerTransferBudgetAndOversizedChunksAreEnforcedBeforeAllocation) {
+    pipeline_config config; config.worker_threads = 1; config.queue_size = 10;
+    config.max_memory_per_transfer = 4496; config.max_buffered_bytes = 8992;
+    auto built = server_pipeline::create(config); ASSERT_TRUE(built); auto& pipeline = built.value();
+    consumer_gate gate;
+    pipeline.on_stage_complete([&](auto stage, const auto&) { if (stage == pipeline_stage::decompress) gate.block(); });
+    ASSERT_TRUE(pipeline.start()); auto first = transfer_id::generate(); std::vector<std::byte> bytes(100);
+    EXPECT_TRUE(pipeline.submit_upload_chunk(create_pipeline_chunk(first, 0, bytes))); EXPECT_TRUE(gate.wait());
+    EXPECT_FALSE(pipeline.try_submit_upload_chunk(create_pipeline_chunk(first, 1, bytes)));
+    EXPECT_TRUE(pipeline.try_submit_upload_chunk(create_pipeline_chunk(transfer_id::generate(), 0, bytes)));
+    EXPECT_FALSE(pipeline.submit_download_request(first, 1, test_dir_ / "irrelevant", 0, std::numeric_limits<std::size_t>::max()));
+    gate.release(); EXPECT_TRUE(pipeline.stop()); EXPECT_EQ(pipeline.stats().reserved_bytes, 0);
+}
+
+TEST_F(ServerPipelineTest, ErrorsAndThrowingCallbacksReleaseCapacityAndCallbackAdmissionCannotDeadlock) {
+    pipeline_config config; config.worker_threads = 1; config.queue_size = 1;
+    auto built = server_pipeline::create(config); ASSERT_TRUE(built); auto& pipeline = built.value();
+    std::atomic<unsigned> errors{}, callbacks{};
+    auto id = transfer_id::generate(); std::vector<std::byte> bytes(100);
+    pipeline.on_error([&](auto, const auto&) { ++errors; });
+    pipeline.on_stage_complete([&](auto stage, const auto& chunk) {
+        if (stage == pipeline_stage::decompress && chunk.chunk_index == 2) {
+            EXPECT_FALSE(pipeline.submit_upload_chunk(create_pipeline_chunk(id, 3, bytes)));
+            EXPECT_FALSE(pipeline.try_submit_upload_chunk(create_pipeline_chunk(id, 3, bytes)));
+            EXPECT_FALSE(pipeline.stop());
+            ++callbacks; throw std::runtime_error("Intentional callback exception");
+        }
+    });
+    ASSERT_TRUE(pipeline.start());
+    auto bad = create_pipeline_chunk(id, 0, bytes); ++bad.checksum;
+    ASSERT_TRUE(pipeline.submit_upload_chunk(std::move(bad)));
+    ASSERT_TRUE(pipeline.submit_download_request(id, 1, test_dir_ / "missing", 0, 100));
+    ASSERT_TRUE(pipeline.submit_upload_chunk(create_pipeline_chunk(id, 2, bytes)));
+    ASSERT_TRUE(pipeline.submit_upload_chunk(create_pipeline_chunk(id, 4, bytes)));
+    ASSERT_TRUE(pipeline.stop());
+    EXPECT_EQ(errors, 2); EXPECT_EQ(callbacks, 1); EXPECT_EQ(pipeline.stats().chunks_processed, 1);
+    EXPECT_EQ(pipeline.stats().admitted_chunks, 0); EXPECT_EQ(pipeline.stats().reserved_bytes, 0);
 }
 
 // Move semantics tests

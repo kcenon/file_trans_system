@@ -28,8 +28,17 @@ namespace kcenon::file_transfer {
 // ----------------------------------------------------------------------------
 
 pipeline_job_base::pipeline_job_base(const std::string& name,
-                                     std::shared_ptr<pipeline_context> context)
-    : kcenon::thread::job(name), context_(std::move(context)) {}
+                                     std::shared_ptr<pipeline_context> context, pipeline_stage stage)
+    : kcenon::thread::job(name), stage_(stage), context_(std::move(context)) {
+    ++context_->queued[static_cast<std::size_t>(stage_)];
+}
+pipeline_job_base::~pipeline_job_base() {
+    if (queued_) --context_->queued[static_cast<std::size_t>(stage_)];
+}
+auto pipeline_job_base::begin_work() -> detail::pipeline_execution_scope {
+    if (queued_) { --context_->queued[static_cast<std::size_t>(stage_)]; queued_ = false; }
+    return detail::pipeline_execution_scope(context_.get());
+}
 
 auto pipeline_job_base::is_cancelled() const -> bool {
     return cancellation_token_.is_cancelled();
@@ -46,11 +55,12 @@ auto pipeline_job_base::context() const -> const pipeline_context& {
 decompress_job::decompress_job(std::shared_ptr<pipeline_context> context,
                                pipeline_chunk chunk,
                                std::size_t worker_id)
-    : pipeline_job_base("decompress_job", std::move(context))
+    : pipeline_job_base("decompress_job", std::move(context), pipeline_stage::decompress)
     , chunk_(std::move(chunk))
     , worker_id_(worker_id) {}
 
 auto decompress_job::do_work() -> common::VoidResult {
+    auto execution = begin_work();
     if (is_cancelled()) {
         return thread::make_error_result(
             thread::error_code::operation_canceled,
@@ -98,7 +108,7 @@ auto decompress_job::do_work() -> common::VoidResult {
 
     context_->report_stage_complete(pipeline_stage::decompress, chunk_);
 
-    if (context_->verify_queue) {
+    if (context_->thread_pool) {
         auto verify = std::make_unique<verify_job>(std::move(chunk_), context_);
         auto enqueue_result = context_->thread_pool->enqueue(std::move(verify));
         if (!enqueue_result.is_ok()) {
@@ -120,9 +130,10 @@ auto decompress_job::get_chunk() const -> const pipeline_chunk& {
 // ----------------------------------------------------------------------------
 
 verify_job::verify_job(pipeline_chunk chunk, std::shared_ptr<pipeline_context> context)
-    : pipeline_job_base("verify_job", std::move(context)), chunk_(std::move(chunk)) {}
+    : pipeline_job_base("verify_job", std::move(context), pipeline_stage::chunk_verify), chunk_(std::move(chunk)) {}
 
 auto verify_job::do_work() -> common::VoidResult {
+    auto execution = begin_work();
     if (is_cancelled()) {
         return thread::make_error_result(
             thread::error_code::operation_canceled,
@@ -162,7 +173,7 @@ auto verify_job::do_work() -> common::VoidResult {
     context_->report_stage_complete(pipeline_stage::chunk_verify, chunk_);
 
     // Submit to next stage (write queue)
-    if (context_->write_queue) {
+    if (context_->thread_pool) {
         auto write = std::make_unique<write_job>(std::move(chunk_), context_);
         auto enqueue_result = context_->thread_pool->enqueue(std::move(write));
         if (!enqueue_result.is_ok()) {
@@ -184,9 +195,10 @@ auto verify_job::get_chunk() const -> const pipeline_chunk& {
 // ----------------------------------------------------------------------------
 
 write_job::write_job(pipeline_chunk chunk, std::shared_ptr<pipeline_context> context)
-    : pipeline_job_base("write_job", std::move(context)), chunk_(std::move(chunk)) {}
+    : pipeline_job_base("write_job", std::move(context), pipeline_stage::file_write), chunk_(std::move(chunk)) {}
 
 auto write_job::do_work() -> common::VoidResult {
+    auto execution = begin_work();
     if (is_cancelled()) {
         return thread::make_error_result(
             thread::error_code::operation_canceled,
@@ -225,15 +237,17 @@ read_job::read_job(std::shared_ptr<pipeline_context> context,
                    uint64_t chunk_index,
                    std::filesystem::path file_path,
                    uint64_t offset,
-                   std::size_t size)
-    : pipeline_job_base("read_job", std::move(context))
+                   std::size_t size,
+                   std::shared_ptr<detail::pipeline_reservation> admission)
+    : pipeline_job_base("read_job", std::move(context), pipeline_stage::file_read)
     , id_(id)
     , chunk_index_(chunk_index)
     , file_path_(std::move(file_path))
     , offset_(offset)
-    , size_(size) {}
+    , size_(size) { chunk_.admission_ = std::move(admission); }
 
 auto read_job::do_work() -> common::VoidResult {
+    auto execution = begin_work();
     if (is_cancelled()) {
         return thread::make_error_result(
             thread::error_code::operation_canceled,
@@ -294,7 +308,7 @@ auto read_job::do_work() -> common::VoidResult {
     context_->report_stage_complete(pipeline_stage::file_read, chunk_);
 
     auto worker_id = static_cast<std::size_t>(chunk_index_);
-    if (context_->compress_queue) {
+    if (context_->thread_pool) {
         auto compress = std::make_unique<compress_job>(
             context_, std::move(chunk_), worker_id);
         auto enqueue_result = context_->thread_pool->enqueue(std::move(compress));
@@ -319,11 +333,12 @@ auto read_job::get_chunk() const -> const pipeline_chunk& {
 compress_job::compress_job(std::shared_ptr<pipeline_context> context,
                            pipeline_chunk chunk,
                            std::size_t worker_id)
-    : pipeline_job_base("compress_job", std::move(context))
+    : pipeline_job_base("compress_job", std::move(context), pipeline_stage::compress)
     , chunk_(std::move(chunk))
     , worker_id_(worker_id) {}
 
 auto compress_job::do_work() -> common::VoidResult {
+    auto execution = begin_work();
     if (is_cancelled()) {
         return thread::make_error_result(
             thread::error_code::operation_canceled,
@@ -371,7 +386,7 @@ auto compress_job::do_work() -> common::VoidResult {
         auto next = std::make_unique<encrypt_job>(context_, std::move(chunk_), worker_id_);
         auto queued = context_->thread_pool->enqueue(std::move(next));
         if (!queued.is_ok()) return thread::make_error_result(thread::error_code::queue_full, "Cannot enqueue encryption");
-    } else if (context_->send_queue) {
+    } else if (context_->thread_pool) {
         auto next = std::make_unique<send_job>(std::move(chunk_), context_);
         auto queued = context_->thread_pool->enqueue(std::move(next));
         if (!queued.is_ok()) return thread::make_error_result(thread::error_code::queue_full, "Cannot enqueue send");
@@ -389,9 +404,10 @@ auto compress_job::get_chunk() const -> const pipeline_chunk& {
 // ----------------------------------------------------------------------------
 
 send_job::send_job(pipeline_chunk chunk, std::shared_ptr<pipeline_context> context)
-    : pipeline_job_base("send_job", std::move(context)), chunk_(std::move(chunk)) {}
+    : pipeline_job_base("send_job", std::move(context), pipeline_stage::network_send), chunk_(std::move(chunk)) {}
 
 auto send_job::do_work() -> common::VoidResult {
+    auto execution = begin_work();
     if (is_cancelled()) {
         return thread::make_error_result(
             thread::error_code::operation_canceled,
@@ -408,7 +424,14 @@ auto send_job::do_work() -> common::VoidResult {
 
     // Apply send bandwidth limit if configured
     if (context_->send_limiter) {
-        context_->send_limiter->acquire(chunk_.data.size());
+        auto remaining = chunk_.data.size();
+        while (remaining && context_->send_limiter->is_enabled()) {
+            if (is_cancelled() || !context_->is_running())
+                return thread::make_error_result(thread::error_code::operation_canceled, "Send interrupted");
+            auto step = std::min(remaining, std::max<std::size_t>(1, context_->send_limiter->bucket_capacity()));
+            if (context_->send_limiter->try_acquire(step)) remaining -= step;
+            else std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
     }
 
     if (context_->statistics) {
@@ -436,11 +459,12 @@ auto send_job::get_chunk() const -> const pipeline_chunk& {
 encrypt_job::encrypt_job(std::shared_ptr<pipeline_context> context,
                          pipeline_chunk chunk,
                          std::size_t worker_id)
-    : pipeline_job_base("encrypt_job", std::move(context))
+    : pipeline_job_base("encrypt_job", std::move(context), pipeline_stage::encrypt)
     , chunk_(std::move(chunk))
     , worker_id_(worker_id) {}
 
 auto encrypt_job::do_work() -> common::VoidResult {
+    auto execution = begin_work();
     auto fail = [&](const std::string& message) {
         context_->report_error(pipeline_stage::encrypt, message);
         return thread::make_error_result(thread::error_code::job_execution_failed, message);
@@ -463,7 +487,7 @@ auto encrypt_job::do_work() -> common::VoidResult {
     return fail("Encryption support is disabled");
 #endif
     context_->report_stage_complete(pipeline_stage::encrypt, chunk_);
-    if (context_->send_queue) {
+    if (context_->thread_pool) {
         auto next = std::make_unique<send_job>(std::move(chunk_), context_);
         if (!context_->thread_pool->enqueue(std::move(next)).is_ok()) return fail("Cannot enqueue next stage");
     }
@@ -481,11 +505,12 @@ auto encrypt_job::get_chunk() const -> const pipeline_chunk& {
 decrypt_job::decrypt_job(std::shared_ptr<pipeline_context> context,
                          pipeline_chunk chunk,
                          std::size_t worker_id)
-    : pipeline_job_base("decrypt_job", std::move(context))
+    : pipeline_job_base("decrypt_job", std::move(context), pipeline_stage::decrypt)
     , chunk_(std::move(chunk))
     , worker_id_(worker_id) {}
 
 auto decrypt_job::do_work() -> common::VoidResult {
+    auto execution = begin_work();
     auto fail = [&](const std::string& message) {
         context_->report_error(pipeline_stage::decrypt, message);
         return thread::make_error_result(thread::error_code::job_execution_failed, message);
@@ -509,7 +534,7 @@ auto decrypt_job::do_work() -> common::VoidResult {
     return fail("Encryption support is disabled");
 #endif
     context_->report_stage_complete(pipeline_stage::decrypt, chunk_);
-    if (context_->decompress_queue) {
+    if (context_->thread_pool) {
         auto next = std::make_unique<decompress_job>(context_, std::move(chunk_), worker_id_);
         if (!context_->thread_pool->enqueue(std::move(next)).is_ok()) return fail("Cannot enqueue next stage");
     }

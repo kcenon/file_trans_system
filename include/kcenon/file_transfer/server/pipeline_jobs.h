@@ -26,6 +26,8 @@
 #include <kcenon/common/patterns/result.h>
 
 #include <atomic>
+#include <array>
+#include "kcenon/file_transfer/server/detail/pipeline_admission.h"
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -49,25 +51,14 @@ struct pipeline_context {
     /// Thread pool for job execution
     std::shared_ptr<thread::thread_pool> thread_pool;
 
-    /// Bounded job queues for each stage
-    std::shared_ptr<thread::job_queue> decompress_queue;
-    std::shared_ptr<thread::job_queue> verify_queue;
-    std::shared_ptr<thread::job_queue> write_queue;
-    std::shared_ptr<thread::job_queue> read_queue;
-    std::shared_ptr<thread::job_queue> compress_queue;
-    std::shared_ptr<thread::job_queue> send_queue;
+    /// Actual jobs waiting in the shared pool, by stage.
+    std::array<std::atomic<std::size_t>, 9> queued{};
 
     /// Compression engines for workers
     std::vector<std::unique_ptr<compression_engine>> compression_engines;
 
     /// Encryption engines for workers (one per encryption worker)
     std::vector<std::shared_ptr<encryption_interface>> encryption_engines;
-
-    /// Decrypt queue (for upload pipeline: decompress -> decrypt -> verify)
-    std::shared_ptr<thread::job_queue> decrypt_queue;
-
-    /// Encrypt queue (for download pipeline: read -> encrypt -> compress)
-    std::shared_ptr<thread::job_queue> encrypt_queue;
 
     /// Whether encryption is enabled for this pipeline
     bool encryption_enabled = false;
@@ -140,9 +131,14 @@ public:
      * @param name Job name for identification
      * @param context Shared pipeline context
      */
-    pipeline_job_base(const std::string& name, std::shared_ptr<pipeline_context> context);
+    pipeline_job_base(const std::string& name, std::shared_ptr<pipeline_context> context, pipeline_stage stage);
 
-    ~pipeline_job_base() override = default;
+    ~pipeline_job_base() override;
+    auto begin_work() -> detail::pipeline_execution_scope;
+private:
+    pipeline_stage stage_;
+    bool queued_{true};
+protected:
 
 protected:
     /**
@@ -279,7 +275,8 @@ public:
              uint64_t chunk_index,
              std::filesystem::path file_path,
              uint64_t offset,
-             std::size_t size);
+             std::size_t size,
+             std::shared_ptr<detail::pipeline_reservation> admission = {});
 
     /**
      * @brief Execute the read work
