@@ -36,8 +36,11 @@ def main():
         command.extend(["-object", str(binary)])
     exported_run = subprocess.run([*command, "-summary-only"], capture_output=True, text=True, check=True)
     exported = json.loads(exported_run.stdout)
-    diagnostics = subprocess.run([args.llvm_cov, "report", *command[2:], "-dump"],
-                                 capture_output=True, check=True)
+    # LLVM's debug report writes to a shared stream from worker threads and can
+    # corrupt the heap (llvm/llvm-project#208182). Keep mismatch diagnostics,
+    # but generate this report with one worker; the coverage scope is unchanged.
+    diagnostics = subprocess.run([args.llvm_cov, "report", *command[2:], "-dump", "-num-threads=1"],
+                                 capture_output=True)
     # Human-readable LLVM diagnostics can contain non-UTF-8 bytes. Preserve
     # them exactly and escape only for display; the JSON export stays strict.
     (output / "coverage-diagnostics.raw").write_bytes(diagnostics.stderr)
@@ -45,6 +48,9 @@ def main():
     diagnostic_text = diagnostics.stderr.decode("utf-8", errors="backslashreplace")
     (output / "coverage-report.txt").write_text(diagnostics.stdout.decode("utf-8", errors="backslashreplace"))
     (output / "coverage-diagnostics.log").write_text(diagnostic_text)
+    if diagnostics.returncode:
+        print(diagnostic_text)
+        diagnostics.check_returncode()
     # Unemitted inline definitions have hash zero and correctly contribute zero
     # execution. Any mismatch with a real CFG hash indicates stale/bad profiles.
     bad_profiles = [line for line in diagnostic_text.splitlines()

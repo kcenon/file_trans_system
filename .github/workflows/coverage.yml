@@ -23,7 +23,9 @@ jobs:
           go-version: '1.24.6'
       - run: python3 tools/ci_build.py --coverage
       - run: mkdir -p build/profiles
-      - run: python3 tools/run_ci_tests.py --artifacts build/test-results
+      # Instrumented transfers are slower on hosted runners; retain the same
+      # bounded suite deadline used by sanitizer builds.
+      - run: python3 tools/run_ci_tests.py --suite-timeout 600 --artifacts build/test-results
       - run: python3 tools/run_minio_tests.py --test-binary build/bin/file_trans_cloud_integration_tests --artifacts build/minio-results
       - name: Require 80 percent across the complete project archive and headers
         run: python3 tools/coverage_gate.py --build build --output build/coverage --llvm-cov llvm-cov-18 --llvm-profdata llvm-profdata-18 --minimum 80
