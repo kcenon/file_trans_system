@@ -6,7 +6,10 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cstring>
+#include <limits>
 #include <filesystem>
+#include <fstream>
 #include <thread>
 
 #include "kcenon/file_transfer/transport/session_resumption.h"
@@ -383,6 +386,161 @@ TEST_F(FileSessionStoreTest, PersistMultipleTickets) {
         EXPECT_TRUE(store->has_ticket("server2.com:8443"));
         EXPECT_TRUE(store->has_ticket("server3.com:443"));
     }
+}
+
+TEST_F(MemorySessionStoreTest, RefreshAtCapacityPreservesOtherServers) {
+    session_store_config config;
+    config.max_tickets = 2;
+    auto store = memory_session_store::create(config);
+    auto oldest = create_valid_ticket("oldest:443");
+    oldest.issued_at -= std::chrono::hours(1);
+    ASSERT_TRUE(store->store(oldest));
+    auto refreshed = create_valid_ticket("refresh:443");
+    ASSERT_TRUE(store->store(refreshed));
+    refreshed.ticket_data = {0, 255, 7};
+    ASSERT_TRUE(store->store(refreshed));
+    EXPECT_EQ(store->size(), 2);
+    EXPECT_TRUE(store->has_ticket("oldest:443"));
+    ASSERT_TRUE(store->retrieve("refresh:443"));
+    EXPECT_EQ(store->retrieve("refresh:443")->ticket_data, refreshed.ticket_data);
+}
+
+TEST_F(FileSessionStoreTest, CapacityRefreshAndRemovalSurviveReloadWithExactTicketFields) {
+    session_store_config config;
+    config.storage_path = test_file_;
+    config.max_tickets = 2;
+    auto store = file_session_store::create(config);
+    auto oldest = create_valid_ticket("oldest:443");
+    oldest.issued_at -= std::chrono::hours(1);
+    ASSERT_TRUE(store->store(oldest));
+    auto refreshed = create_valid_ticket("refresh:8443");
+    ASSERT_TRUE(store->store(refreshed));
+    refreshed.ticket_data = {0, 255, 7};
+    ASSERT_TRUE(store->store(refreshed));
+    EXPECT_EQ(store->size(), 2);
+    EXPECT_TRUE(store->has_ticket("oldest:443"));
+    store.reset();
+    store = file_session_store::create(config);
+    auto ticket = store->retrieve("refresh:8443");
+    ASSERT_TRUE(ticket);
+    EXPECT_EQ(ticket->ticket_data, refreshed.ticket_data);
+    EXPECT_EQ(ticket->alpn_protocol, refreshed.alpn_protocol);
+    EXPECT_EQ(ticket->server_name, refreshed.server_name);
+    EXPECT_EQ(ticket->max_early_data_size, refreshed.max_early_data_size);
+    EXPECT_EQ(std::chrono::time_point_cast<std::chrono::milliseconds>(ticket->expires_at),
+              std::chrono::time_point_cast<std::chrono::milliseconds>(refreshed.expires_at));
+    EXPECT_TRUE(store->remove("oldest:443"));
+    EXPECT_FALSE(store->remove("missing:443"));
+    ASSERT_TRUE(store->save());
+    store.reset();
+    store = file_session_store::create(config);
+    EXPECT_EQ(store->size(), 1);
+    EXPECT_FALSE(store->has_ticket("oldest:443"));
+    store->clear();
+    store.reset();
+    store = file_session_store::create(config);
+    EXPECT_EQ(store->size(), 0);
+}
+
+TEST_F(FileSessionStoreTest, TruncatedLoadFailsWithoutReplacingValidInMemoryTickets) {
+    session_store_config config;
+    config.storage_path = test_file_;
+    auto store = file_session_store::create(config);
+    auto ticket = create_valid_ticket("kept:443");
+    ASSERT_TRUE(store->store(ticket));
+    std::ifstream input(test_file_, std::ios::binary);
+    const std::string valid((std::istreambuf_iterator<char>(input)), {});
+    input.close();
+    ASSERT_GT(valid.size(), 12);
+    for (std::size_t length : {std::size_t{0}, std::size_t{8}, std::size_t{12}, valid.size() - 1}) {
+        SCOPED_TRACE(length);
+        std::ofstream output(test_file_, std::ios::binary | std::ios::trunc);
+        output.write(valid.data(), length);
+        output.close();
+        EXPECT_FALSE(store->load());
+        auto kept = store->retrieve("kept:443");
+        ASSERT_TRUE(kept);
+        EXPECT_EQ(kept->ticket_data, ticket.ticket_data);
+    }
+}
+
+TEST_F(FileSessionStoreTest, CorruptLengthsCountsVersionsAndTimestampsFailWithoutAllocation) {
+    session_store_config config;
+    config.storage_path = test_file_;
+    auto store = file_session_store::create(config);
+    auto ticket = create_valid_ticket("kept:443");
+    ASSERT_TRUE(store->store(ticket));
+    std::ifstream input(test_file_, std::ios::binary);
+    const std::string valid((std::istreambuf_iterator<char>(input)), {});
+    input.close();
+    std::vector<std::string> corrupt;
+    auto replace = [&](std::size_t offset, auto value) {
+        auto bytes = valid;
+        std::memcpy(bytes.data() + offset, &value, sizeof(value));
+        corrupt.push_back(std::move(bytes));
+    };
+    replace(0, uint32_t{0}); // Magic
+    replace(4, uint32_t{99}); // Unsupported version
+    replace(8, std::numeric_limits<uint32_t>::max()); // Ticket count
+    replace(12, std::numeric_limits<uint32_t>::max()); // Server identifier size
+    replace(16 + ticket.server_id.size(), std::numeric_limits<uint32_t>::max()); // Ticket size
+    if (std::chrono::system_clock::period::den > 1000) {
+        replace(20 + ticket.server_id.size() + ticket.ticket_data.size(),
+                std::numeric_limits<int64_t>::max()); // Milliseconds must fit the native clock.
+    }
+    for (const auto& bytes : corrupt) {
+        std::ofstream output(test_file_, std::ios::binary | std::ios::trunc);
+        output.write(bytes.data(), bytes.size());
+        output.close();
+        EXPECT_FALSE(store->load());
+        auto kept = store->retrieve("kept:443");
+        ASSERT_TRUE(kept);
+        EXPECT_EQ(kept->ticket_data, ticket.ticket_data);
+    }
+}
+
+TEST_F(FileSessionStoreTest, ExpiredAndNearlyExpiredTicketsAreRemovedAndPersisted) {
+    session_store_config config;
+    config.storage_path = test_file_;
+    config.max_tickets = 2;
+    config.min_remaining_lifetime = std::chrono::seconds(60);
+    auto store = file_session_store::create(config);
+    auto expired = create_valid_ticket("expired:443");
+    expired.expires_at = std::chrono::system_clock::now() - std::chrono::seconds(1);
+    ASSERT_TRUE(store->store(expired));
+    EXPECT_FALSE(store->retrieve("expired:443"));
+    EXPECT_EQ(store->size(), 0);
+    auto near = create_valid_ticket("near:443");
+    near.expires_at = std::chrono::system_clock::now() + std::chrono::seconds(30);
+    ASSERT_TRUE(store->store(near));
+    EXPECT_FALSE(store->retrieve("near:443"));
+    ASSERT_TRUE(store->store(expired));
+    ASSERT_TRUE(store->store(create_valid_ticket("valid:443")));
+    EXPECT_EQ(store->cleanup_expired(), 1);
+    EXPECT_EQ(store->cleanup_expired(), 0);
+    ASSERT_TRUE(store->save());
+    ASSERT_TRUE(store->load());
+    EXPECT_EQ(store->size(), 1);
+    EXPECT_TRUE(store->has_ticket("valid:443"));
+    EXPECT_FALSE(store->retrieve("missing:443"));
+    // At capacity a new ticket may evict an expired entry, but never the live one.
+    ASSERT_TRUE(store->store(expired));
+    ASSERT_TRUE(store->store(create_valid_ticket("new:443")));
+    EXPECT_EQ(store->size(), 2);
+    EXPECT_TRUE(store->has_ticket("valid:443"));
+    EXPECT_TRUE(store->has_ticket("new:443"));
+}
+
+TEST_F(FileSessionStoreTest, PersistenceFailuresAreReportedToTheCaller) {
+    // A regular file used as the parent is a portable failure, even when running as root.
+    std::ofstream(test_file_) << "parent is not a directory";
+    session_store_config config;
+    config.storage_path = test_file_ / "sessions.dat";
+    auto store = file_session_store::create(config);
+    ASSERT_NE(store, nullptr);
+    auto stored = store->store(create_valid_ticket("server:443"));
+    EXPECT_FALSE(stored);
+    EXPECT_FALSE(store->save());
 }
 
 // ============================================================================

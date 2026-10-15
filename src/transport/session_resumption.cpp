@@ -41,7 +41,8 @@ auto memory_session_store::store(const session_ticket& ticket) -> result<void> {
     std::lock_guard lock(mutex_);
 
     // Check capacity
-    if (config_.max_tickets > 0 && tickets_.size() >= config_.max_tickets) {
+    if (config_.max_tickets > 0 && tickets_.size() >= config_.max_tickets &&
+        !tickets_.contains(ticket.server_id)) {
         // Remove oldest or expired ticket
         auto oldest = tickets_.end();
         auto oldest_time = std::chrono::system_clock::time_point::max();
@@ -184,8 +185,25 @@ void serialize_string(std::ostream& os, const std::string& str) {
     os.write(str.data(), static_cast<std::streamsize>(len));
 }
 
+auto remaining_bytes(std::istream& is) -> std::streamoff {
+    const auto position = is.tellg();
+    is.seekg(0, std::ios::end);
+    const auto remaining = is.tellg() - position;
+    is.seekg(position);
+    return remaining;
+}
+
+// Validate before allocating: corrupt length fields must not allocate gigabytes.
+auto deserialize_length(std::istream& is) -> uint32_t {
+    const auto length = deserialize_value<uint32_t>(is);
+    if (length > remaining_bytes(is)) {
+        throw std::ios_base::failure("Session field exceeds remaining file size");
+    }
+    return length;
+}
+
 auto deserialize_string(std::istream& is) -> std::string {
-    auto len = deserialize_value<uint32_t>(is);
+    auto len = deserialize_length(is);
     std::string str(len, '\0');
     is.read(str.data(), static_cast<std::streamsize>(len));
     return str;
@@ -199,7 +217,7 @@ void serialize_bytes(std::ostream& os, const std::vector<uint8_t>& data) {
 }
 
 auto deserialize_bytes(std::istream& is) -> std::vector<uint8_t> {
-    auto len = deserialize_value<uint32_t>(is);
+    auto len = deserialize_length(is);
     std::vector<uint8_t> data(len);
     is.read(reinterpret_cast<char*>(data.data()),
             static_cast<std::streamsize>(len));
@@ -214,7 +232,13 @@ void serialize_timepoint(std::ostream& os, std::chrono::system_clock::time_point
 
 auto deserialize_timepoint(std::istream& is) -> std::chrono::system_clock::time_point {
     auto millis = deserialize_value<int64_t>(is);
-    return std::chrono::system_clock::time_point{std::chrono::milliseconds{millis}};
+    using clock = std::chrono::system_clock;
+    const auto min = std::chrono::duration_cast<std::chrono::milliseconds>(clock::duration::min()).count();
+    const auto max = std::chrono::duration_cast<std::chrono::milliseconds>(clock::duration::max()).count();
+    if (millis < min || millis > max) {
+        throw std::ios_base::failure("Session timestamp is out of range");
+    }
+    return clock::time_point{std::chrono::milliseconds{millis}};
 }
 
 }  // namespace
@@ -244,7 +268,8 @@ auto file_session_store::store(const session_ticket& ticket) -> result<void> {
     std::lock_guard lock(mutex_);
 
     // Check capacity
-    if (config_.max_tickets > 0 && tickets_.size() >= config_.max_tickets) {
+    if (config_.max_tickets > 0 && tickets_.size() >= config_.max_tickets &&
+        !tickets_.contains(ticket.server_id)) {
         auto oldest = tickets_.end();
         auto oldest_time = std::chrono::system_clock::time_point::max();
 
@@ -277,7 +302,7 @@ auto file_session_store::store(const session_ticket& ticket) -> result<void> {
             "Failed to persist session ticket: " + result.error().message);
     }
 
-    return {};
+    return result;
 }
 
 auto file_session_store::retrieve(const std::string& server_id)
@@ -383,6 +408,7 @@ auto file_session_store::save_internal() -> result<void> {
                 "Failed to open session file for writing"}};
         }
 
+        file.exceptions(std::ios::failbit | std::ios::badbit);
         serialize_value(file, MAGIC);
         serialize_value(file, VERSION);
         serialize_value(file, static_cast<uint32_t>(tickets_.size()));
@@ -397,6 +423,7 @@ auto file_session_store::save_internal() -> result<void> {
             serialize_string(file, ticket.server_name);
         }
 
+        file.close();
         dirty_ = false;
         FT_LOG_DEBUG(log_category::transfer,
             "Saved " + std::to_string(tickets_.size()) + " session tickets");
@@ -409,36 +436,30 @@ auto file_session_store::save_internal() -> result<void> {
 }
 
 auto file_session_store::load_internal() -> result<void> {
-    if (config_.storage_path.empty() ||
-        !std::filesystem::exists(config_.storage_path)) {
-        return {};
-    }
-
     try {
-        std::ifstream file(config_.storage_path, std::ios::binary);
-        if (!file) {
-            return unexpected{error{error_code::file_read_error,
-                "Failed to open session file for reading"}};
-        }
-
-        auto magic = deserialize_value<uint32_t>(file);
-        if (magic != MAGIC) {
-            return unexpected{error{error_code::invalid_configuration,
-                "Invalid session file format"}};
-        }
-
-        auto version = deserialize_value<uint32_t>(file);
-        if (version != VERSION) {
-            FT_LOG_WARN(log_category::transfer,
-                "Session file version mismatch, clearing tickets");
-            tickets_.clear();
+        if (config_.storage_path.empty() || !std::filesystem::exists(config_.storage_path)) {
             return {};
         }
+        std::ifstream file(config_.storage_path, std::ios::binary);
+        file.exceptions(std::ios::failbit | std::ios::badbit);
 
-        auto count = deserialize_value<uint32_t>(file);
-        tickets_.clear();
+        const auto magic = deserialize_value<uint32_t>(file);
+        const auto version = deserialize_value<uint32_t>(file);
+        if (magic != MAGIC || version != VERSION) {
+            return unexpected{error{error_code::invalid_configuration,
+                "Unsupported session file format or version"}};
+        }
 
-        for (uint32_t i = 0; i < count && file.good(); ++i) {
+        const auto count = deserialize_value<uint32_t>(file);
+        // Even an empty ticket requires five uint32 fields and two int64 timestamps.
+        constexpr auto minimum_ticket_bytes = 5 * sizeof(uint32_t) + 2 * sizeof(int64_t);
+        if (count > remaining_bytes(file) / minimum_ticket_bytes ||
+            (config_.max_tickets > 0 && count > config_.max_tickets)) {
+            return unexpected{error{error_code::invalid_configuration,
+                "Session ticket count exceeds file size or configured capacity"}};
+        }
+        decltype(tickets_) loaded;
+        for (uint32_t i = 0; i < count; ++i) {
             session_ticket ticket;
             ticket.server_id = deserialize_string(file);
             ticket.ticket_data = deserialize_bytes(file);
@@ -449,13 +470,14 @@ auto file_session_store::load_internal() -> result<void> {
             ticket.server_name = deserialize_string(file);
 
             if (ticket.is_valid()) {
-                tickets_[ticket.server_id] = std::move(ticket);
+                loaded[ticket.server_id] = std::move(ticket);
             }
         }
-
+        // A malformed reload must not discard previously usable tickets.
+        tickets_ = std::move(loaded);
+        dirty_ = false;
         FT_LOG_DEBUG(log_category::transfer,
             "Loaded " + std::to_string(tickets_.size()) + " session tickets");
-
         return {};
     } catch (const std::exception& e) {
         return unexpected{error{error_code::file_read_error,
