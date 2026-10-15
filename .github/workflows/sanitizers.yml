@@ -21,7 +21,7 @@ jobs:
         with:
           sanitizer: ${{ matrix.sanitizer }}
       - run: python3 tools/ci_build.py --sanitizer ${{ matrix.sanitizer }}
-      - run: python3 tools/run_ci_tests.py --artifacts build/sanitizer-results
+      - run: python3 tools/run_ci_tests.py --suite-timeout 600 --artifacts build/sanitizer-results
         env:
           TSAN_OPTIONS: halt_on_error=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1

@@ -550,4 +550,31 @@ TEST_F(StorageManagerTest, Manager_ChangeTier) {
     ASSERT_TRUE(meta.has_value());
 }
 
+TEST_F(StorageManagerTest, HybridPaginationMergesEveryBackendAndPreservesPrimaryPrecedence) {
+    storage_manager_config config;
+    config.primary_backend = local_storage_backend::create(test_dir_ / "primary");
+    config.secondary_backend = local_storage_backend::create(test_dir_ / "secondary");
+    config.hybrid_storage = true;
+    auto manager = storage_manager::create(config); ASSERT_TRUE(manager->initialize());
+    for (auto name : {"a", "c", "shared"}) ASSERT_TRUE(manager->primary_backend().store(name, create_test_data(11)));
+    for (auto name : {"b", "d", "shared"}) ASSERT_TRUE(manager->secondary_backend()->store(name, create_test_data(22)));
+    list_storage_options options; options.max_results = 2;
+    std::vector<std::string> keys;
+    for (int page = 0; page < 4; ++page) {
+        auto listed = manager->list(options); ASSERT_TRUE(listed);
+        EXPECT_LE(listed.value().objects.size(), 2);
+        for (const auto& object : listed.value().objects) {
+            keys.push_back(object.key);
+            if (object.key == "shared") EXPECT_EQ(object.size, 11);
+        }
+        if (!listed.value().is_truncated) break;
+        ASSERT_TRUE(listed.value().continuation_token);
+        ASSERT_NE(listed.value().continuation_token, options.continuation_token);
+        options.continuation_token = listed.value().continuation_token;
+    }
+    EXPECT_EQ(keys, (std::vector<std::string>{"a", "b", "c", "d", "shared"}));
+    options.continuation_token = "invalid"; EXPECT_FALSE(manager->list(options));
+    EXPECT_TRUE(manager->shutdown());
+}
+
 }  // namespace kcenon::file_transfer::test

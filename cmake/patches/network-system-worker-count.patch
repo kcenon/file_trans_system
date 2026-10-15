@@ -1,0 +1,17 @@
+diff --git a/src/integration/thread_integration.cpp b/src/integration/thread_integration.cpp
+index 9714028..936f402 100644
+--- a/src/integration/thread_integration.cpp
++++ b/src/integration/thread_integration.cpp
+@@ -69,2 +69,3 @@ public:
+
++        configured_workers_ = num_threads;
+         // Intentional Leak pattern: Use no-op deleter to prevent destruction
+@@ -185,3 +186,3 @@ public:
+     size_t worker_count() const {
+-        return pool_ ? pool_->get_active_worker_count() : 0;
++        return pool_ && pool_->is_running() ? configured_workers_ : 0;
+     }
+@@ -208,2 +209,3 @@ private:
+     std::shared_ptr<kcenon::thread::thread_pool> pool_;
++    size_t configured_workers_{0};
+     std::atomic<size_t> completed_tasks_;

@@ -10,6 +10,8 @@
 #include <chrono>
 #include <fstream>
 #include <mutex>
+#include <map>
+#include <set>
 #include <shared_mutex>
 
 namespace kcenon::file_transfer {
@@ -547,10 +549,9 @@ struct cloud_storage_backend::impl {
     }
 
     void report_progress(const storage_progress& progress) {
-        std::shared_lock lock(mutex);
-        if (progress_callback) {
-            progress_callback(progress);
-        }
+        std::function<void(const storage_progress&)> callback;
+        { std::shared_lock lock(mutex); callback = progress_callback; }
+        if (callback) callback(progress);
     }
 };
 
@@ -665,6 +666,7 @@ auto cloud_storage_backend::store(
     res.etag = upload_result.value().etag;
     res.duration = duration;
 
+    impl_->report_progress({storage_operation::store, key, res.bytes_stored, res.bytes_stored, impl_->backend_type});
     return result<store_result>(std::move(res));
 }
 
@@ -705,6 +707,7 @@ auto cloud_storage_backend::store_file(
     res.etag = upload_result.value().etag;
     res.duration = duration;
 
+    impl_->report_progress({storage_operation::store, key, res.bytes_stored, res.bytes_stored, impl_->backend_type});
     return result<store_result>(std::move(res));
 }
 
@@ -720,6 +723,8 @@ auto cloud_storage_backend::retrieve(
         }};
     }
 
+    impl_->report_progress({storage_operation::retrieve, key, download_result.value().size(),
+        download_result.value().size(), impl_->backend_type});
     return result<std::vector<std::byte>>(std::move(download_result.value()));
 }
 
@@ -759,6 +764,7 @@ auto cloud_storage_backend::retrieve_file(
         res.metadata.custom_metadata.emplace_back(k, v);
     }
 
+    impl_->report_progress({storage_operation::retrieve, key, res.bytes_retrieved, res.bytes_retrieved, impl_->backend_type});
     return result<retrieve_result>(std::move(res));
 }
 
@@ -1265,46 +1271,48 @@ auto storage_manager::list(const list_storage_options& options)
         }};
     }
 
-    // Merge results from both backends if hybrid storage
+    // Backend continuation tokens have different meanings. Enumerate each
+    // backend independently, then paginate the sorted, deduplicated union.
     if (impl_->config.hybrid_storage && impl_->config.secondary_backend) {
-        list_storage_result merged_result;
-        std::unordered_map<std::string, stored_object_metadata> objects_map;
-
-        // Get from primary
-        auto primary_result = impl_->config.primary_backend->list(options);
-        if (!primary_result) return unexpected{primary_result.error()};
-        if (primary_result.has_value()) {
-            for (auto& obj : primary_result.value().objects) {
-                objects_map[obj.key] = std::move(obj);
-            }
+        constexpr std::string_view token_prefix = "fts-hybrid:";
+        std::string after;
+        if (options.continuation_token) {
+            if (!options.continuation_token->starts_with(token_prefix))
+                return unexpected{error{error_code::invalid_configuration, "Invalid hybrid continuation token"}};
+            after = options.continuation_token->substr(token_prefix.size());
         }
-
-        // Get from secondary
-        auto secondary_result = impl_->config.secondary_backend->list(options);
-        if (!secondary_result) return unexpected{secondary_result.error()};
-        if (secondary_result.has_value()) {
-            for (auto& obj : secondary_result.value().objects) {
-                if (objects_map.find(obj.key) == objects_map.end()) {
-                    objects_map[obj.key] = std::move(obj);
+        std::map<std::string, stored_object_metadata> objects;
+        for (auto* backend : {impl_->config.primary_backend.get(), impl_->config.secondary_backend.get()}) {
+            if (options.backend_filter && backend->type() != *options.backend_filter) continue;
+            auto page_options = options;
+            page_options.max_results = 1000;
+            page_options.continuation_token.reset();
+            std::set<std::string> seen_tokens;
+            for (;;) {
+                auto page = backend->list(page_options);
+                if (!page) return unexpected{page.error()};
+                for (auto& object : page.value().objects) {
+                    if (options.tier_filter && object.tier != *options.tier_filter) continue;
+                    auto key = object.key;
+                    objects.try_emplace(std::move(key), std::move(object));
                 }
+                if (!page.value().is_truncated) break;
+                auto token = page.value().continuation_token;
+                if (!token || !seen_tokens.insert(*token).second)
+                    return unexpected{error{error_code::invalid_configuration, "Backend listing did not advance"}};
+                page_options.continuation_token = std::move(token);
             }
         }
-
-        for (auto& [_, obj] : objects_map) {
-            merged_result.objects.push_back(std::move(obj));
+        list_storage_result result;
+        result.total_count = objects.size();
+        auto it = options.continuation_token ? objects.upper_bound(after) : objects.begin();
+        auto limit = options.max_results ? options.max_results : 1000;
+        while (it != objects.end() && result.objects.size() < limit) {
+            result.objects.push_back(std::move(it->second)); ++it;
         }
-
-        // Sort by key
-        std::sort(merged_result.objects.begin(), merged_result.objects.end(),
-            [](const auto& a, const auto& b) { return a.key < b.key; });
-
-        // Apply max_results
-        if (merged_result.objects.size() > options.max_results) {
-            merged_result.objects.resize(options.max_results);
-            merged_result.is_truncated = true;
-        }
-
-        return result<list_storage_result>(std::move(merged_result));
+        result.is_truncated = it != objects.end();
+        if (result.is_truncated) result.continuation_token = std::string(token_prefix) + result.objects.back().key;
+        return result;
     }
 
     return impl_->config.primary_backend->list(options);

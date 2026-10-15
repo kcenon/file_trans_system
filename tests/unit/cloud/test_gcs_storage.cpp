@@ -28,6 +28,7 @@ inline std::string create_test_service_account_json() {
  */
 class mock_gcs_http_client : public gcs_http_client_interface {
 public:
+    bool fail_transport = false;
     // Default responses for common operations
     struct mock_response {
         int status_code = 200;
@@ -48,6 +49,7 @@ public:
         const std::map<std::string, std::string>& /*query*/,
         const std::map<std::string, std::string>& /*headers*/)
         -> result<gcs_http_response> override {
+        if (fail_transport) return unexpected{error{error_code::connection_failed, "Injected transport failure"}};
         gcs_http_response resp;
 
         if (url.find("/storage/v1/b/") != std::string::npos && url.find("/o/") != std::string::npos) {
@@ -80,6 +82,7 @@ public:
         const std::vector<uint8_t>& /*body*/,
         const std::map<std::string, std::string>& /*headers*/)
         -> result<gcs_http_response> override {
+        if (fail_transport) return unexpected{error{error_code::connection_failed, "Injected transport failure"}};
         gcs_http_response resp;
 
         if (url.find("/upload/storage/v1/b/") != std::string::npos) {
@@ -106,6 +109,7 @@ public:
         const std::string& /*body*/,
         const std::map<std::string, std::string>& /*headers*/)
         -> result<gcs_http_response> override {
+        if (fail_transport) return unexpected{error{error_code::connection_failed, "Injected transport failure"}};
         gcs_http_response resp;
 
         if (url.find("oauth2.googleapis.com/token") != std::string::npos ||
@@ -132,6 +136,7 @@ public:
         const std::string& /*url*/,
         const std::map<std::string, std::string>& /*headers*/)
         -> result<gcs_http_response> override {
+        if (fail_transport) return unexpected{error{error_code::connection_failed, "Injected transport failure"}};
         gcs_http_response resp;
         resp.status_code = delete_response.status_code;
         resp.body = std::vector<uint8_t>(delete_response.body.begin(), delete_response.body.end());
@@ -844,6 +849,56 @@ TEST_F(GcsSpecificFeatureTest, GenerateSignedUrl) {
     }
 }
 #endif
+
+
+TEST_F(GcsStorageOperationTest, HttpFailuresCannotBecomeSuccessfulTransfersOrMissingObjects) {
+    for (int status : {401, 403, 429, 500}) {
+        mock_http_client_->download_response.status_code = status;
+        mock_http_client_->metadata_response.status_code = status;
+        mock_http_client_->delete_response.status_code = status;
+        mock_http_client_->list_response.status_code = status;
+        mock_http_client_->upload_response.status_code = status;
+        mock_http_client_->copy_response.status_code = status;
+        EXPECT_FALSE(storage_->upload("object", std::vector<std::byte>(10)));
+        EXPECT_FALSE(storage_->copy_object("object", "copy"));
+        auto down = storage_->download("object"); ASSERT_FALSE(down); EXPECT_EQ(down.error().code, error_code::internal_error);
+        auto metadata = storage_->get_metadata("object"); EXPECT_FALSE(metadata);
+        EXPECT_FALSE(storage_->exists("object")); EXPECT_FALSE(storage_->delete_object("object"));
+        EXPECT_FALSE(storage_->list_objects());
+        EXPECT_EQ(storage_->get_statistics().download_count, 0);
+    }
+    mock_http_client_->download_response.status_code = 404;
+    mock_http_client_->metadata_response.status_code = 404;
+    auto missing = storage_->download("missing"); ASSERT_FALSE(missing); EXPECT_EQ(missing.error().code, error_code::file_not_found);
+    auto metadata = storage_->get_metadata("missing"); ASSERT_FALSE(metadata); EXPECT_EQ(metadata.error().code, error_code::file_not_found);
+    auto exists = storage_->exists("missing"); ASSERT_TRUE(exists); EXPECT_FALSE(exists.value());
+    mock_http_client_->fail_transport = true;
+    EXPECT_FALSE(storage_->download("object")); EXPECT_FALSE(storage_->get_metadata("object"));
+    EXPECT_FALSE(storage_->exists("object")); EXPECT_FALSE(storage_->delete_object("object"));
+    EXPECT_FALSE(storage_->list_objects());
+    EXPECT_FALSE(storage_->upload("object", std::vector<std::byte>(10)));
+    EXPECT_FALSE(storage_->copy_object("object", "copy"));
+}
+TEST_F(GcsStorageOperationTest, AsyncDownloadFilesPreserveBinaryBodyAndSurfaceDestinationFailures) {
+    auto root = std::filesystem::temp_directory_path() / ("fts-cloud-file-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    struct cleanup { std::filesystem::path path; ~cleanup() { std::error_code ec; std::filesystem::remove_all(path, ec); } } cleanup{root};
+    mock_http_client_->download_response.body = std::string("cloud\0data", 10);
+    auto memory = storage_->download_async("object").get(); ASSERT_TRUE(memory);
+    ASSERT_EQ(memory.value().size(), 10); EXPECT_EQ(memory.value()[5], std::byte{0});
+    auto path = root / "nested/body";
+    auto file = storage_->download_file_async("object", path).get(); ASSERT_TRUE(file);
+    EXPECT_EQ(file.value().bytes_downloaded, 10);
+    std::ifstream input(path, std::ios::binary);
+    std::string bytes{std::istreambuf_iterator<char>{input}, {}};
+    EXPECT_EQ(bytes, mock_http_client_->download_response.body);
+    auto invalid_destination = storage_->download_file("object", root);
+    ASSERT_FALSE(invalid_destination); EXPECT_EQ(invalid_destination.error().code, error_code::file_access_denied);
+    EXPECT_FALSE(storage_->upload_file_async(root / "missing", "missing").get());
+    ASSERT_TRUE(storage_->disconnect());
+    EXPECT_FALSE(storage_->exists("object")); EXPECT_FALSE(storage_->get_metadata("object"));
+    EXPECT_FALSE(storage_->download_file("object", path)); EXPECT_FALSE(storage_->upload_file(path, "object"));
+    EXPECT_FALSE(storage_->create_upload_stream("object")); EXPECT_FALSE(storage_->create_download_stream("object"));
+}
 
 }  // namespace
 }  // namespace kcenon::file_transfer

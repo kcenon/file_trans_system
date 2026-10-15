@@ -54,7 +54,24 @@ TEST_F(PublicReconnectTest, DisabledReconnectDoesNotRetryAfterServerReturns) {
     EXPECT_EQ(client->get_statistics().total_retries,0); EXPECT_FALSE(client->is_connected());
 }
 TEST_F(PublicReconnectTest, AttemptLimitTerminatesWithoutAnotherSequence) {
-    setup(true,3,1ms); ASSERT_TRUE(server->stop()); ASSERT_TRUE(wait(connection_state::disconnected));
+    setup(true,3,1ms);
+    // Stop drains existing sessions before closing the listener. A retry in
+    // that interval can connect successfully and legitimately begin a new
+    // sequence when the draining server closes it. Exercise one unavailable
+    // endpoint sequence by releasing retries only after stop has completed.
+    std::promise<void> stopped;
+    auto ready = stopped.get_future().share();
+    client->on_connection_state_changed([this, ready](auto state) {
+        if (state == connection_state::reconnecting)
+            EXPECT_EQ(ready.wait_for(3s), std::future_status::ready);
+        std::lock_guard lock(mutex); events.push_back(state); cv.notify_all();
+    });
+    auto result = server->stop(); stopped.set_value(); ASSERT_TRUE(result);
+    ASSERT_TRUE(wait(connection_state::disconnected));
+    std::unique_lock lock(mutex);
+    EXPECT_FALSE(cv.wait_for(lock, 30ms, [&] {
+        return std::count(events.begin(), events.end(), connection_state::reconnecting) > 1;
+    }));
     EXPECT_EQ(client->get_statistics().total_retries,3); EXPECT_FALSE(client->is_connected());
 }
 TEST_F(PublicReconnectTest, ExplicitDisconnectCancelsBackoffBeforeAttempt) {

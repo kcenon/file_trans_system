@@ -51,13 +51,12 @@ struct statistics_collector::impl {
     explicit impl(config c) : cfg(std::move(c)) {}
 
     void update_rate_samples() {
+        std::lock_guard<std::mutex> lock(rate_mutex);
         auto now = std::chrono::steady_clock::now();
         auto elapsed_since_sample =
             std::chrono::duration_cast<duration>(now - last_sample_time);
 
         if (elapsed_since_sample >= cfg.rate_sample_interval) {
-            std::lock_guard<std::mutex> lock(rate_mutex);
-
             uint64_t current_bytes = bytes_transferred.load();
             rate_samples.push_back({now, current_bytes});
 
@@ -94,6 +93,7 @@ struct statistics_collector::impl {
     }
 
     [[nodiscard]] auto calculate_average_rate() const -> double {
+        std::lock_guard<std::mutex> lock(rate_mutex);
         if (!active.load()) {
             return 0.0;
         }
@@ -143,14 +143,14 @@ auto statistics_collector::operator=(statistics_collector&&) noexcept
 statistics_collector::~statistics_collector() = default;
 
 void statistics_collector::start(uint64_t total_bytes) {
+    std::scoped_lock lock(impl_->rate_mutex, impl_->eta_mutex);
     impl_->total_bytes.store(total_bytes);
     impl_->start_time = std::chrono::steady_clock::now();
     impl_->last_sample_time = impl_->start_time;
     impl_->last_eta_update = impl_->start_time;
     impl_->active.store(true);
 
-    // Initialize with first sample
-    std::lock_guard<std::mutex> lock(impl_->rate_mutex);
+    // Initialize with first sample while both timing domains are locked.
     impl_->rate_samples.clear();
     impl_->rate_samples.push_back({impl_->start_time, 0});
     impl_->last_sample_bytes = 0;
@@ -241,6 +241,7 @@ auto statistics_collector::get_eta() const -> duration {
 }
 
 auto statistics_collector::get_elapsed() const -> duration {
+    std::lock_guard<std::mutex> lock(impl_->rate_mutex);
     if (!impl_->active.load()) {
         return duration{0};
     }

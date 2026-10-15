@@ -37,12 +37,17 @@ def main():
     exported_run = subprocess.run([*command, "-summary-only"], capture_output=True, text=True, check=True)
     exported = json.loads(exported_run.stdout)
     diagnostics = subprocess.run([args.llvm_cov, "report", *command[2:], "-dump"],
-                                 capture_output=True, text=True, check=True)
-    (output / "coverage-report.txt").write_text(diagnostics.stdout)
-    (output / "coverage-diagnostics.log").write_text(diagnostics.stderr)
+                                 capture_output=True, check=True)
+    # Human-readable LLVM diagnostics can contain non-UTF-8 bytes. Preserve
+    # them exactly and escape only for display; the JSON export stays strict.
+    (output / "coverage-diagnostics.raw").write_bytes(diagnostics.stderr)
+    (output / "coverage-report.raw").write_bytes(diagnostics.stdout)
+    diagnostic_text = diagnostics.stderr.decode("utf-8", errors="backslashreplace")
+    (output / "coverage-report.txt").write_text(diagnostics.stdout.decode("utf-8", errors="backslashreplace"))
+    (output / "coverage-diagnostics.log").write_text(diagnostic_text)
     # Unemitted inline definitions have hash zero and correctly contribute zero
     # execution. Any mismatch with a real CFG hash indicates stale/bad profiles.
-    bad_profiles = [line for line in diagnostics.stderr.splitlines()
+    bad_profiles = [line for line in diagnostic_text.splitlines()
                     if "hash-mismatch:" in line and not line.endswith(" = 0x0")]
     inventory = sorted(p.resolve() for folder in ("src", "include")
                        for p in (root / folder).rglob("*") if p.suffix in (".cpp", ".h", ".hpp"))

@@ -470,53 +470,27 @@ auto file_transfer_server::get_quota_manager() const -> const quota_manager& {
 }
 
 auto file_transfer_server::get_quota_usage() const -> quota_usage {
-    if (impl_->quota_mgr) {
-        return impl_->quota_mgr->get_usage();
-    }
-    // Fallback if quota manager not available
+    // Public transfers commit through server_runtime. The standalone quota
+    // component's construction-time scan is not the live service usage.
+    if (!impl_->runtime && impl_->quota_mgr) return impl_->quota_mgr->get_usage();
+    auto storage = get_storage_stats();
     quota_usage usage;
-    std::lock_guard lock(impl_->stats_mutex);
-    usage.total_quota = impl_->storage_statistics.total_capacity;
-    usage.used_bytes = impl_->storage_statistics.used_size;
-    usage.available_bytes = impl_->storage_statistics.available_size;
-    usage.file_count = impl_->storage_statistics.file_count;
-    if (usage.total_quota > 0) {
-        usage.usage_percent = static_cast<double>(usage.used_bytes) /
-                              static_cast<double>(usage.total_quota) * 100.0;
-    }
+    usage.total_quota = storage.total_capacity;
+    usage.used_bytes = storage.used_size;
+    usage.available_bytes = storage.available_size;
+    usage.file_count = storage.file_count;
+    if (usage.total_quota > 0)
+        usage.usage_percent = static_cast<double>(usage.used_bytes) / usage.total_quota * 100.0;
     return usage;
 }
 
 auto file_transfer_server::check_upload_allowed(uint64_t file_size) -> result<void> {
-    if (impl_->quota_mgr) {
-        // Check file size limit
-        auto file_result = impl_->quota_mgr->check_file_size(file_size);
-        if (!file_result.has_value()) {
-            FT_LOG_WARN(log_category::server,
-                "Upload rejected: file too large (" + std::to_string(file_size) + " bytes)");
-            return file_result;
-        }
-
-        // Check quota
-        auto quota_result = impl_->quota_mgr->check_quota(file_size);
-        if (!quota_result.has_value()) {
-            FT_LOG_WARN(log_category::server,
-                "Upload rejected: quota exceeded");
-            return quota_result;
-        }
-    } else {
-        // Fallback check
-        if (impl_->config.max_file_size > 0 && file_size > impl_->config.max_file_size) {
-            return unexpected{error{error_code::file_too_large,
-                                   "File size exceeds maximum allowed"}};
-        }
-        std::lock_guard lock(impl_->stats_mutex);
-        if (impl_->storage_statistics.used_size + file_size >
-            impl_->storage_statistics.total_capacity) {
-            return unexpected{error{error_code::quota_exceeded,
-                                   "Storage quota would be exceeded"}};
-        }
-    }
+    if (impl_->config.max_file_size && file_size > impl_->config.max_file_size)
+        return unexpected{error{error_code::file_too_large, "File size exceeds maximum allowed"}};
+    auto usage = get_quota_usage();
+    if (usage.total_quota && file_size > usage.available_bytes)
+        return unexpected{error{error_code::quota_exceeded, "Storage quota would be exceeded"}};
+    // Advisory snapshot; the runtime reserves concurrent uploads atomically.
     return {};
 }
 

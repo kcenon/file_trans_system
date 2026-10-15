@@ -58,6 +58,8 @@ set(UNIT_TEST_SOURCES
     unit/core/test_resume_handler.cpp
     unit/core/test_bandwidth_limiter.cpp
     unit/core/test_logging.cpp
+    unit/core/test_statistics_collector.cpp
+    unit/core/test_thread_pool_adapters.cpp
     unit/compression/test_compression_engine.cpp
     unit/protocol/test_types.cpp
     unit/state/test_state_management.cpp

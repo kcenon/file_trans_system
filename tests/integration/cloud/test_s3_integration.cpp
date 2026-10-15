@@ -24,6 +24,10 @@
 #include <gtest/gtest.h>
 
 #include "kcenon/file_transfer/cloud/s3_storage.h"
+#include "protocol_peer.h"
+#include <kcenon/file_transfer/server/file_transfer_server.h>
+#include <kcenon/file_transfer/client/file_transfer_client.h>
+#include <kcenon/file_transfer/server/storage_manager.h>
 #include "kcenon/file_transfer/core/checksum.h"
 #if defined(__APPLE__) || defined(__linux__)
 #include <sys/resource.h>
@@ -812,6 +816,72 @@ TEST_F(MinIOIntegrationTest, RangedStreamRejectsObjectReplacement) {
     bytes[0] ^= std::byte{1}; ASSERT_TRUE(storage_->upload(key, bytes));
     auto next = stream->read(buffer); EXPECT_FALSE(next);
     EXPECT_EQ(stream->bytes_read(), buffer.size()); EXPECT_FALSE(stream->read(buffer));
+}
+
+TEST_F(MinIOIntegrationTest, PublicCloudAndHybridServersPersistAndRecoverExactObjectBytes) {
+    auto shared = std::shared_ptr<cloud_storage_interface>(storage_.get(), [](auto*) {});
+    auto source = create_test_file("public-source", 200123);
+    auto expected = checksum::sha256_file(source); ASSERT_TRUE(expected);
+    for (auto mode : {storage_mode::cloud_only, storage_mode::hybrid}) {
+        auto prefix = test_key(std::string(to_string(mode)) + "/");
+        auto local = temp_dir_ / to_string(mode);
+        auto built = file_transfer_server::builder().with_storage_directory(local)
+            .with_storage_mode(mode).with_cloud_storage(shared)
+            .with_cloud_key_prefix(prefix).with_cloud_cache(false).build();
+        ASSERT_TRUE(built) << built.error().message; auto& server = built.value();
+        auto port = test::available_port(); ASSERT_TRUE(server.start({"127.0.0.1", port}));
+        auto client_result = file_transfer_client::builder().build(); ASSERT_TRUE(client_result);
+        auto& client = client_result.value(); ASSERT_TRUE(client.connect({"127.0.0.1", port}));
+        auto up = client.upload_file(source, "object"); ASSERT_TRUE(up);
+        auto uploaded = up.value().wait_for(std::chrono::seconds(10));
+        ASSERT_TRUE(uploaded); ASSERT_TRUE(uploaded.value().success) << uploaded.value().error_message.value_or("");
+        track_upload(prefix + "object");
+        auto remote = storage_->download(prefix + "object"); ASSERT_TRUE(remote);
+        EXPECT_EQ(checksum::sha256(remote.value()), expected.value());
+        if (mode == storage_mode::hybrid) ASSERT_TRUE(std::filesystem::remove(local / "object"));
+        auto listing = client.list_files(); ASSERT_TRUE(listing); ASSERT_EQ(listing.value().size(), 1);
+        EXPECT_EQ(listing.value()[0].filename, "object"); EXPECT_EQ(listing.value()[0].size, 200123);
+        auto destination = temp_dir_ / (std::string(to_string(mode)) + "-download");
+        auto down = client.download_file("object", destination); ASSERT_TRUE(down);
+        auto downloaded = down.value().wait_for(std::chrono::seconds(10));
+        ASSERT_TRUE(downloaded); ASSERT_TRUE(downloaded.value().success);
+        EXPECT_EQ(checksum::sha256_file(destination).value(), expected.value());
+        EXPECT_EQ(server.get_quota_usage().used_bytes, 200123);
+        EXPECT_TRUE(client.disconnect()); EXPECT_TRUE(server.stop());
+    }
+    ASSERT_TRUE(storage_->connect());
+}
+
+TEST_F(MinIOIntegrationTest, CloudBackendAsyncFilesMetadataAndPrefixPaginationUseRealS3) {
+    auto shared = std::shared_ptr<cloud_storage_interface>(storage_.get(), [](auto*) {});
+    auto backend = cloud_storage_backend::create_shared(shared, storage_backend_type::cloud_s3, test_prefix_);
+    ASSERT_TRUE(backend); ASSERT_TRUE(backend->connect()); EXPECT_TRUE(backend->is_available());
+    EXPECT_EQ(backend->name(), "cloud_s3");
+    auto data = create_test_data(8193); auto source = create_test_file("backend-source", 20001);
+    store_options options; options.content_type = "application/octet-stream";
+    options.custom_metadata = {{"purpose", "backend-regression"}};
+    std::atomic<unsigned> progress{}; backend->on_progress([&](const auto&) { ++progress; });
+    ASSERT_TRUE(backend->store_async("a", data, options).get()); track_upload(test_key("a"));
+    ASSERT_TRUE(backend->store_file_async("b", source, options).get()); track_upload(test_key("b"));
+    auto fetched = backend->retrieve_async("a").get(); ASSERT_TRUE(fetched); EXPECT_EQ(fetched.value(), data);
+    auto destination = temp_dir_ / "backend-download";
+    auto file = backend->retrieve_file_async("b", destination).get(); ASSERT_TRUE(file);
+    EXPECT_EQ(file.value().bytes_retrieved, 20001);
+    EXPECT_EQ(checksum::sha256_file(source).value(), checksum::sha256_file(destination).value());
+    auto metadata = backend->get_metadata("b"); ASSERT_TRUE(metadata);
+    EXPECT_EQ(metadata.value().key, "b"); EXPECT_EQ(metadata.value().size, 20001);
+    EXPECT_EQ(metadata.value().content_type, "application/octet-stream");
+    list_storage_options page; page.max_results = 1;
+    auto first = backend->list(page); ASSERT_TRUE(first); ASSERT_EQ(first.value().objects.size(), 1);
+    EXPECT_EQ(first.value().objects[0].key, "a"); ASSERT_TRUE(first.value().continuation_token);
+    page.continuation_token = first.value().continuation_token;
+    auto second = backend->list(page); ASSERT_TRUE(second); ASSERT_EQ(second.value().objects.size(), 1);
+    EXPECT_EQ(second.value().objects[0].key, "b"); EXPECT_FALSE(second.value().is_truncated);
+    EXPECT_TRUE(backend->exists("a").value()); EXPECT_TRUE(backend->remove("a")); EXPECT_FALSE(backend->exists("a").value());
+    EXPECT_FALSE(backend->retrieve("a")); EXPECT_FALSE(backend->get_metadata("a"));
+    EXPECT_FALSE(backend->store_file("missing", temp_dir_ / "absent"));
+    EXPECT_TRUE(backend->remove("b")); EXPECT_GT(progress.load(), 0);
+    EXPECT_TRUE(backend->disconnect()); EXPECT_FALSE(backend->is_available());
 }
 
 }  // namespace

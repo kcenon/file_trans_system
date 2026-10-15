@@ -99,7 +99,7 @@ struct thread_system_transfer_adapter::impl {
     std::shared_ptr<kcenon::thread::thread_pool> pool;
     std::string pool_name;
     size_t worker_count{0};
-    stage_tracker tracker;
+    std::shared_ptr<stage_tracker> tracker = std::make_shared<stage_tracker>();
 };
 
 thread_system_transfer_adapter::thread_system_transfer_adapter(
@@ -189,22 +189,24 @@ std::future<void> thread_system_transfer_adapter::submit_delayed(
 
 std::future<void> thread_system_transfer_adapter::submit_to_stage(
     std::function<void()> task, const std::string& stage_name) {
-    pimpl_->tracker.increment(stage_name);
+    pimpl_->tracker->increment(stage_name);
 
     auto promise = std::make_shared<std::promise<void>>();
     auto future = promise->get_future();
 
-    // Capture pimpl_ for stage tracking (raw pointer is safe - adapter outlives tasks)
-    auto* tracker = &pimpl_->tracker;
+    // Stage bookkeeping must outlive this adapter when an external pool owns work.
+    auto tracker = pimpl_->tracker;
     auto wrapped_task = [task = std::move(task), promise, tracker,
                          stage = stage_name]() {
         try {
             task();
-            promise->set_value();
         } catch (...) {
+            tracker->decrement(stage);
             promise->set_exception(std::current_exception());
+            return;
         }
         tracker->decrement(stage);
+        promise->set_value();
     };
 
     auto job = std::make_unique<function_job>(std::move(wrapped_task), "staged_transfer_task");
@@ -231,7 +233,7 @@ size_t thread_system_transfer_adapter::pending_tasks() const {
 
 size_t thread_system_transfer_adapter::pending_tasks(
     const std::string& stage_name) const {
-    return pimpl_->tracker.count(stage_name);
+    return pimpl_->tracker->count(stage_name);
 }
 
 std::shared_ptr<kcenon::thread::thread_pool>
@@ -255,7 +257,7 @@ std::string thread_system_transfer_adapter::pool_name() const {
 struct network_pool_transfer_adapter::impl {
     std::shared_ptr<kcenon::network::integration::thread_pool_interface> pool;
     std::string pool_name;
-    stage_tracker tracker;
+    std::shared_ptr<stage_tracker> tracker = std::make_shared<stage_tracker>();
 };
 
 network_pool_transfer_adapter::network_pool_transfer_adapter(
@@ -296,10 +298,10 @@ std::future<void> network_pool_transfer_adapter::submit_delayed(
 
 std::future<void> network_pool_transfer_adapter::submit_to_stage(
     std::function<void()> task, const std::string& stage_name) {
-    pimpl_->tracker.increment(stage_name);
+    pimpl_->tracker->increment(stage_name);
 
-    // Capture pimpl_ for stage tracking
-    auto* tracker = &pimpl_->tracker;
+    // Keep bookkeeping alive independently of the adapter and underlying pool.
+    auto tracker = pimpl_->tracker;
     auto wrapped_task = [task = std::move(task), tracker, stage = stage_name]() {
         try {
             task();
@@ -327,7 +329,7 @@ size_t network_pool_transfer_adapter::pending_tasks() const {
 
 size_t network_pool_transfer_adapter::pending_tasks(
     const std::string& stage_name) const {
-    return pimpl_->tracker.count(stage_name);
+    return pimpl_->tracker->count(stage_name);
 }
 
 #endif  // KCENON_WITH_NETWORK_SYSTEM
@@ -343,14 +345,14 @@ struct async_transfer_pool::impl {
 };
 
 async_transfer_pool::async_transfer_pool()
-    : pimpl_(std::make_unique<impl>()) {}
+    : pimpl_(std::make_shared<impl>()) {}
 
 async_transfer_pool::~async_transfer_pool() = default;
 
 std::future<void> async_transfer_pool::submit(std::function<void()> task) {
     pimpl_->active_tasks.fetch_add(1, std::memory_order_relaxed);
 
-    auto* pimpl = pimpl_.get();
+    auto pimpl = pimpl_;
     return std::async(std::launch::async,
                       [pimpl, task = std::move(task)]() {
                           try {
@@ -367,7 +369,7 @@ std::future<void> async_transfer_pool::submit_delayed(
     std::function<void()> task, std::chrono::milliseconds delay) {
     pimpl_->active_tasks.fetch_add(1, std::memory_order_relaxed);
 
-    auto* pimpl = pimpl_.get();
+    auto pimpl = pimpl_;
     return std::async(std::launch::async,
                       [pimpl, task = std::move(task), delay]() {
                           std::this_thread::sleep_for(delay);
@@ -386,7 +388,7 @@ std::future<void> async_transfer_pool::submit_to_stage(
     pimpl_->tracker.increment(stage_name);
     pimpl_->active_tasks.fetch_add(1, std::memory_order_relaxed);
 
-    auto* pimpl = pimpl_.get();
+    auto pimpl = pimpl_;
     return std::async(std::launch::async,
                       [pimpl, task = std::move(task), stage = stage_name]() {
                           try {

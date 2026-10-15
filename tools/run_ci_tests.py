@@ -9,7 +9,11 @@ import xml.etree.ElementTree as ET
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--build", type=Path, default=Path("build"))
 parser.add_argument("--artifacts", type=Path, required=True)
+parser.add_argument("--suite-timeout", type=int, default=300,
+                    help="External deadline in seconds per complete unit/integration suite")
 args = parser.parse_args()
+if args.suite_timeout < 1:
+    parser.error("--suite-timeout must be positive")
 build, artifacts = args.build.resolve(), args.artifacts.resolve()
 artifacts.mkdir(parents=True, exist_ok=True)
 # Refuse stale XML after a crash or timeout.
@@ -22,12 +26,13 @@ for name in ("unit", "integration"):
         try:
             run = subprocess.run([str(build / "bin" / ("file_trans_" + name + "_tests")),
                                   "--gtest_output=xml:" + str(report)],
-                                 stdout=output, stderr=subprocess.STDOUT, timeout=300)
+                                 stdout=output, stderr=subprocess.STDOUT, timeout=args.suite_timeout)
             code = run.returncode
         except subprocess.TimeoutExpired:
             code = 124
     cases = ET.parse(report).getroot().findall(".//testcase") if report.exists() else []
     summary = {"suite": name, "tests": len(cases), "exit_code": code,
+               "timeout_seconds": args.suite_timeout,
                "skipped": sum(case.find("skipped") is not None for case in cases),
                "failed": sum(case.find("failure") is not None for case in cases)}
     summaries.append(summary)

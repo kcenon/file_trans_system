@@ -40,7 +40,7 @@ def main():
         current = subprocess.check_output(["git", "-C", str(destination), "rev-parse", "HEAD"], text=True).strip()
         if current != revision:
             raise SystemExit(f"{destination} has another revision; use a separate --workspace")
-        if name in ("network_system", "thread_system"):
+        if name in ("network_system", "thread_system", "logger_system"):
             for patch in sorted((repo / "cmake/patches").glob(name.replace("_", "-") + "-*.patch")):
                 applied = subprocess.run(["git", "-C", str(destination), "apply", "--reverse", "--check", str(patch)], capture_output=True)
                 if applied.returncode:

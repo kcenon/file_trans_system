@@ -1420,7 +1420,11 @@ auto azure_blob_storage::exists(const std::string& key) -> result<bool> {
             "Failed to check blob existence: " + response.error().message}};
     }
 
-    return response.value().status_code == 200;
+    if (response.value().status_code == 200) return true;
+    if (response.value().status_code == 404) return false;
+    impl_->update_error_stats();
+    return unexpected{error{error_code::internal_error,
+        "Blob existence check failed, status: " + std::to_string(response.value().status_code)}};
 #else
     return false;
 #endif
