@@ -235,30 +235,50 @@ inline auto decode_frame(std::span<const uint8_t> data) -> result<frame> {
 // Retain at most one partial frame and extract coalesced frames independently.
 class stream_decoder {
     std::vector<uint8_t> pending_;
+    std::size_t frame_limit_;
 public:
-    auto feed(std::span<const uint8_t> input) -> result<std::vector<std::vector<uint8_t>>> {
-        std::vector<std::vector<uint8_t>> frames;
+    explicit stream_decoder(std::size_t frame_limit = max_payload_size + frame_header::total_overhead)
+        : frame_limit_(frame_limit) {}
+
+    // Deliver each complete frame before reading another one. This lets the
+    // server apply admission without collecting an uncharged vector of frames.
+    template<class Consumer>
+    auto feed_each(std::span<const uint8_t> input, Consumer consume) -> result<void> {
         while (!input.empty()) {
             std::size_t required = frame_header::size;
             if (pending_.size() >= frame_header::size) {
                 reader header{pending_};
                 uint32_t magic{}, length{}; message_type type{};
                 header(magic, type, length);
-                if (magic != protocol_magic || length > max_payload_size || to_string(type) == "UNKNOWN") {
+                required = static_cast<std::size_t>(length) + frame_header::total_overhead;
+                if (magic != protocol_magic || length > max_payload_size ||
+                    required > frame_limit_ || to_string(type) == "UNKNOWN") {
                     pending_.clear();
-                    return unexpected{error{error_code::invalid_configuration, "Invalid FTS stream header"}};
+                    return unexpected{error{error_code::invalid_configuration, "Invalid or oversized FTS stream header"}};
                 }
-                required = length + frame_header::total_overhead;
             }
+            // Reserve the exact advertised size instead of geometrically
+            // growing a partial frame beyond its admission size.
+            if (pending_.capacity() < required) pending_.reserve(required);
             auto take = std::min(input.size(), required - pending_.size());
             pending_.insert(pending_.end(), input.begin(), input.begin() + take);
             input = input.subspan(take);
             if (required > frame_header::size && pending_.size() == required) {
-                auto decoded = decode_frame(pending_);
-                if (!decoded) { pending_.clear(); return unexpected{decoded.error()}; }
-                frames.push_back(std::move(pending_)); pending_.clear();
+                { auto decoded = decode_frame(pending_);
+                  if (!decoded) { pending_.clear(); return unexpected{decoded.error()}; } }
+                auto frame = std::move(pending_); pending_ = {};
+                if (!consume(std::move(frame)))
+                    return unexpected{error{error_code::connection_lost, "Frame admission closed"}};
             }
         }
+        return {};
+    }
+    auto feed(std::span<const uint8_t> input) -> result<std::vector<std::vector<uint8_t>>> {
+        std::vector<std::vector<uint8_t>> frames;
+        auto result = feed_each(input, [&](std::vector<uint8_t>&& frame) {
+            frames.push_back(std::move(frame)); return true;
+        });
+        if (!result) return unexpected{result.error()};
         return frames;
     }
 };

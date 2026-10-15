@@ -45,7 +45,8 @@ struct server_callbacks {
 };
 
 // One ordered control executor owns transfer maps and quota reservations. Disk
-// and pipeline work never blocks the network I/O executor. Downloads are
+// and pipeline work run independently of network I/O. Receive admission may
+// pause that executor until this worker releases capacity. Downloads are
 // acknowledged chunk by chunk, bounding both peers' in-flight buffers.
 class server_runtime : public std::enable_shared_from_this<server_runtime> {
     using session = accepted_transport;
@@ -78,12 +79,14 @@ class server_runtime : public std::enable_shared_from_this<server_runtime> {
     mutable std::mutex stats_mutex_;
     server_statistics stats_{};
     storage_stats storage_stats_{};
-    std::mutex queue_mutex_;
-    std::condition_variable queue_cv_;
+    mutable std::mutex queue_mutex_;
+    std::condition_variable queue_cv_, capacity_cv_;
     std::deque<task> tasks_;
-    std::size_t queued_bytes_{};
+    std::size_t queued_bytes_{}, admitted_frames_{}, peak_bytes_{}, waiting_producers_{}, backpressure_events_{};
+    std::size_t connection_reservations_{};
     bool stopping_{true};
     std::thread worker_;
+    static inline thread_local const server_runtime* current_worker_{};
     std::mutex pipeline_mutex_;
     std::shared_ptr<std::promise<result<pipeline_chunk>>> pipeline_result_;
 
@@ -191,6 +194,7 @@ class server_runtime : public std::enable_shared_from_this<server_runtime> {
         if (it == peers_.end()) return;
         auto info = it->second.info;
         peers_.erase(it);
+        { std::lock_guard lock(queue_mutex_); --connection_reservations_; }
         std::vector<transfer_id> ids;
         for (const auto& [id, op] : operations_) if (op.owner == client) ids.push_back(id);
         for (auto id : ids) finish(id, false, "Client disconnected", true);
@@ -702,62 +706,117 @@ public:
         if (!started) return started;
         stopping_ = false;
         worker_ = std::thread([this] {
+            current_worker_ = this;
             for (;;) {
                 task next;
                 {
                     std::unique_lock lock(queue_mutex_);
                     queue_cv_.wait(lock, [&] { return stopping_ || !tasks_.empty(); });
                     if (stopping_ && tasks_.empty()) break;
-                    next = std::move(tasks_.front()); tasks_.pop_front(); queued_bytes_ -= next.bytes;
+                    next = std::move(tasks_.front()); tasks_.pop_front();
                 }
-                try { next.run(); } catch (const std::exception&) { /* application callbacks cannot terminate the executor */ }
+                try { next.run(); } catch (...) { /* application callbacks cannot terminate the executor */ }
+                // Destroy retained frames before releasing their reservation.
+                next.run = {};
+                if (next.bytes) {
+                    std::lock_guard lock(queue_mutex_);
+                    queued_bytes_ -= next.bytes; --admitted_frames_;
+                    capacity_cv_.notify_all();
+                }
             }
             while (!operations_.empty()) finish(operations_.begin()->first, false, "Server stopped", true);
             while (!peers_.empty()) remove_peer(peers_.begin()->first);
+            current_worker_ = nullptr;
         });
         return {};
     }
-    auto post(std::function<void()> task, std::size_t bytes = 0) -> bool {
+    static constexpr std::size_t receive_budget = 8 * 1024 * 1024;
+    static constexpr std::size_t receive_slots = 256;
+    static constexpr std::size_t max_receive_frame = chunk_config::max_chunk_size + 65536 + 4096;
+    struct receive_snapshot {
+        std::size_t reserved_bytes, admitted_frames, peak_bytes, waiting_producers, backpressure_events;
+    };
+    auto receive_statistics() const -> receive_snapshot {
         std::lock_guard lock(queue_mutex_);
-        if (stopping_ || (bytes && (tasks_.size() >= 256 || bytes > 8 * 1024 * 1024 - queued_bytes_))) return false;
-        tasks_.push_back({std::move(task), bytes}); queued_bytes_ += bytes; queue_cv_.notify_one(); return true;
+        return {queued_bytes_, admitted_frames_, peak_bytes_, waiting_producers_, backpressure_events_};
+    }
+    auto post(std::function<void()> task, std::size_t bytes = 0,
+              const std::atomic<bool>* cancelled = nullptr) -> bool {
+        if (bytes > receive_budget || (bytes && current_worker_ == this)) return false;
+        std::unique_lock lock(queue_mutex_);
+        auto closed = [&] { return stopping_ || (cancelled && cancelled->load()); };
+        auto fits = [&] { return !bytes || (admitted_frames_ < receive_slots && bytes <= receive_budget - queued_bytes_); };
+        if (!closed() && !fits()) {
+            ++backpressure_events_; ++waiting_producers_;
+            capacity_cv_.wait(lock, [&] { return closed() || fits(); });
+            --waiting_producers_;
+        }
+        if (closed()) return false;
+        tasks_.push_back({std::move(task), bytes}); queued_bytes_ += bytes;
+        if (bytes) ++admitted_frames_;
+        peak_bytes_ = std::max(peak_bytes_, queued_bytes_);
+        queue_cv_.notify_one(); return true;
+    }
+    void cancel_admission(const std::shared_ptr<std::atomic<bool>>& cancelled) {
+        std::lock_guard lock(queue_mutex_);
+        cancelled->store(true); capacity_cv_.notify_all();
     }
     void connect(const std::shared_ptr<session>& client) {
+        bool accepted;
+        {
+            std::lock_guard lock(queue_mutex_);
+            accepted = !stopping_ && connection_reservations_ < config_.max_connections;
+            if (accepted) ++connection_reservations_;
+        }
+        // Reserve before installing a decoder or queuing lifecycle work. Pending
+        // connection/disconnection metadata is consequently bounded by 3*N.
+        if (!accepted) {
+            reject(*client, message_type::error, {}, error{error_code::connection_refused, "Connection limit exceeded"});
+            client->close(); return;
+        }
         auto weak = weak_from_this();
         auto session_weak = std::weak_ptr<session>{client};
-        // The dependency reports the same server_id for every session. Capture
-        // the actual session identity rather than using that string as a key.
-        client->on_disconnect([weak, identity = client.get()] {
-            if (auto self = weak.lock()) self->post([self, identity] { self->remove_peer(identity); });
-        });
-        auto decoder = std::make_shared<wire::stream_decoder>();
-        client->on_receive([weak, session_weak, decoder](const std::vector<uint8_t>& data) {
-            auto self = weak.lock(); auto peer = session_weak.lock();
-            if (!self || !peer) return;
-            auto frames = decoder->feed(data);
-            if (!frames) { self->reject(*peer, message_type::error, {}, frames.error()); return; }
-            for (auto& frame : frames.value()) {
-                auto size = frame.size();
-                if (!self->post([self, peer, data = std::move(frame)] { self->serve(peer, data); }, size)) {
-                    self->reject(*peer, message_type::error, {}, error{error_code::storage_full, "Server receive budget exhausted"});
-                    self->post([peer] { peer->close(); }); return;
-                }
+        auto cancelled = std::make_shared<std::atomic<bool>>(false);
+        auto disconnected = std::make_shared<std::atomic<bool>>(false);
+        client->on_disconnect([weak, cancelled, disconnected, identity = client.get()] {
+            if (disconnected->exchange(true)) return;
+            if (auto self = weak.lock()) {
+                self->cancel_admission(cancelled);
+                self->post([self, identity] { self->remove_peer(identity); });
             }
         });
-        post([self = shared_from_this(), client] {
-            if (self->peers_.size() >= self->config_.max_connections) {
-                self->reject(*client, message_type::error, {}, error{error_code::connection_refused, "Connection limit exceeded"});
-                client->close(); return;
+        auto decoder = std::make_shared<wire::stream_decoder>(max_receive_frame);
+        client->on_receive([weak, session_weak, decoder, cancelled](const std::vector<uint8_t>& data) {
+            auto self = weak.lock(); auto peer = session_weak.lock();
+            if (!self || !peer || cancelled->load()) return;
+            auto frames = decoder->feed_each(data, [&](std::vector<uint8_t>&& frame) {
+                // Encoded frame + decoded payload + decoded message/chunk, plus
+                // closure metadata. Pipeline transformation has its own budget.
+                auto bytes = 3 * frame.capacity() + sizeof(task) + 128;
+                return self->post([self, peer, data = std::move(frame)] { self->serve(peer, data); }, bytes, cancelled.get());
+            });
+            if (!frames && !cancelled->load()) {
+                self->cancel_admission(cancelled);
+                self->reject(*peer, message_type::error, {}, frames.error());
+                self->post([peer] { peer->close(); });
+            }
+        });
+        if (!post([self = shared_from_this(), client, cancelled] {
+            if (cancelled->load()) {
+                std::lock_guard lock(self->queue_mutex_); --self->connection_reservations_; return;
             }
             client_info info{client_id{self->next_client_++}, "", 0};
             self->peers_[client.get()] = {client, info};
             { std::lock_guard lock(self->stats_mutex_); self->stats_.active_connections = self->peers_.size(); }
             auto cb = self->snapshot_callbacks().connected;
             if (cb) cb(info);
-        });
+        })) {
+            { std::lock_guard lock(queue_mutex_); --connection_reservations_; }
+            client->close();
+        }
     }
     void stop() {
-        { std::lock_guard lock(queue_mutex_); stopping_ = true; queue_cv_.notify_all(); }
+        { std::lock_guard lock(queue_mutex_); stopping_ = true; queue_cv_.notify_all(); capacity_cv_.notify_all(); }
         if (worker_.joinable() && worker_.get_id() != std::this_thread::get_id()) worker_.join();
         if (pipeline_ && pipeline_->is_running()) (void)pipeline_->stop(true);
         if (storage_) (void)storage_->shutdown();
