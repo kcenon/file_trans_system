@@ -555,6 +555,10 @@ struct file_transfer_client::impl {
     template<class T> auto send(message_type type, const T& message) -> result<void> {
         auto bytes = wire::encode(type, message);
         if (!bytes) return unexpected{bytes.error()};
+        // Initiating an asynchronous socket write must not overlap teardown of
+        // that socket by shutdown, disconnect, or the reconnect worker.
+        std::lock_guard operation(connection_operation_mutex);
+        if (closing) return unexpected{error{error_code::connection_lost, "Client shut down"}};
         auto sent = transport->send(std::as_bytes(std::span{bytes.value()}));
         if (!sent) return unexpected{error{error_code::connection_lost, sent.error().message}};
         return {};
