@@ -348,3 +348,10 @@ endif()
 install(TARGETS ${EXAMPLE_TARGETS}
     RUNTIME DESTINATION bin/examples
 )
+
+# README snippets are synchronized from these compiled sources.
+foreach(example quick_start_server quick_start_client)
+    add_executable(${example} ${example}.cpp)
+    target_link_libraries(${example} PRIVATE kcenon::file_transfer)
+    target_compile_features(${example} PRIVATE cxx_std_20)
+endforeach()

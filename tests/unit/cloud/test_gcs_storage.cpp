@@ -4,8 +4,10 @@
  */
 
 #include <gtest/gtest.h>
+#include <fstream>
 
 #include "kcenon/file_transfer/cloud/gcs_storage.h"
+#include "kcenon/file_transfer/cloud/s3_storage.h"
 
 namespace kcenon::file_transfer {
 namespace {
@@ -18,17 +20,8 @@ namespace {
  * @brief Helper function to create test service account JSON with valid RSA key
  */
 inline std::string create_test_service_account_json() {
-    // Valid 2048-bit RSA private key for testing (not for production use)
-    return R"({
-        "type": "service_account",
-        "project_id": "my-project-id",
-        "private_key_id": "key123",
-        "private_key": "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF8PbnGy0AHB7MxExmUZ8M+cQ8bpy\nHDmNRbZ+/Mc6D3G4rQhE0J0aQMJGZ7qWQVk4BFTrBfF7fZ5PY7M7CsYNl7Q5i1P0\nSdT1xjyWaRVlz3BfhCKz8/4MZEKtfPxJi/VdG8uGGfKG6QXvKsFn/bP2dxQWpRq0\ntXqG1q3o8IZNxT4xmQqhN1xJ7K8qREeoHxVj8nE1QqGYXLQjP+b0z8v6T6Y2NG1i\n3HWLKSyK8QMJEb1P8t8Qnmq9GOPY3vF4WYU5TXjKTRjNwFHmWS8X0F1NMuXPCqNJ\nV6hR0tYR6gHbRMYZ+7B8P5MkZ3C5CvPPt6qy3wIDAQABAoIBAAL0VHLgA8GU1y3/\nJtG+7hkQGNqFRPMPuOEmYKLJWvt8EGUq4pv5IGIhlQ5HsYlSiMcR3xQwJkP8T1cP\nPelON1kYI4D7k3VjQPrzPYQ5YjGwhoezqBJJL6SAxVQQGCdZaM9AoVq7n6XLIID7\nxhQ9NjLhUFl0lQopBwqDYjAOu4+d5ixjLPFVCrPAQ0YpXprxY+J5G5Q5/3xPGTcQ\njnz4XoRLuGgn1pHXmkxZVHMj5APNQZ6P3+LmE9VWVtPh3JqmihS9DLqN7QoM9FEK\npxtmCt9cV/Q8INYI3LxpNvZPL3q0TZxP3HhvHU+nFP3rMvF8PvfJt5iQpN0qF9Ec\n3S7HEhECgYEA7pZR2vGY0Y8E/P4H8pFAqSAH9cExDUbD1S5HjLLl6QU8UEs8MRdN\nfqM8pfexOT9kJVFlG5e8qJQmqK+5y6m+qNk6hU3vERHNaM4RcQ2qJz3AYzhz0uzn\nkPR/hXsA3nL2I9PqEGGZj3E6LPPJ3XpKr4cPh7L3q5vg7OJzDR6P+3kCgYEA4OB8\nt4+gEu8p5c8QpVxP/zylQJdLY7u5QsPl3+cQ6GWGK9rkF6P8OZHt3cQ8GNvMxAyQ\nh0R0xhQqM0l7vPetE/OEKF+1jc8JaRhBKLq9LXeQEUP+9Sq7hJ7tODhJ5bGikxLu\nhQjH7NyLOFU7N5u0W6jLp4gJHr4XJ3K7R6WuXH8CgYBNwMH3DXBopmX+2yb0xyxP\n0lT3qJQAWuwD3+wF0M0T4w6P8jqKT0v3Q7M3V6o8HJtLw5xP0Y8JfPJKqM3kHnD9\nOqVn2T6o3bE4f9zPMh+T/k4jVLnCbifj/z2q3h3cKHvM7BoWYxKWLZM3+BqPq6Lt\nZq8F+t5pKRz+EVdne4HhsQKBgGiLU0GlMGaFo7bIfOHaKze7QKFP1hK7d3LqQk9h\n0T1J0YfxR1oQ5gPg7XM5D1B0k9c7m1iG6aIqhz7qPJqLVy0gTNpKYFqT1OYo/xo7\ng4JqLXpKXkL9K3x2n2iK5rY2lXxXNJPM/G4rTl6LxKpJ6T8d0I7OifWJGF3g5vN9\nv4HRAoGBALn8qW3o1X3sMi6cH+q4u9/NhEZsT2F7KRd0rQ5nqBKr6z6xLpqEeAQo\nHdLcQ3OVfYT6I8I5Y8JYPQ3hM3qQQxXe5h7c5I4mM2+d8M3f0kvvfj5k9bj6MKQM\nHX8b7HBo0aLfJj7WlQ3I8fvoVz5M5qU8rAQ9PvMh7f5Q2p8mJdWz\n-----END RSA PRIVATE KEY-----\n",
-        "client_email": "test@my-project-id.iam.gserviceaccount.com",
-        "client_id": "123456789",
-        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-        "token_uri": "https://oauth2.googleapis.com/token"
-    })";
+    std::ifstream input(std::filesystem::path(FILE_TRANS_TEST_DATA_DIR) / "gcs_signing/service-account.json");
+    return {std::istreambuf_iterator<char>{input}, {}};
 }
 
 /**
@@ -36,6 +29,7 @@ inline std::string create_test_service_account_json() {
  */
 class mock_gcs_http_client : public gcs_http_client_interface {
 public:
+    bool fail_transport = false;
     // Default responses for common operations
     struct mock_response {
         int status_code = 200;
@@ -56,6 +50,7 @@ public:
         const std::map<std::string, std::string>& /*query*/,
         const std::map<std::string, std::string>& /*headers*/)
         -> result<gcs_http_response> override {
+        if (fail_transport) return unexpected{error{error_code::connection_failed, "Injected transport failure"}};
         gcs_http_response resp;
 
         if (url.find("/storage/v1/b/") != std::string::npos && url.find("/o/") != std::string::npos) {
@@ -88,6 +83,7 @@ public:
         const std::vector<uint8_t>& /*body*/,
         const std::map<std::string, std::string>& /*headers*/)
         -> result<gcs_http_response> override {
+        if (fail_transport) return unexpected{error{error_code::connection_failed, "Injected transport failure"}};
         gcs_http_response resp;
 
         if (url.find("/upload/storage/v1/b/") != std::string::npos) {
@@ -114,6 +110,7 @@ public:
         const std::string& /*body*/,
         const std::map<std::string, std::string>& /*headers*/)
         -> result<gcs_http_response> override {
+        if (fail_transport) return unexpected{error{error_code::connection_failed, "Injected transport failure"}};
         gcs_http_response resp;
 
         if (url.find("oauth2.googleapis.com/token") != std::string::npos ||
@@ -140,6 +137,7 @@ public:
         const std::string& /*url*/,
         const std::map<std::string, std::string>& /*headers*/)
         -> result<gcs_http_response> override {
+        if (fail_transport) return unexpected{error{error_code::connection_failed, "Injected transport failure"}};
         gcs_http_response resp;
         resp.status_code = delete_response.status_code;
         resp.body = std::vector<uint8_t>(delete_response.body.begin(), delete_response.body.end());
@@ -852,6 +850,101 @@ TEST_F(GcsSpecificFeatureTest, GenerateSignedUrl) {
     }
 }
 #endif
+
+
+TEST_F(GcsStorageOperationTest, HttpFailuresCannotBecomeSuccessfulTransfersOrMissingObjects) {
+    for (int status : {401, 403, 429, 500}) {
+        mock_http_client_->download_response.status_code = status;
+        mock_http_client_->metadata_response.status_code = status;
+        mock_http_client_->delete_response.status_code = status;
+        mock_http_client_->list_response.status_code = status;
+        mock_http_client_->upload_response.status_code = status;
+        mock_http_client_->copy_response.status_code = status;
+        EXPECT_FALSE(storage_->upload("object", std::vector<std::byte>(10)));
+        EXPECT_FALSE(storage_->copy_object("object", "copy"));
+        auto down = storage_->download("object"); ASSERT_FALSE(down); EXPECT_EQ(down.error().code, error_code::internal_error);
+        auto metadata = storage_->get_metadata("object"); EXPECT_FALSE(metadata);
+        EXPECT_FALSE(storage_->exists("object")); EXPECT_FALSE(storage_->delete_object("object"));
+        EXPECT_FALSE(storage_->list_objects());
+        EXPECT_EQ(storage_->get_statistics().download_count, 0);
+    }
+    mock_http_client_->download_response.status_code = 404;
+    mock_http_client_->metadata_response.status_code = 404;
+    auto missing = storage_->download("missing"); ASSERT_FALSE(missing); EXPECT_EQ(missing.error().code, error_code::file_not_found);
+    auto metadata = storage_->get_metadata("missing"); ASSERT_FALSE(metadata); EXPECT_EQ(metadata.error().code, error_code::file_not_found);
+    auto exists = storage_->exists("missing"); ASSERT_TRUE(exists); EXPECT_FALSE(exists.value());
+    mock_http_client_->fail_transport = true;
+    EXPECT_FALSE(storage_->download("object")); EXPECT_FALSE(storage_->get_metadata("object"));
+    EXPECT_FALSE(storage_->exists("object")); EXPECT_FALSE(storage_->delete_object("object"));
+    EXPECT_FALSE(storage_->list_objects());
+    EXPECT_FALSE(storage_->upload("object", std::vector<std::byte>(10)));
+    EXPECT_FALSE(storage_->copy_object("object", "copy"));
+}
+TEST_F(GcsStorageOperationTest, AsyncDownloadFilesPreserveBinaryBodyAndSurfaceDestinationFailures) {
+    auto root = std::filesystem::temp_directory_path() / ("fts-cloud-file-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    struct cleanup { std::filesystem::path path; ~cleanup() { std::error_code ec; std::filesystem::remove_all(path, ec); } } cleanup{root};
+    mock_http_client_->download_response.body = std::string("cloud\0data", 10);
+    auto memory = storage_->download_async("object").get(); ASSERT_TRUE(memory);
+    ASSERT_EQ(memory.value().size(), 10); EXPECT_EQ(memory.value()[5], std::byte{0});
+    auto path = root / "nested/body";
+    auto file = storage_->download_file_async("object", path).get(); ASSERT_TRUE(file);
+    EXPECT_EQ(file.value().bytes_downloaded, 10);
+    std::ifstream input(path, std::ios::binary);
+    std::string bytes{std::istreambuf_iterator<char>{input}, {}};
+    EXPECT_EQ(bytes, mock_http_client_->download_response.body);
+    auto invalid_destination = storage_->download_file("object", root);
+    ASSERT_FALSE(invalid_destination); EXPECT_EQ(invalid_destination.error().code, error_code::file_access_denied);
+    EXPECT_FALSE(storage_->upload_file_async(root / "missing", "missing").get());
+    ASSERT_TRUE(storage_->disconnect());
+    EXPECT_FALSE(storage_->exists("object")); EXPECT_FALSE(storage_->get_metadata("object"));
+    EXPECT_FALSE(storage_->download_file("object", path)); EXPECT_FALSE(storage_->upload_file(path, "object"));
+    EXPECT_FALSE(storage_->create_upload_stream("object")); EXPECT_FALSE(storage_->create_download_stream("object"));
+}
+
+TEST(GcsAuthenticationFailureTest, TokenAndCredentialErrorsPreventEveryObjectOperation) {
+    auto config = cloud_config_builder::gcs().with_project_id("fixture").with_bucket("bucket").build_gcs();
+    for (int failure = 0; failure < 5; ++failure) {
+        SCOPED_TRACE(failure);
+        auto client = std::make_shared<mock_gcs_http_client>();
+        gcs_credentials credentials;
+        credentials.service_account_json = failure == 0 ? "{}" : create_test_service_account_json();
+        if (failure == 1) client->token_response.status_code = 401;
+        if (failure == 2) client->token_response.body = R"({"expires_in":3600})";
+        if (failure == 3) client->fail_transport = true;
+        std::shared_ptr<credential_provider> provider = gcs_credential_provider::create(credentials);
+        if (failure == 4) {
+            static_credentials wrong_type; wrong_type.access_key_id = "fixture"; wrong_type.secret_access_key = "fixture";
+            provider = s3_credential_provider::create(wrong_type);
+        }
+        auto storage = gcs_storage::create(config, provider, client); ASSERT_TRUE(storage->connect());
+        EXPECT_FALSE(storage->upload("object", std::vector<std::byte>{std::byte{1}}));
+        EXPECT_FALSE(storage->download("object")); EXPECT_FALSE(storage->delete_object("object"));
+        EXPECT_FALSE(storage->get_metadata("object")); EXPECT_FALSE(storage->exists("object"));
+        EXPECT_FALSE(storage->list_objects()); EXPECT_FALSE(storage->copy_object("object", "copy"));
+        EXPECT_FALSE(storage->compose_objects({"first", "second"}, "object"));
+        EXPECT_EQ(storage->get_statistics().bytes_uploaded, 0);
+        EXPECT_EQ(storage->get_statistics().bytes_downloaded, 0);
+    }
+}
+
+TEST_F(GcsSpecificFeatureTest, ComposeAndDeleteErrorsRetainServiceDiagnostics) {
+    mock_http_client_->compose_response = {503, R"({"message":"fixture compose unavailable"})"};
+    auto composed = storage_->compose_objects({"one", "two"}, "combined"); ASSERT_FALSE(composed);
+    EXPECT_NE(composed.error().message.find("fixture compose unavailable"), std::string::npos);
+    mock_http_client_->delete_response = {403, R"({"message":"fixture delete denied"})"};
+    auto deleted = storage_->delete_object("object"); ASSERT_FALSE(deleted);
+    EXPECT_NE(deleted.error().message.find("fixture delete denied"), std::string::npos);
+    ASSERT_TRUE(storage_->disconnect()); EXPECT_FALSE(storage_->compose_objects({"one"}, "combined"));
+}
+
+TEST_F(GcsStorageOperationTest, ExpiredCachedTokenIsRefreshedAndFailureDoesNotUseTheOldToken) {
+    mock_http_client_->token_response = {200, R"({"access_token":"expired-fixture","expires_in":0})"};
+    ASSERT_TRUE(storage_->get_metadata("object"));
+    mock_http_client_->token_response.status_code = 403;
+    EXPECT_FALSE(storage_->get_metadata("object"));
+    mock_http_client_->token_response = {200, R"({"access_token":"new-fixture","expires_in":"invalid"})"};
+    EXPECT_TRUE(storage_->get_metadata("object"));
+}
 
 }  // namespace
 }  // namespace kcenon::file_transfer

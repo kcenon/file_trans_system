@@ -25,6 +25,7 @@
 #ifdef FILE_TRANS_ENABLE_ENCRYPTION
 #include <openssl/evp.h>
 #include <openssl/pem.h>
+#include <openssl/rsa.h>
 #endif
 
 namespace kcenon::file_transfer {
@@ -146,11 +147,15 @@ auto rsa_sha256_sign(const std::string& data, const std::string& private_key_pem
         return std::nullopt;
     }
 
-    EVP_PKEY* pkey = PEM_read_bio_PrivateKey(bio, nullptr, nullptr, nullptr);
+    EVP_PKEY* pkey = PEM_read_bio_PrivateKey(bio, nullptr,
+        +[](char*, int, int, void*) { return 0; }, nullptr);
     BIO_free(bio);
 
     if (!pkey) {
         return std::nullopt;
+    }
+    if (EVP_PKEY_base_id(pkey) != EVP_PKEY_RSA || EVP_PKEY_bits(pkey) < 2048) {
+        EVP_PKEY_free(pkey); return std::nullopt;
     }
 
     // Create signing context
@@ -163,7 +168,9 @@ auto rsa_sha256_sign(const std::string& data, const std::string& private_key_pem
     std::vector<uint8_t> signature;
     size_t sig_len = 0;
 
-    if (EVP_DigestSignInit(ctx, nullptr, EVP_sha256(), nullptr, pkey) != 1) {
+    EVP_PKEY_CTX* key_context = nullptr;
+    if (EVP_DigestSignInit(ctx, &key_context, EVP_sha256(), nullptr, pkey) != 1 ||
+        EVP_PKEY_CTX_set_rsa_padding(key_context, RSA_PKCS1_PADDING) <= 0) {
         EVP_MD_CTX_free(ctx);
         EVP_PKEY_free(pkey);
         return std::nullopt;
@@ -311,134 +318,85 @@ auto parse_list_response(const std::string& json)
     return {objects, next_page_token};
 }
 
-/**
- * @brief Simple JSON value extraction (regex-free for MSVC compatibility)
- */
-auto extract_json_string(const std::string& json, const std::string& key) -> std::optional<std::string> {
-    // Find "key" in the JSON
-    std::string search_key = "\"" + key + "\"";
-    auto key_pos = json.find(search_key);
-    if (key_pos == std::string::npos) {
-        return std::nullopt;
+// Service-account key documents are flat JSON objects with string values.
+// Parse the complete document, rejecting duplicates, bad escapes and trailing
+// input rather than accepting credential fragments found by substring search.
+auto service_account_fields(std::string_view json) -> std::map<std::string, std::string> {
+    std::size_t position = 0;
+    auto whitespace = [&] { while (position < json.size() && std::string_view(" \t\r\n").find(json[position]) != std::string_view::npos) ++position; };
+    auto character = [&](char expected) {
+        whitespace(); if (position == json.size() || json[position++] != expected) throw std::invalid_argument("Invalid credential JSON");
+    };
+    auto string = [&]() {
+        character('"'); std::string value;
+        auto hex4 = [&] {
+            uint32_t code = 0;
+            for (int i = 0; i < 4; ++i) {
+                if (position == json.size()) throw std::invalid_argument("Invalid Unicode escape");
+                char c = json[position++];
+                int digit = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+                if (digit < 0) throw std::invalid_argument("Invalid Unicode escape");
+                code = code * 16 + digit;
+            }
+            return code;
+        };
+        while (position < json.size()) {
+            auto c = json[position++];
+            if (c == '"') return value;
+            if (static_cast<unsigned char>(c) < 32) throw std::invalid_argument("Control character in credential JSON");
+            if (c != '\\') { value += c; continue; }
+            if (position == json.size()) break;
+            switch (json[position++]) {
+            case '"': value += '"'; break; case '\\': value += '\\'; break; case '/': value += '/'; break;
+            case 'n': value += '\n'; break; case 'r': value += '\r'; break; case 't': value += '\t'; break;
+            case 'b': value += '\b'; break; case 'f': value += '\f'; break;
+            case 'u': {
+                uint32_t code = hex4();
+                if (code >= 0xd800 && code <= 0xdbff) {
+                    if (json.substr(position, 2) != "\\u") throw std::invalid_argument("Missing Unicode surrogate");
+                    position += 2; auto low = hex4();
+                    if (low < 0xdc00 || low > 0xdfff) throw std::invalid_argument("Invalid Unicode surrogate");
+                    code = 0x10000 + ((code - 0xd800) << 10) + low - 0xdc00;
+                } else if (code >= 0xdc00 && code <= 0xdfff) throw std::invalid_argument("Invalid Unicode surrogate");
+                if (code < 0x80) value += static_cast<char>(code);
+                else if (code < 0x800) { value += static_cast<char>(0xc0 | code >> 6); value += static_cast<char>(0x80 | (code & 63)); }
+                else if (code < 0x10000) { value += static_cast<char>(0xe0 | code >> 12); value += static_cast<char>(0x80 | ((code >> 6) & 63)); value += static_cast<char>(0x80 | (code & 63)); }
+                else { value += static_cast<char>(0xf0 | code >> 18); value += static_cast<char>(0x80 | ((code >> 12) & 63)); value += static_cast<char>(0x80 | ((code >> 6) & 63)); value += static_cast<char>(0x80 | (code & 63)); }
+                break;
+            }
+            default: throw std::invalid_argument("Invalid credential JSON escape");
+            }
+        }
+        throw std::invalid_argument("Unterminated credential JSON string");
+    };
+    std::map<std::string, std::string> values;
+    character('{'); whitespace();
+    if (position < json.size() && json[position] != '}') for (;;) {
+        auto key = string(); character(':'); auto value = string();
+        if (!values.emplace(std::move(key), std::move(value)).second) throw std::invalid_argument("Duplicate credential field");
+        whitespace(); if (position < json.size() && json[position] == '}') break;
+        character(',');
     }
-
-    // Skip past the key and any whitespace/colon
-    auto pos = key_pos + search_key.length();
-    while (pos < json.length() && (json[pos] == ' ' || json[pos] == '\t' ||
-                                    json[pos] == '\n' || json[pos] == '\r' ||
-                                    json[pos] == ':')) {
-        ++pos;
-    }
-
-    // Expect opening quote
-    if (pos >= json.length() || json[pos] != '"') {
-        return std::nullopt;
-    }
-    ++pos;  // Skip opening quote
-
-    // Find closing quote (not escaped)
-    std::string value;
-    while (pos < json.length() && json[pos] != '"') {
-        value += json[pos];
-        ++pos;
-    }
-
-    if (pos >= json.length()) {
-        return std::nullopt;
-    }
-
-    return value;
+    character('}'); whitespace(); if (position != json.size()) throw std::invalid_argument("Trailing credential JSON");
+    return values;
 }
 
-/**
- * @brief Parse service account JSON
- */
 struct service_account_info {
-    std::string project_id;
-    std::string private_key_id;
-    std::string private_key;
-    std::string client_email;
-    std::string client_id;
-    std::string token_uri;
+    std::string project_id, private_key_id, private_key, client_email, client_id, token_uri;
     bool valid = false;
 };
-
 auto parse_service_account_json(const std::string& json) -> service_account_info {
     service_account_info info;
-
-    auto project_id = extract_json_string(json, "project_id");
-    auto private_key_id = extract_json_string(json, "private_key_id");
-    auto client_email = extract_json_string(json, "client_email");
-    auto client_id = extract_json_string(json, "client_id");
-    auto token_uri = extract_json_string(json, "token_uri");
-
-    // Extract private_key (may contain escaped newlines) - regex-free for MSVC compatibility
-    std::string pk_search = "\"private_key\"";
-    auto pk_key_pos = json.find(pk_search);
-    if (pk_key_pos != std::string::npos) {
-        // Skip past the key and any whitespace/colon
-        auto pk_pos = pk_key_pos + pk_search.length();
-        while (pk_pos < json.length() && (json[pk_pos] == ' ' || json[pk_pos] == '\t' ||
-                                           json[pk_pos] == '\n' || json[pk_pos] == '\r' ||
-                                           json[pk_pos] == ':')) {
-            ++pk_pos;
-        }
-
-        // Expect opening quote
-        if (pk_pos < json.length() && json[pk_pos] == '"') {
-            ++pk_pos;  // Skip opening quote
-
-            // Extract until closing quote (handling escaped chars)
-            std::string pk;
-            while (pk_pos < json.length()) {
-                if (json[pk_pos] == '\\' && pk_pos + 1 < json.length()) {
-                    // Escape sequence
-                    char next = json[pk_pos + 1];
-                    if (next == '"') {
-                        pk += '"';
-                        pk_pos += 2;
-                    } else if (next == 'n') {
-                        pk += '\n';
-                        pk_pos += 2;
-                    } else if (next == '\\') {
-                        pk += '\\';
-                        pk_pos += 2;
-                    } else if (next == 't') {
-                        pk += '\t';
-                        pk_pos += 2;
-                    } else if (next == 'r') {
-                        pk += '\r';
-                        pk_pos += 2;
-                    } else {
-                        pk += json[pk_pos];
-                        ++pk_pos;
-                    }
-                } else if (json[pk_pos] == '"') {
-                    // End of string
-                    break;
-                } else {
-                    pk += json[pk_pos];
-                    ++pk_pos;
-                }
-            }
-            info.private_key = pk;
-        }
-    }
-
-    if (project_id) info.project_id = *project_id;
-    if (private_key_id) info.private_key_id = *private_key_id;
-    if (client_email) info.client_email = *client_email;
-    if (client_id) info.client_id = *client_id;
-    if (token_uri) info.token_uri = *token_uri;
-
-    info.valid = !info.project_id.empty() &&
-                 !info.private_key.empty() &&
-                 !info.client_email.empty();
-
-    if (info.token_uri.empty()) {
-        info.token_uri = "https://oauth2.googleapis.com/token";
-    }
-
+    try {
+        auto values = service_account_fields(json);
+        info.project_id = values["project_id"]; info.private_key_id = values["private_key_id"];
+        info.private_key = values["private_key"]; info.client_email = values["client_email"];
+        info.client_id = values["client_id"]; info.token_uri = values["token_uri"];
+        info.valid = values["type"] == "service_account" && !info.project_id.empty() && !info.private_key.empty() &&
+            !info.client_email.empty() && info.client_email.find('@') != std::string::npos &&
+            info.client_email.find_first_of(" \t\r\n\0", 0, 5) == std::string::npos;
+        if (info.token_uri.empty()) info.token_uri = "https://oauth2.googleapis.com/token";
+    } catch (const std::exception&) { info.valid = false; }
     return info;
 }
 
@@ -1814,47 +1772,78 @@ auto gcs_storage::get_storage_class(
     return std::string{"STANDARD"};
 }
 
-auto gcs_storage::generate_signed_url(
-    const std::string& key,
-    const presigned_url_options& options) -> result<std::string> {
-    if (!impl_) {
-        return unexpected{error{error_code::not_initialized, "Storage not initialized"}};
-    }
+auto gcs_storage::generate_signed_url(const std::string& key, const presigned_url_options& options) -> result<std::string> {
+    return generate_signed_url(key, options, std::chrono::system_clock::now());
+}
 
+auto gcs_storage::generate_signed_url(const std::string& key, const presigned_url_options& options,
+    std::chrono::system_clock::time_point signing_time) -> result<std::string> {
+    if (!impl_) return unexpected{error{error_code::not_initialized, "Storage not initialized"}};
+    if ((options.method != "GET" && options.method != "PUT") || options.expiration.count() < 1 ||
+        options.expiration.count() > 604800 || key.empty() || key.find('\0') != std::string::npos ||
+        signing_time.time_since_epoch().count() < 0)
+        return unexpected{error{error_code::invalid_configuration, "Signed URLs require GET/PUT, a nonempty key, and expiration of 1..604800 seconds"}};
+    if (impl_->config_.endpoint || options.storage_class || options.server_side_encryption || options.kms_key_id)
+        return unexpected{error{error_code::invalid_configuration, "Custom endpoints and provider-specific storage/encryption options are unsupported for GCS signed URLs"}};
 #ifdef FILE_TRANS_ENABLE_ENCRYPTION
-    auto creds = impl_->credentials_->get_credentials();
-    if (!creds) {
-        return unexpected{error{error_code::internal_error, "Invalid credentials"}};
-    }
-
-    auto gcs_creds = std::dynamic_pointer_cast<const gcs_credentials>(creds);
-    if (!gcs_creds) {
-        return unexpected{error{error_code::internal_error, "Invalid GCS credentials"}};
-    }
-
-    // Generate V4 signed URL
-    auto timestamp = get_unix_timestamp();
-    auto expiration = timestamp + options.expiration.count();
-
-    std::string http_method = (options.method == "PUT") ? "PUT" : "GET";
-    std::string host = "storage.googleapis.com";
-    std::string resource = "/" + impl_->config_.bucket + "/" + key;
-
-    // Canonical request components
-    std::ostringstream signed_url;
-    signed_url << "https://" << host << resource;
-    signed_url << "?X-Goog-Algorithm=GOOG4-RSA-SHA256";
-    signed_url << "&X-Goog-Credential=" << url_encode("placeholder@project.iam.gserviceaccount.com");
-    signed_url << "&X-Goog-Date=" << get_rfc3339_time();
-    signed_url << "&X-Goog-Expires=" << options.expiration.count();
-    signed_url << "&X-Goog-SignedHeaders=host";
-    signed_url << "&X-Goog-Signature=placeholder";
-
-    return signed_url.str();
+    auto credentials = std::dynamic_pointer_cast<const gcs_credentials>(impl_->credentials_->get_credentials());
+    if (!credentials || !credentials->service_account_json)
+        return unexpected{error{error_code::invalid_configuration, "URL signing requires service-account JSON with a local RSA private key"}};
+    auto account = parse_service_account_json(*credentials->service_account_json);
+    if (!account.valid) return unexpected{error{error_code::invalid_configuration, "Malformed service-account signing credentials"}};
+    auto when = std::chrono::system_clock::to_time_t(signing_time); std::tm utc{};
+#ifdef _WIN32
+    if (gmtime_s(&utc, &when) != 0) return unexpected{error{error_code::invalid_configuration, "Invalid signing timestamp"}};
 #else
-    (void)key;
-    (void)options;
-    return unexpected{error{error_code::internal_error, "Encryption support required for signed URL generation"}};
+    if (!gmtime_r(&when, &utc)) return unexpected{error{error_code::invalid_configuration, "Invalid signing timestamp"}};
+#endif
+    std::array<char, 32> timestamp{}; std::strftime(timestamp.data(), timestamp.size(), "%Y%m%dT%H%M%SZ", &utc);
+    std::string time(timestamp.data());
+    const auto scope = time.substr(0, 8) + "/auto/storage/goog4_request";
+    std::map<std::string, std::string> headers{{"host", "storage.googleapis.com"}};
+    auto normalize = [](const std::string& value) -> std::optional<std::string> {
+        std::string result; bool space = false;
+        for (unsigned char c : value) {
+            if (c == ' ' || c == '\t') { space = !result.empty(); continue; }
+            if (c < 32 || c == 127) return std::nullopt;
+            if (space) result += ' '; space = false; result += static_cast<char>(c);
+        }
+        return result;
+    };
+    if (options.content_type) headers["content-type"] = *options.content_type;
+    if (options.content_md5) headers["content-md5"] = *options.content_md5;
+    for (const auto& [key, value] : options.custom_metadata) {
+        auto name = key; std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return std::tolower(c); });
+        if (name.empty() || !std::all_of(name.begin(), name.end(), [](unsigned char c) { return std::isalnum(c) || c == '-'; }) ||
+            !headers.emplace("x-goog-meta-" + name, value).second)
+            return unexpected{error{error_code::invalid_configuration, "Invalid or duplicate metadata header"}};
+    }
+    std::string canonical_headers, signed_headers;
+    for (const auto& [name, raw] : headers) {
+        auto value = normalize(raw);
+        if (!value) return unexpected{error{error_code::invalid_configuration, "Invalid signed header value"}};
+        if (!signed_headers.empty()) signed_headers += ';'; signed_headers += name;
+        canonical_headers += name + ":" + *value + "\n";
+    }
+    std::map<std::string, std::string> query{{"X-Goog-Algorithm", "GOOG4-RSA-SHA256"},
+        {"X-Goog-Credential", account.client_email + "/" + scope}, {"X-Goog-Date", time},
+        {"X-Goog-Expires", std::to_string(options.expiration.count())}, {"X-Goog-SignedHeaders", signed_headers}};
+    if (options.response_content_type) query["response-content-type"] = *options.response_content_type;
+    if (options.response_content_disposition) query["response-content-disposition"] = *options.response_content_disposition;
+    std::string canonical_query;
+    for (const auto& [name, value] : query) {
+        if (!canonical_query.empty()) canonical_query += '&';
+        canonical_query += url_encode(name) + "=" + url_encode(value);
+    }
+    auto path = "/" + url_encode(impl_->config_.bucket) + "/" + url_encode(key, false);
+    auto canonical = options.method + "\n" + path + "\n" + canonical_query + "\n" + canonical_headers +
+        "\n" + signed_headers + "\nUNSIGNED-PAYLOAD";
+    auto to_sign = "GOOG4-RSA-SHA256\n" + time + "\n" + scope + "\n" + bytes_to_hex(sha256(canonical));
+    auto signature = rsa_sha256_sign(to_sign, account.private_key);
+    if (!signature) return unexpected{error{error_code::invalid_configuration, "Unable to sign with the service-account RSA key (2048 bits or greater required)"}};
+    return "https://storage.googleapis.com" + path + "?" + canonical_query + "&X-Goog-Signature=" + bytes_to_hex(*signature);
+#else
+    return unexpected{error{error_code::invalid_configuration, "Encryption support is required for GCS URL signing"}};
 #endif
 }
 

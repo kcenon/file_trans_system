@@ -574,6 +574,11 @@ public:
         storage_backend_type backend_type = storage_backend_type::cloud_s3)
         -> std::unique_ptr<cloud_storage_backend>;
 
+    [[nodiscard]] static auto create_shared(
+        std::shared_ptr<cloud_storage_interface> storage,
+        storage_backend_type backend_type = storage_backend_type::cloud_s3,
+        std::string key_prefix = {}) -> std::unique_ptr<cloud_storage_backend>;
+
     ~cloud_storage_backend();
     cloud_storage_backend(cloud_storage_backend&&) noexcept;
     auto operator=(cloud_storage_backend&&) noexcept -> cloud_storage_backend&;
@@ -640,7 +645,7 @@ public:
 
 private:
     cloud_storage_backend(
-        std::unique_ptr<cloud_storage_interface> storage,
+        std::shared_ptr<cloud_storage_interface> storage,
         storage_backend_type backend_type);
 
     struct impl;

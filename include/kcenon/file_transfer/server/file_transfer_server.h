@@ -45,6 +45,8 @@ public:
     class builder {
     public:
         builder();
+        auto with_checkpoint_directory(std::filesystem::path directory) -> builder&;
+        auto with_transport(transfer_transport_config config) -> builder&;
 
         /**
          * @brief Set storage directory for uploaded files
@@ -80,6 +82,9 @@ public:
          * @return Reference to builder for chaining
          */
         auto with_chunk_size(std::size_t size) -> builder&;
+        auto with_encryption_key(std::span<const std::byte> key) -> builder&;
+        auto with_encryption_password(const std::string& password) -> builder&;
+        auto with_required_encryption(bool required = true) -> builder&;
 
         /**
          * @brief Set storage mode
@@ -175,6 +180,7 @@ public:
      * @return true if running, false otherwise
      */
     [[nodiscard]] auto is_running() const -> bool;
+    [[nodiscard]] auto transport_name() const -> std::string;
 
     /**
      * @brief Get current server state

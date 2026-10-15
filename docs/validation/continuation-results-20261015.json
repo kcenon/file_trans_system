@@ -1,0 +1,635 @@
+{
+  "date": "2026-10-15",
+  "base": "eb50fe2f2956a9daadcd682cc738e7ace884e117",
+  "production_and_test_revision": "d5fbdbe5a78a137a607a4a8f5fceb290b7c5d303",
+  "branch": "implement/issues-176-190-followup",
+  "overall_acceptance": "partial; coverage and TSAN gates still fail",
+  "artifact_root": "/Users/dongcheolshin/Sources/file-trans-system-completion-20261015",
+  "issues": {
+    "176": {
+      "status": "existing_implementation_revalidated_in_full_suites",
+      "earlier_acceptance_mapping": "FOLLOWUP_176_190.md"
+    },
+    "177": {
+      "status": "existing_implementation_revalidated_in_full_suites",
+      "earlier_acceptance_mapping": "FOLLOWUP_176_190.md"
+    },
+    "178": {
+      "status": "existing_implementation_revalidated_in_full_suites",
+      "earlier_acceptance_mapping": "FOLLOWUP_176_190.md"
+    },
+    "179": {
+      "status": "existing_implementation_revalidated_in_full_suites",
+      "earlier_acceptance_mapping": "FOLLOWUP_176_190.md"
+    },
+    "180": {
+      "status": "existing_implementation_revalidated_in_full_suites",
+      "earlier_acceptance_mapping": "FOLLOWUP_176_190.md"
+    },
+    "181": {
+      "status": "existing_implementation_revalidated_in_full_suites",
+      "earlier_acceptance_mapping": "FOLLOWUP_176_190.md"
+    },
+    "182": {
+      "status": "component_validation_passes_live_gcs_unavailable",
+      "earlier_acceptance_mapping": "FOLLOWUP_176_190.md"
+    },
+    "183": {
+      "status": "existing_implementation_revalidated_in_full_suites",
+      "earlier_acceptance_mapping": "FOLLOWUP_176_190.md"
+    },
+    "184": {
+      "status": "session_cache_repaired_quic_dependency_blocker_retained",
+      "earlier_acceptance_mapping": "FOLLOWUP_176_190.md",
+      "new_component_tests": 6,
+      "enabled_quic_rerun": false
+    },
+    "185": {
+      "status": "existing_implementation_revalidated_in_full_suites",
+      "earlier_acceptance_mapping": "FOLLOWUP_176_190.md"
+    },
+    "186": {
+      "status": "existing_implementation_revalidated_in_full_suites",
+      "earlier_acceptance_mapping": "FOLLOWUP_176_190.md"
+    },
+    "187": {
+      "status": "existing_implementation_revalidated_in_full_suites",
+      "earlier_acceptance_mapping": "FOLLOWUP_176_190.md"
+    },
+    "188": {
+      "status": "existing_implementation_revalidated_in_full_suites",
+      "earlier_acceptance_mapping": "FOLLOWUP_176_190.md"
+    },
+    "189": {
+      "status": "partial_quality_gates",
+      "earlier_acceptance_mapping": "FOLLOWUP_176_190.md",
+      "new_unit_tests": 12,
+      "new_integration_tests": 2
+    },
+    "190": {
+      "status": "prior_loopback_measurements_retained",
+      "earlier_acceptance_mapping": "FOLLOWUP_176_190.md",
+      "benchmark_rerun": false,
+      "prior_runs": 44,
+      "remaining": "Dedicated LAN and controlled dedicated-host baseline unavailable"
+    }
+  },
+  "suites": {
+    "debug-final": [
+      {
+        "suite": "unit",
+        "tests": 1076,
+        "exit_code": 0,
+        "timeout_seconds": 600,
+        "skipped": 0,
+        "failed": 0
+      },
+      {
+        "suite": "integration",
+        "tests": 162,
+        "exit_code": 0,
+        "timeout_seconds": 600,
+        "skipped": 0,
+        "failed": 0
+      },
+      {
+        "suite": "process-restart-resume",
+        "exit_code": 0
+      }
+    ],
+    "crypto-off": [
+      {
+        "suite": "unit",
+        "tests": 843,
+        "exit_code": 0,
+        "timeout_seconds": 600,
+        "skipped": 0,
+        "failed": 0
+      },
+      {
+        "suite": "integration",
+        "tests": 146,
+        "exit_code": 0,
+        "timeout_seconds": 600,
+        "skipped": 0,
+        "failed": 0
+      },
+      {
+        "suite": "process-restart-resume",
+        "exit_code": 0
+      }
+    ],
+    "asan": [
+      {
+        "suite": "unit",
+        "tests": 1076,
+        "exit_code": 0,
+        "timeout_seconds": 600,
+        "skipped": 0,
+        "failed": 0
+      },
+      {
+        "suite": "integration",
+        "tests": 162,
+        "exit_code": 0,
+        "timeout_seconds": 600,
+        "skipped": 0,
+        "failed": 0
+      },
+      {
+        "suite": "process-restart-resume",
+        "exit_code": 0
+      }
+    ],
+    "ubsan": [
+      {
+        "suite": "unit",
+        "tests": 1076,
+        "exit_code": 0,
+        "timeout_seconds": 600,
+        "skipped": 0,
+        "failed": 0
+      },
+      {
+        "suite": "integration",
+        "tests": 162,
+        "exit_code": 0,
+        "timeout_seconds": 600,
+        "skipped": 0,
+        "failed": 0
+      },
+      {
+        "suite": "process-restart-resume",
+        "exit_code": 0
+      }
+    ],
+    "tsan": [
+      {
+        "suite": "unit",
+        "tests": 1076,
+        "exit_code": 0,
+        "timeout_seconds": 600,
+        "skipped": 0,
+        "failed": 0
+      },
+      {
+        "suite": "integration",
+        "tests": 162,
+        "exit_code": -6,
+        "timeout_seconds": 600,
+        "skipped": 0,
+        "failed": 0
+      },
+      {
+        "suite": "process-restart-resume",
+        "exit_code": 0
+      }
+    ],
+    "coverage": [
+      {
+        "suite": "unit",
+        "tests": 1076,
+        "exit_code": 0,
+        "timeout_seconds": 600,
+        "skipped": 0,
+        "failed": 0
+      },
+      {
+        "suite": "integration",
+        "tests": 162,
+        "exit_code": 0,
+        "timeout_seconds": 600,
+        "skipped": 0,
+        "failed": 0
+      },
+      {
+        "suite": "process-restart-resume",
+        "exit_code": 0
+      }
+    ]
+  },
+  "coverage": {
+    "denominator": "All emitted executable lines in src/ and include/, across the complete production archive and all test binaries; no project path exclusions",
+    "configuration": "Clang source coverage; encryption/LZ4 enabled; QUIC dependency path disabled",
+    "minimum_percent": 80.0,
+    "covered_lines": 15057,
+    "executable_lines": 20479,
+    "line_coverage_percent": 73.52409785634065,
+    "passed": false,
+    "profiles": 7,
+    "invalid_profile_records": [],
+    "missing_production_translation_units": []
+  },
+  "coverage_gate_exit_code": 1,
+  "tsan": {
+    "warnings": 3,
+    "integration_exit_code": -6,
+    "driver_exit_code": 1,
+    "suppressed": false,
+    "pattern": "Asio socket_ops clear_last_error/get_last_error and config_get accessing Darwin errno; existing standalone reproducer retained",
+    "standalone_reproducer_rerun": false
+  },
+  "minio": {
+    "minio-final": {
+      "minio_revision": "07c3a429bfed433e49018cb0f78a52145d4bedeb",
+      "endpoint": "http://127.0.0.1:62398",
+      "tests": 34,
+      "skipped": 0,
+      "exit_code": 0,
+      "binary": "/private/tmp/fts-minio-validation/minio",
+      "binary_sha256": "c8ab3f23094133ae395d08c1311d91c4dc4639d5f26d3dd60b46c39171dc44b3"
+    },
+    "coverage-minio": {
+      "minio_revision": "07c3a429bfed433e49018cb0f78a52145d4bedeb",
+      "endpoint": "http://127.0.0.1:61037",
+      "tests": 34,
+      "skipped": 0,
+      "exit_code": 0,
+      "binary": "/private/tmp/fts-minio-validation/minio",
+      "binary_sha256": "c8ab3f23094133ae395d08c1311d91c4dc4639d5f26d3dd60b46c39171dc44b3"
+    }
+  },
+  "mutations": [
+    {
+      "mutation": "noop-upload",
+      "exit_code": 1,
+      "failed_tests": [
+        "FileUploadIntegrationTest.UploadSmallFile",
+        "FileListIntegrationTest.ListFilesDefault",
+        "ConcurrentStressTest.NoDataCorruptionUnderConcurrency"
+      ]
+    },
+    {
+      "mutation": "empty-listing",
+      "exit_code": 1,
+      "failed_tests": [
+        "FileListIntegrationTest.ListFilesDefault",
+        "FileListIntegrationTest.ListFilesWithOptions",
+        "FileListIntegrationTest.ListFilesWithPagination"
+      ]
+    },
+    {
+      "mutation": "missing-download-output",
+      "exit_code": 1,
+      "failed_tests": [
+        "FileDownloadIntegrationTest.DownloadToValidPath",
+        "FileDownloadIntegrationTest.DownloadWithOptions",
+        "ConcurrentStressTest.NoDataCorruptionUnderConcurrency"
+      ]
+    }
+  ],
+  "mutation_restoration": {
+    "before_sha256": "69fe0af5fea6a82777c16d3025a0d80649ec64e51245af460a945a0b5f5a7f1e",
+    "after_sha256": "69fe0af5fea6a82777c16d3025a0d80649ec64e51245af460a945a0b5f5a7f1e",
+    "restored": true
+  },
+  "build_and_matrix_commands": [
+    {
+      "name": "crypto-off-build",
+      "command": [
+        "cmake",
+        "--build",
+        "cmake-build-no-crypto",
+        "--parallel",
+        "3"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "asan-build",
+      "command": [
+        "cmake",
+        "--build",
+        "cmake-build-followup-asan",
+        "--parallel",
+        "3"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "ubsan-build",
+      "command": [
+        "cmake",
+        "--build",
+        "cmake-build-followup-ubsan",
+        "--parallel",
+        "3"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "tsan-build",
+      "command": [
+        "cmake",
+        "--build",
+        "cmake-build-followup-tsan",
+        "--parallel",
+        "3"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "coverage-build",
+      "command": [
+        "cmake",
+        "--build",
+        "cmake-build-followup-coverage",
+        "--parallel",
+        "3"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "crypto-off-tests",
+      "command": [
+        "python3",
+        "tools/run_ci_tests.py",
+        "--build",
+        "cmake-build-no-crypto",
+        "--artifacts",
+        "/Users/dongcheolshin/Sources/file-trans-system-completion-20261015/crypto-off",
+        "--suite-timeout",
+        "600"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "asan-tests",
+      "command": [
+        "python3",
+        "tools/run_ci_tests.py",
+        "--build",
+        "cmake-build-followup-asan",
+        "--artifacts",
+        "/Users/dongcheolshin/Sources/file-trans-system-completion-20261015/asan",
+        "--suite-timeout",
+        "600"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "ubsan-tests",
+      "command": [
+        "python3",
+        "tools/run_ci_tests.py",
+        "--build",
+        "cmake-build-followup-ubsan",
+        "--artifacts",
+        "/Users/dongcheolshin/Sources/file-trans-system-completion-20261015/ubsan",
+        "--suite-timeout",
+        "600"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "tsan-tests",
+      "command": [
+        "python3",
+        "tools/run_ci_tests.py",
+        "--build",
+        "cmake-build-followup-tsan",
+        "--artifacts",
+        "/Users/dongcheolshin/Sources/file-trans-system-completion-20261015/tsan",
+        "--suite-timeout",
+        "600"
+      ],
+      "exit_code": 1
+    },
+    {
+      "name": "coverage-tests",
+      "command": [
+        "python3",
+        "tools/run_ci_tests.py",
+        "--build",
+        "cmake-build-followup-coverage",
+        "--artifacts",
+        "/Users/dongcheolshin/Sources/file-trans-system-completion-20261015/coverage",
+        "--suite-timeout",
+        "600"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "coverage-minio",
+      "command": [
+        "python3",
+        "tools/run_minio_tests.py",
+        "--binary",
+        "/tmp/fts-minio-validation/minio",
+        "--test-binary",
+        "cmake-build-followup-coverage/bin/file_trans_cloud_integration_tests",
+        "--artifacts",
+        "/Users/dongcheolshin/Sources/file-trans-system-completion-20261015/coverage-minio"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "coverage-gate",
+      "command": [
+        "python3",
+        "tools/coverage_gate.py",
+        "--build",
+        "cmake-build-followup-coverage",
+        "--output",
+        "/Users/dongcheolshin/Sources/file-trans-system-completion-20261015/coverage-report",
+        "--llvm-cov",
+        "/Library/Developer/CommandLineTools/usr/bin/llvm-cov",
+        "--llvm-profdata",
+        "/Library/Developer/CommandLineTools/usr/bin/llvm-profdata"
+      ],
+      "exit_code": 1
+    }
+  ],
+  "final_check_commands": [
+    {
+      "name": "mutations",
+      "command": [
+        "python3",
+        "tools/check_regression_mutations.py",
+        "--build",
+        "build",
+        "--artifacts",
+        "/Users/dongcheolshin/Sources/file-trans-system-completion-20261015/mutations"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "debug-final",
+      "command": [
+        "python3",
+        "tools/run_ci_tests.py",
+        "--build",
+        "build",
+        "--artifacts",
+        "/Users/dongcheolshin/Sources/file-trans-system-completion-20261015/debug-final",
+        "--suite-timeout",
+        "600"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "minio-final",
+      "command": [
+        "python3",
+        "tools/run_minio_tests.py",
+        "--binary",
+        "/tmp/fts-minio-validation/minio",
+        "--test-binary",
+        "build/bin/file_trans_cloud_integration_tests",
+        "--artifacts",
+        "/Users/dongcheolshin/Sources/file-trans-system-completion-20261015/minio-final"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "quick-start-on",
+      "command": [
+        "python3",
+        "tools/check_quick_start.py",
+        "--build",
+        "build",
+        "--artifacts",
+        "/Users/dongcheolshin/Sources/file-trans-system-completion-20261015/quick-start-on"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "quick-start-off",
+      "command": [
+        "python3",
+        "tools/check_quick_start.py",
+        "--build",
+        "cmake-build-no-crypto",
+        "--artifacts",
+        "/Users/dongcheolshin/Sources/file-trans-system-completion-20261015/quick-start-off"
+      ],
+      "exit_code": 0
+    }
+  ],
+  "instrumentation": {
+    "asan": {
+      "project_translation_units": 35,
+      "all_project_units_instrumented": true,
+      "dependencies": {
+        "thread_system": {
+          "translation_units": 43,
+          "all_instrumented": true,
+          "all_owned_translation_units": 52,
+          "all_owned_units_instrumented": true
+        },
+        "logger_system": {
+          "translation_units": 28,
+          "all_instrumented": true,
+          "all_owned_translation_units": 28,
+          "all_owned_units_instrumented": true
+        },
+        "network_system": {
+          "translation_units": 90,
+          "all_instrumented": true,
+          "all_owned_translation_units": 90,
+          "all_owned_units_instrumented": true
+        }
+      },
+      "all_owned_translation_units": 92,
+      "all_owned_units_instrumented": true
+    },
+    "ubsan": {
+      "project_translation_units": 35,
+      "all_project_units_instrumented": true,
+      "dependencies": {
+        "thread_system": {
+          "translation_units": 43,
+          "all_instrumented": true,
+          "all_owned_translation_units": 52,
+          "all_owned_units_instrumented": true
+        },
+        "logger_system": {
+          "translation_units": 28,
+          "all_instrumented": true,
+          "all_owned_translation_units": 28,
+          "all_owned_units_instrumented": true
+        },
+        "network_system": {
+          "translation_units": 90,
+          "all_instrumented": true,
+          "all_owned_translation_units": 90,
+          "all_owned_units_instrumented": true
+        }
+      },
+      "all_owned_translation_units": 92,
+      "all_owned_units_instrumented": true
+    },
+    "tsan": {
+      "project_translation_units": 35,
+      "all_project_units_instrumented": true,
+      "dependencies": {
+        "thread_system": {
+          "translation_units": 43,
+          "all_instrumented": true,
+          "all_owned_translation_units": 52,
+          "all_owned_units_instrumented": true
+        },
+        "logger_system": {
+          "translation_units": 28,
+          "all_instrumented": true,
+          "all_owned_translation_units": 28,
+          "all_owned_units_instrumented": true
+        },
+        "network_system": {
+          "translation_units": 90,
+          "all_instrumented": true,
+          "all_owned_translation_units": 90,
+          "all_owned_units_instrumented": true
+        }
+      },
+      "all_owned_translation_units": 92,
+      "all_owned_units_instrumented": true
+    }
+  },
+  "dependency_revisions": {
+    "common_system": "6a4caacec91a2ce105fd768ad097227c87bc0e84",
+    "thread_system": "464d892fe73c6750c0122bd464cb01a12da7fafb",
+    "logger_system": "2994aaaa52ebddbef033131e5cd727c70821ab67",
+    "container_system": "c02de926c9e4eb697b261e5ad2e4e2fc082a7cac",
+    "network_system": "52d4947edfea87cbb9d6c51869ab8283a31ace25"
+  },
+  "tested_source_sha256": {
+    "src/server/storage_policy.cpp": "7f31dbdf5e31d9ac9a565c7c5b9ed7d92b57eb84eeee6634f01e15e89d7eeaab",
+    "src/transport/session_resumption.cpp": "8fd7af07f82e52dae5aa73c1e4b6c2cfc77b66ebce45802541af11d7adf8a47b",
+    "src/client/file_transfer_client.cpp": "69fe0af5fea6a82777c16d3025a0d80649ec64e51245af460a945a0b5f5a7f1e",
+    "tests/unit/server/test_storage_policy.cpp": "33d578d02aaeee0e47fb601d35c2bf70b75fb2915c97813881f1d006155e74df",
+    "tests/unit/transport/test_session_resumption.cpp": "73e37ec0b2d3b6aeacf292cd81799b5ea393d1d34f793e599a07445b27405ad3",
+    "tests/integration/test_cloud_http_client.cpp": "60a8a77cdde7e227623a8ad9a0ddc59a763047139625a5e7dde689c4758cca10",
+    "tests/integration/CMakeLists.txt": "9ffeb0635d839ea4cd60bf2714feaa6e787c4229f20ad86956ca396dd21d0d77"
+  },
+  "remaining_acceptance": [
+    "80% whole-production coverage",
+    "Full unsuppressed TSAN gate",
+    "QUIC handshake/traffic secrets/certificate verification/UDP routing",
+    "Live AWS/GCS/Azure qualification",
+    "Dedicated LAN and controlled performance baseline",
+    "Windows and remote CI execution",
+    "Leak freedom"
+  ],
+  "regression_reproduction": {
+    "policy_behavior": {
+      "tests": 5,
+      "failed": 5,
+      "exit_code": 1,
+      "log": "logs/policy-before-0.log"
+    },
+    "policy_callback": {
+      "tests_started": 1,
+      "external_timeout_seconds": 12,
+      "exit_code": 124,
+      "log": "logs/policy-before-1.log"
+    },
+    "session_cache": {
+      "tests": 4,
+      "failed": 4,
+      "exit_code": 1,
+      "log": "logs/session-before.log"
+    }
+  },
+  "build_provenance": "Existing separate instrumented build directories rebuilt; fresh coverage profiles; initial crypto-OFF linker failure corrected by matching the cloud source build condition"
+}

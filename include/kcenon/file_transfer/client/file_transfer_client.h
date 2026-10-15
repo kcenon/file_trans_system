@@ -6,6 +6,7 @@
 #ifndef KCENON_FILE_TRANSFER_CLIENT_FILE_TRANSFER_CLIENT_H
 #define KCENON_FILE_TRANSFER_CLIENT_FILE_TRANSFER_CLIENT_H
 
+#include <kcenon/file_transfer/core/resume_handler.h>
 #include <atomic>
 #include <functional>
 #include <memory>
@@ -44,6 +45,8 @@ public:
     class builder {
     public:
         builder();
+        auto with_checkpoint_directory(std::filesystem::path directory) -> builder&;
+        auto with_transport(transfer_transport_config config) -> builder&;
 
         /**
          * @brief Set compression mode
@@ -94,6 +97,9 @@ public:
          * @return Reference to builder for chaining
          */
         auto with_connect_timeout(std::chrono::milliseconds timeout) -> builder&;
+
+        /// Set the deadline for each transfer protocol response.
+        auto with_transfer_timeout(std::chrono::milliseconds timeout) -> builder&;
 
         /**
          * @brief Set progress callback interval
@@ -165,6 +171,9 @@ public:
      * @return true if connected, false otherwise
      */
     [[nodiscard]] auto is_connected() const -> bool;
+    [[nodiscard]] auto network_bytes() const -> std::pair<uint64_t, uint64_t>;
+    [[nodiscard]] auto transport_name() const -> std::string;
+    [[nodiscard]] auto resumable_transfers() const -> std::vector<transfer_state>;
 
     /**
      * @brief Get current connection state
@@ -483,6 +492,9 @@ public:
 
 private:
     explicit file_transfer_client(client_config config);
+    auto finalize_download_impl(uint64_t handle_id, bool defer_terminal) -> result<void>;
+    auto process_download_chunk_impl(uint64_t handle_id, const chunk& data,
+                                     bool finalize_on_last_chunk) -> result<void>;
 
     struct impl;
     std::unique_ptr<impl> impl_;

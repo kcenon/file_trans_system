@@ -30,6 +30,11 @@ struct tcp_transport::impl {
     mutable std::mutex stats_mutex;
     transport_statistics stats;
 
+    std::mutex connect_mutex;
+    std::condition_variable connect_cv;
+    bool connected = false;
+    std::string connect_error;
+
     // Receive buffer
     mutable std::mutex receive_mutex;
     std::condition_variable receive_cv;
@@ -56,7 +61,8 @@ struct tcp_transport::impl {
 
             // Emit event for connected/disconnected
             if (event_callback) {
-                transport_event_data event_data;
+                if (new_state != transport_state::connected && new_state != transport_state::disconnected && new_state != transport_state::error) return;
+                transport_event_data event_data{};
                 if (new_state == transport_state::connected) {
                     event_data.event = transport_event::connected;
                 } else if (new_state == transport_state::disconnected) {
@@ -94,8 +100,8 @@ tcp_transport::tcp_transport(tcp_transport_config config)
 }
 
 tcp_transport::~tcp_transport() {
-    if (impl_ && is_connected()) {
-        (void)disconnect();
+    if (impl_) {
+        (void)impl_->network_client->stop_client();
     }
 }
 
@@ -118,6 +124,11 @@ auto tcp_transport::connect(const endpoint& remote) -> result<connection_result>
 auto tcp_transport::connect(
     const endpoint& remote,
     std::chrono::milliseconds timeout) -> result<connection_result> {
+    return connect_cancellable(remote,timeout,{});
+}
+
+auto tcp_transport::connect_cancellable(const endpoint& remote, std::chrono::milliseconds timeout,
+    std::stop_token stop) -> result<connection_result> {
 
     if (impl_->current_state == transport_state::connected ||
         impl_->current_state == transport_state::connecting) {
@@ -134,21 +145,19 @@ auto tcp_transport::connect(
     conn_result.remote_address = remote.host;
     conn_result.remote_port = remote.port;
 
-    // Apply configuration
-    // Note: Additional socket options would be configured here
-    (void)timeout;  // timeout handling to be implemented
-
-    auto result = impl_->network_client->start_client(remote.host, remote.port);
-    if (result.is_err()) {
-        impl_->set_state(transport_state::error);
+    { std::lock_guard lock(impl_->connect_mutex); impl_->connected = false; impl_->connect_error.clear(); }
+    impl_->network_client->set_connected_callback([this] {
+        std::lock_guard lock(impl_->connect_mutex); impl_->connected = true; impl_->connect_cv.notify_all();
+    });
+    impl_->network_client->set_disconnected_callback([this] {
+        { std::lock_guard lock(impl_->connect_mutex); impl_->connected = false; impl_->connect_error = "Connection lost"; impl_->connect_cv.notify_all(); }
+        impl_->set_state(transport_state::disconnected); impl_->receive_cv.notify_all();
+    });
+    impl_->network_client->set_error_callback([this](std::error_code ec) {
+        { std::lock_guard lock(impl_->connect_mutex); impl_->connect_error = ec.message(); impl_->connect_cv.notify_all(); }
         impl_->increment_errors();
-        conn_result.success = false;
-        conn_result.error_message = result.error().message;
-        FT_LOG_ERROR(log_category::transfer,
-            "TCP transport connection failed: " + result.error().message);
-        return unexpected{error{error_code::connection_failed,
-            "Connection failed: " + result.error().message}};
-    }
+        if (impl_->event_callback) impl_->event_callback({transport_event::error, ec.message(), {}});
+    });
 
     // Setup receive callback for received data
     impl_->network_client->set_receive_callback(
@@ -157,7 +166,7 @@ auto tcp_transport::connect(
             std::transform(data.begin(), data.end(), byte_data.begin(),
                 [](std::uint8_t b) { return std::byte{b}; });
 
-            {
+            if (!impl_->config.event_delivery_only) {
                 std::lock_guard lock(impl_->receive_mutex);
                 impl_->receive_queue.push(byte_data);
             }
@@ -172,6 +181,18 @@ auto tcp_transport::connect(
             }
         });
 
+    std::stop_callback cancelled(stop,[this] { cancel_pending(); });
+    if (stop.stop_requested()) { impl_->set_state(transport_state::disconnected); return unexpected{error{error_code::connection_failed, "Connection attempt cancelled"}}; }
+    auto started = impl_->network_client->start_client(remote.host, remote.port);
+    if (started.is_err()) { impl_->set_state(transport_state::error); return unexpected{error{error_code::connection_failed, started.error().message}}; }
+    std::unique_lock lock(impl_->connect_mutex);
+    auto ready = impl_->connect_cv.wait_for(lock, timeout, [&] { return impl_->connected || !impl_->connect_error.empty(); });
+    if (!ready || !impl_->connected) {
+        auto message = ready ? impl_->connect_error : "Connection deadline exceeded";
+        lock.unlock(); (void)impl_->network_client->stop_client(); impl_->set_state(transport_state::error);
+        return unexpected{error{ready ? error_code::connection_failed : error_code::connection_timeout, message}};
+    }
+    lock.unlock();
     impl_->remote_ep = remote;
     impl_->set_state(transport_state::connected);
 
@@ -194,10 +215,13 @@ auto tcp_transport::connect_async(const endpoint& remote)
     });
 }
 
+void tcp_transport::cancel_pending() {
+    std::lock_guard lock(impl_->connect_mutex);
+    impl_->connect_error = "Connection attempt cancelled"; impl_->connect_cv.notify_all();
+}
+
 auto tcp_transport::disconnect() -> result<void> {
-    if (impl_->current_state == transport_state::disconnected) {
-        return {};  // Already disconnected
-    }
+    if (!impl_->network_client->is_running()) { impl_->set_state(transport_state::disconnected); return {}; }
 
     FT_LOG_INFO(log_category::transfer, "TCP transport disconnecting");
     impl_->set_state(transport_state::disconnecting);

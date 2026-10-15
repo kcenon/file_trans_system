@@ -32,6 +32,7 @@ option(FILE_TRANS_BUILD_INTEGRATION_TESTS "Build integration tests (requires net
 option(FILE_TRANS_BUILD_EXAMPLES "Build examples" ON)
 option(FILE_TRANS_BUILD_BENCHMARKS "Build benchmarks" OFF)
 option(FILE_TRANS_ENABLE_LZ4 "Enable LZ4 compression" ON)
+option(FILE_TRANS_ENABLE_QUIC "Enable experimental public QUIC (unqualified pinned dependency)" OFF)
 option(FILE_TRANS_ENABLE_ENCRYPTION "Enable encryption support (requires OpenSSL)" ON)
 option(FILE_TRANS_ENABLE_COVERAGE "Enable code coverage" OFF)
 
@@ -141,7 +142,11 @@ function(check_std_jthread_support)
         add_definitions(-DUSE_STD_JTHREAD)
         message(STATUS "✅ Using std::jthread (matches thread_system ABI)")
     else()
-        message(STATUS "Using std::thread fallback (matches thread_system ABI)")
+        message(FATAL_ERROR
+            "file_trans_system requires C++20 std::jthread and std::stop_token. "
+            "Use a compiler and standard library providing these APIs (on macOS, "
+            "Apple Clang 21 / Xcode 26 is validated). Rebuild the pinned sibling "
+            "dependencies with the same toolchain to preserve thread_system ABI.")
     endif()
 endfunction()
 
@@ -149,7 +154,10 @@ check_std_jthread_support()
 
 # Coverage settings
 if(FILE_TRANS_ENABLE_COVERAGE)
-    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        add_compile_options(-fprofile-instr-generate -fcoverage-mapping -fprofile-update=atomic)
+        add_link_options(-fprofile-instr-generate)
+    elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} --coverage -fprofile-arcs -ftest-coverage -fprofile-update=atomic")
         set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} --coverage -fprofile-arcs -ftest-coverage -fprofile-update=atomic")
         set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} --coverage")
@@ -219,6 +227,7 @@ include(FileTransInstall)
 
 find_package(PkgConfig QUIET)
 find_package(Threads REQUIRED)
+find_package(CURL REQUIRED)
 
 find_file_trans_dependencies()
 
@@ -272,6 +281,8 @@ endif()
 set(FILE_TRANS_SOURCES
     src/file_transfer.cpp
     src/core/checksum.cpp
+    src/core/file_commit.cpp
+    src/core/transfer_crypto.cpp
     src/core/chunk_splitter.cpp
     src/core/chunk_assembler.cpp
     src/core/compression_engine.cpp
@@ -290,6 +301,7 @@ set(FILE_TRANS_SOURCES
     src/server/storage_manager.cpp
     src/server/storage_policy.cpp
     src/client/file_transfer_client.cpp
+    src/transport/transfer_listener.cpp
     src/transport/tcp_transport.cpp
     src/transport/quic_transport.cpp
     src/transport/session_resumption.cpp
@@ -310,6 +322,7 @@ if(FILE_TRANS_ENABLE_ENCRYPTION AND OpenSSL_FOUND)
         src/cloud/cloud_utils.cpp
         src/cloud/cloud_http_client.cpp
         src/cloud/s3_storage.cpp
+        src/cloud/http_transport.cpp
         src/cloud/azure_blob_storage.cpp
         src/cloud/gcs_storage.cpp
     )
@@ -339,6 +352,7 @@ target_include_directories(FileTransSystem
 
 # Link threading library
 target_link_libraries(FileTransSystem PUBLIC Threads::Threads)
+target_link_libraries(FileTransSystem PRIVATE CURL::libcurl)
 
 # LZ4 compression
 if(FILE_TRANS_ENABLE_LZ4 AND LZ4_FOUND)
@@ -351,6 +365,10 @@ if(FILE_TRANS_ENABLE_LZ4 AND LZ4_FOUND)
     elseif(LZ4_LIBRARIES)
         target_link_libraries(FileTransSystem PRIVATE ${LZ4_LIBRARIES})
     endif()
+endif()
+
+if(FILE_TRANS_ENABLE_QUIC)
+    target_compile_definitions(FileTransSystem PUBLIC FILE_TRANS_ENABLE_QUIC)
 endif()
 
 # OpenSSL encryption support (compile definitions and includes only)
@@ -422,7 +440,8 @@ if(KCENON_WITH_NETWORK_SYSTEM AND NETWORK_SYSTEM_INCLUDE_DIR)
     # network_system's QUIC transport uses OpenSSL for TLS 1.3
     # Unix linkers (GCC's ld) require libraries to be specified after
     # the objects that reference them for proper symbol resolution
-    if(FILE_TRANS_ENABLE_ENCRYPTION AND OpenSSL_FOUND)
+    find_package(OpenSSL REQUIRED) # Pinned network_system requires TLS even with file encryption disabled
+    if(OpenSSL_FOUND)
         target_link_libraries(FileTransSystem PUBLIC OpenSSL::SSL OpenSSL::Crypto)
     endif()
 endif()
@@ -486,6 +505,11 @@ endif()
 
 if(FILE_TRANS_BUILD_BENCHMARKS)
     add_subdirectory(benchmarks)
+endif()
+
+option(FILE_TRANS_BUILD_TRANSFER_BENCHMARKS "Build separate-process public API benchmark" OFF)
+if(FILE_TRANS_BUILD_TRANSFER_BENCHMARKS)
+    add_subdirectory(benchmarks/public_api)
 endif()
 
 ##################################################

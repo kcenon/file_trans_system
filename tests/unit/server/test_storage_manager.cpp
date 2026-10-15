@@ -175,6 +175,20 @@ TEST_F(StorageManagerTest, LocalBackend_List) {
     EXPECT_EQ(list_result.value().objects.size(), 3);
 }
 
+TEST_F(StorageManagerTest, LocalBackend_ListContinuationIsStableAndExhaustive) {
+    auto backend = local_storage_backend::create(test_dir_);
+    ASSERT_TRUE(backend->connect());
+    for (auto name : {"c", "a", "b"}) ASSERT_TRUE(backend->store(name, create_test_data(10)));
+    list_storage_options options; options.max_results = 2;
+    auto first = backend->list(options); ASSERT_TRUE(first); ASSERT_EQ(first.value().objects.size(), 2);
+    EXPECT_EQ(first.value().objects[0].key, "a"); EXPECT_EQ(first.value().objects[1].key, "b");
+    ASSERT_TRUE(first.value().is_truncated); ASSERT_TRUE(first.value().continuation_token);
+    options.continuation_token = first.value().continuation_token;
+    auto second = backend->list(options); ASSERT_TRUE(second); ASSERT_EQ(second.value().objects.size(), 1);
+    EXPECT_EQ(second.value().objects[0].key, "c"); EXPECT_FALSE(second.value().is_truncated);
+    options.continuation_token = "bad-token"; EXPECT_FALSE(backend->list(options));
+}
+
 TEST_F(StorageManagerTest, LocalBackend_ListWithPrefix) {
     auto backend = local_storage_backend::create(test_dir_);
     ASSERT_NE(backend, nullptr);
@@ -534,6 +548,33 @@ TEST_F(StorageManagerTest, Manager_ChangeTier) {
     // Verify (for local storage, metadata might not track tier)
     auto meta = manager->get_metadata("tier_test.bin");
     ASSERT_TRUE(meta.has_value());
+}
+
+TEST_F(StorageManagerTest, HybridPaginationMergesEveryBackendAndPreservesPrimaryPrecedence) {
+    storage_manager_config config;
+    config.primary_backend = local_storage_backend::create(test_dir_ / "primary");
+    config.secondary_backend = local_storage_backend::create(test_dir_ / "secondary");
+    config.hybrid_storage = true;
+    auto manager = storage_manager::create(config); ASSERT_TRUE(manager->initialize());
+    for (auto name : {"a", "c", "shared"}) ASSERT_TRUE(manager->primary_backend().store(name, create_test_data(11)));
+    for (auto name : {"b", "d", "shared"}) ASSERT_TRUE(manager->secondary_backend()->store(name, create_test_data(22)));
+    list_storage_options options; options.max_results = 2;
+    std::vector<std::string> keys;
+    for (int page = 0; page < 4; ++page) {
+        auto listed = manager->list(options); ASSERT_TRUE(listed);
+        EXPECT_LE(listed.value().objects.size(), 2);
+        for (const auto& object : listed.value().objects) {
+            keys.push_back(object.key);
+            if (object.key == "shared") EXPECT_EQ(object.size, 11);
+        }
+        if (!listed.value().is_truncated) break;
+        ASSERT_TRUE(listed.value().continuation_token);
+        ASSERT_NE(listed.value().continuation_token, options.continuation_token);
+        options.continuation_token = listed.value().continuation_token;
+    }
+    EXPECT_EQ(keys, (std::vector<std::string>{"a", "b", "c", "d", "shared"}));
+    options.continuation_token = "invalid"; EXPECT_FALSE(manager->list(options));
+    EXPECT_TRUE(manager->shutdown());
 }
 
 }  // namespace kcenon::file_transfer::test

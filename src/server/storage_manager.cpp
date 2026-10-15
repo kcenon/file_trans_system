@@ -4,11 +4,14 @@
  */
 
 #include "kcenon/file_transfer/server/storage_manager.h"
+#include "kcenon/file_transfer/core/checksum.h"
 
 #include <algorithm>
 #include <chrono>
 #include <fstream>
 #include <mutex>
+#include <map>
+#include <set>
 #include <shared_mutex>
 
 namespace kcenon::file_transfer {
@@ -391,13 +394,13 @@ auto local_storage_backend::get_metadata(const std::string& key)
     }
 
     auto last_write = std::filesystem::last_write_time(target_path, ec);
-    if (!ec) {
-        auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
-            last_write - std::filesystem::file_time_type::clock::now() +
-            std::chrono::system_clock::now());
-        metadata.last_modified = sctp;
-    }
+    if (ec) return unexpected{error{error_code::file_read_error, ec.message()}};
+    metadata.last_modified = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+        std::filesystem::file_time_type::clock::to_sys(last_write));
 
+    auto hash = checksum::sha256_file(target_path);
+    if (!hash) return unexpected{hash.error()};
+    metadata.content_hash = std::move(hash.value());
     return result<stored_object_metadata>(std::move(metadata));
 }
 
@@ -407,17 +410,17 @@ auto local_storage_backend::list(const list_storage_options& options)
     list_storage_result res;
 
     std::error_code ec;
-    if (!std::filesystem::exists(impl_->base_path, ec) || ec) {
-        return result<list_storage_result>(std::move(res));
-    }
-
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(impl_->base_path, ec)) {
-        if (ec) break;
-
-        if (!entry.is_regular_file(ec) || ec) continue;
+    std::filesystem::recursive_directory_iterator it(impl_->base_path, ec), end;
+    if (ec) return unexpected{error{error_code::file_read_error, "Cannot list storage: " + ec.message()}};
+    for (; it != end; it.increment(ec)) {
+        if (ec) return unexpected{error{error_code::file_read_error, "Cannot enumerate storage: " + ec.message()}};
+        const auto& entry = *it;
+        auto status = entry.symlink_status(ec);
+        if (ec) return unexpected{error{error_code::file_read_error, ec.message()}};
+        if (!std::filesystem::is_regular_file(status)) continue;
 
         auto relative_path = std::filesystem::relative(entry.path(), impl_->base_path, ec);
-        if (ec) continue;
+        if (ec) return unexpected{error{error_code::file_read_error, ec.message()}};
 
         // Use generic_string for cross-platform path handling (forward slashes)
         std::string key = relative_path.generic_string();
@@ -431,25 +434,29 @@ auto local_storage_backend::list(const list_storage_options& options)
         metadata.key = key;
         metadata.backend = storage_backend_type::local;
         metadata.size = entry.file_size(ec);
-
-        if (!ec) {
-            auto last_write = entry.last_write_time(ec);
-            if (!ec) {
-                auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
-                    last_write - std::filesystem::file_time_type::clock::now() +
-                    std::chrono::system_clock::now());
-                metadata.last_modified = sctp;
-            }
-        }
-
+        if (ec) return unexpected{error{error_code::file_read_error, ec.message()}};
+        auto last_write = entry.last_write_time(ec);
+        if (ec) return unexpected{error{error_code::file_read_error, ec.message()}};
+        metadata.last_modified = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+            std::filesystem::file_time_type::clock::to_sys(last_write));
         res.objects.push_back(std::move(metadata));
-
-        if (res.objects.size() >= options.max_results) {
-            res.is_truncated = true;
-            break;
-        }
     }
-
+    if (ec) return unexpected{error{error_code::file_read_error, ec.message()}};
+    std::sort(res.objects.begin(), res.objects.end(), [](const auto& a, const auto& b) { return a.key < b.key; });
+    std::size_t offset = 0;
+    if (options.continuation_token) {
+        try {
+            std::size_t consumed = 0;
+            offset = std::stoull(*options.continuation_token, &consumed);
+            if (consumed != options.continuation_token->size() || options.continuation_token->empty() || options.continuation_token->front() == '-') throw std::invalid_argument("Invalid continuation token");
+        } catch (...) { return unexpected{error{error_code::invalid_configuration, "Invalid continuation token"}}; }
+    }
+    offset = std::min(offset, res.objects.size());
+    auto count = std::min<std::size_t>(options.max_results ? options.max_results : 1000, res.objects.size() - offset);
+    res.is_truncated = offset + count < res.objects.size();
+    if (res.is_truncated) res.continuation_token = std::to_string(offset + count);
+    res.objects.erase(res.objects.begin(), res.objects.begin() + offset);
+    res.objects.resize(count);
     return result<list_storage_result>(std::move(res));
 }
 
@@ -515,14 +522,15 @@ auto local_storage_backend::full_path(const std::string& key) const
 // ============================================================================
 
 struct cloud_storage_backend::impl {
-    std::unique_ptr<cloud_storage_interface> storage;
+    std::shared_ptr<cloud_storage_interface> storage;
+    std::string key_prefix;
     storage_backend_type backend_type;
     std::string backend_name;
 
     mutable std::shared_mutex mutex;
     std::function<void(const storage_progress&)> progress_callback;
 
-    impl(std::unique_ptr<cloud_storage_interface> s, storage_backend_type type)
+    impl(std::shared_ptr<cloud_storage_interface> s, storage_backend_type type)
         : storage(std::move(s)), backend_type(type) {
         switch (type) {
             case storage_backend_type::cloud_s3:
@@ -541,15 +549,14 @@ struct cloud_storage_backend::impl {
     }
 
     void report_progress(const storage_progress& progress) {
-        std::shared_lock lock(mutex);
-        if (progress_callback) {
-            progress_callback(progress);
-        }
+        std::function<void(const storage_progress&)> callback;
+        { std::shared_lock lock(mutex); callback = progress_callback; }
+        if (callback) callback(progress);
     }
 };
 
 cloud_storage_backend::cloud_storage_backend(
-    std::unique_ptr<cloud_storage_interface> storage,
+    std::shared_ptr<cloud_storage_interface> storage,
     storage_backend_type backend_type)
     : impl_(std::make_unique<impl>(std::move(storage), backend_type)) {}
 
@@ -571,6 +578,15 @@ auto cloud_storage_backend::create(
 
 auto cloud_storage_backend::type() const -> storage_backend_type {
     return impl_->backend_type;
+}
+
+auto cloud_storage_backend::create_shared(
+    std::shared_ptr<cloud_storage_interface> storage,
+    storage_backend_type type, std::string prefix) -> std::unique_ptr<cloud_storage_backend> {
+    if (!storage) return nullptr;
+    auto backend = std::unique_ptr<cloud_storage_backend>(new cloud_storage_backend(std::move(storage), type));
+    backend->impl_->key_prefix = std::move(prefix);
+    return backend;
 }
 
 auto cloud_storage_backend::name() const -> std::string_view {
@@ -631,7 +647,7 @@ auto cloud_storage_backend::store(
         cloud_options.metadata.emplace_back(k, v);
     }
 
-    auto upload_result = impl_->storage->upload(key, data, cloud_options);
+    auto upload_result = impl_->storage->upload(impl_->key_prefix + key, data, cloud_options);
     if (!upload_result.has_value()) {
         return unexpected{error{
             error_code::file_write_error,
@@ -650,6 +666,7 @@ auto cloud_storage_backend::store(
     res.etag = upload_result.value().etag;
     res.duration = duration;
 
+    impl_->report_progress({storage_operation::store, key, res.bytes_stored, res.bytes_stored, impl_->backend_type});
     return result<store_result>(std::move(res));
 }
 
@@ -671,7 +688,7 @@ auto cloud_storage_backend::store_file(
         cloud_options.metadata.emplace_back(k, v);
     }
 
-    auto upload_result = impl_->storage->upload_file(file_path, key, cloud_options);
+    auto upload_result = impl_->storage->upload_file(file_path, impl_->key_prefix + key, cloud_options);
     if (!upload_result.has_value()) {
         return unexpected{error{
             error_code::file_write_error,
@@ -690,6 +707,7 @@ auto cloud_storage_backend::store_file(
     res.etag = upload_result.value().etag;
     res.duration = duration;
 
+    impl_->report_progress({storage_operation::store, key, res.bytes_stored, res.bytes_stored, impl_->backend_type});
     return result<store_result>(std::move(res));
 }
 
@@ -697,7 +715,7 @@ auto cloud_storage_backend::retrieve(
     const std::string& key,
     const retrieve_options& /*options*/) -> result<std::vector<std::byte>> {
 
-    auto download_result = impl_->storage->download(key);
+    auto download_result = impl_->storage->download(impl_->key_prefix + key);
     if (!download_result.has_value()) {
         return unexpected{error{
             error_code::file_read_error,
@@ -705,6 +723,8 @@ auto cloud_storage_backend::retrieve(
         }};
     }
 
+    impl_->report_progress({storage_operation::retrieve, key, download_result.value().size(),
+        download_result.value().size(), impl_->backend_type});
     return result<std::vector<std::byte>>(std::move(download_result.value()));
 }
 
@@ -715,7 +735,7 @@ auto cloud_storage_backend::retrieve_file(
 
     auto start_time = std::chrono::steady_clock::now();
 
-    auto download_res = impl_->storage->download_file(key, file_path);
+    auto download_res = impl_->storage->download_file(impl_->key_prefix + key, file_path);
     if (!download_res.has_value()) {
         return unexpected{error{
             error_code::file_read_error,
@@ -734,7 +754,7 @@ auto cloud_storage_backend::retrieve_file(
 
     // Convert cloud metadata to stored object metadata
     const auto& cloud_meta = download_res.value().metadata;
-    res.metadata.key = cloud_meta.key;
+    res.metadata.key = key;
     res.metadata.size = cloud_meta.size;
     res.metadata.last_modified = cloud_meta.last_modified;
     res.metadata.etag = cloud_meta.etag;
@@ -744,11 +764,12 @@ auto cloud_storage_backend::retrieve_file(
         res.metadata.custom_metadata.emplace_back(k, v);
     }
 
+    impl_->report_progress({storage_operation::retrieve, key, res.bytes_retrieved, res.bytes_retrieved, impl_->backend_type});
     return result<retrieve_result>(std::move(res));
 }
 
 auto cloud_storage_backend::remove(const std::string& key) -> result<void> {
-    auto delete_result = impl_->storage->delete_object(key);
+    auto delete_result = impl_->storage->delete_object(impl_->key_prefix + key);
     if (!delete_result.has_value()) {
         return unexpected{error{
             error_code::file_access_denied,
@@ -759,7 +780,7 @@ auto cloud_storage_backend::remove(const std::string& key) -> result<void> {
 }
 
 auto cloud_storage_backend::exists(const std::string& key) -> result<bool> {
-    auto exists_result = impl_->storage->exists(key);
+    auto exists_result = impl_->storage->exists(impl_->key_prefix + key);
     if (!exists_result.has_value()) {
         return unexpected{error{
             error_code::file_read_error,
@@ -772,7 +793,7 @@ auto cloud_storage_backend::exists(const std::string& key) -> result<bool> {
 auto cloud_storage_backend::get_metadata(const std::string& key)
     -> result<stored_object_metadata> {
 
-    auto meta_result = impl_->storage->get_metadata(key);
+    auto meta_result = impl_->storage->get_metadata(impl_->key_prefix + key);
     if (!meta_result.has_value()) {
         return unexpected{error{
             error_code::file_read_error,
@@ -782,7 +803,7 @@ auto cloud_storage_backend::get_metadata(const std::string& key)
 
     const auto& cloud_meta = meta_result.value();
     stored_object_metadata metadata;
-    metadata.key = cloud_meta.key;
+    metadata.key = key;
     metadata.size = cloud_meta.size;
     metadata.last_modified = cloud_meta.last_modified;
     metadata.etag = cloud_meta.etag;
@@ -815,7 +836,7 @@ auto cloud_storage_backend::list(const list_storage_options& options)
     -> result<list_storage_result> {
 
     list_objects_options cloud_options;
-    cloud_options.prefix = options.prefix;
+    cloud_options.prefix = impl_->key_prefix + options.prefix.value_or("");
     cloud_options.max_keys = options.max_results;
     cloud_options.continuation_token = options.continuation_token;
 
@@ -834,7 +855,8 @@ auto cloud_storage_backend::list(const list_storage_options& options)
 
     for (const auto& cloud_meta : list_result.value().objects) {
         stored_object_metadata metadata;
-        metadata.key = cloud_meta.key;
+        if (!cloud_meta.key.starts_with(impl_->key_prefix)) continue;
+        metadata.key = cloud_meta.key.substr(impl_->key_prefix.size());
         metadata.size = cloud_meta.size;
         metadata.last_modified = cloud_meta.last_modified;
         metadata.etag = cloud_meta.etag;
@@ -1001,8 +1023,9 @@ auto storage_manager::initialize() -> result<void> {
     if (impl_->config.secondary_backend) {
         auto secondary_result = impl_->config.secondary_backend->connect();
         if (!secondary_result.has_value()) {
-            // Log warning but don't fail
             impl_->report_error("", secondary_result.error());
+            (void)impl_->config.primary_backend->disconnect();
+            return unexpected{secondary_result.error()};
         }
     }
 
@@ -1054,8 +1077,8 @@ auto storage_manager::store(
     if (impl_->config.replicate_writes && impl_->config.secondary_backend) {
         auto secondary_result = impl_->config.secondary_backend->store(key, data, options);
         if (!secondary_result.has_value()) {
-            // Log error but don't fail the operation
             impl_->report_error(key, secondary_result.error());
+            return unexpected{secondary_result.error()};
         }
     }
 
@@ -1090,6 +1113,7 @@ auto storage_manager::store_file(
             key, file_path, options);
         if (!secondary_result.has_value()) {
             impl_->report_error(key, secondary_result.error());
+            return unexpected{secondary_result.error()};
         }
     }
 
@@ -1247,44 +1271,48 @@ auto storage_manager::list(const list_storage_options& options)
         }};
     }
 
-    // Merge results from both backends if hybrid storage
+    // Backend continuation tokens have different meanings. Enumerate each
+    // backend independently, then paginate the sorted, deduplicated union.
     if (impl_->config.hybrid_storage && impl_->config.secondary_backend) {
-        list_storage_result merged_result;
-        std::unordered_map<std::string, stored_object_metadata> objects_map;
-
-        // Get from primary
-        auto primary_result = impl_->config.primary_backend->list(options);
-        if (primary_result.has_value()) {
-            for (auto& obj : primary_result.value().objects) {
-                objects_map[obj.key] = std::move(obj);
-            }
+        constexpr std::string_view token_prefix = "fts-hybrid:";
+        std::string after;
+        if (options.continuation_token) {
+            if (!options.continuation_token->starts_with(token_prefix))
+                return unexpected{error{error_code::invalid_configuration, "Invalid hybrid continuation token"}};
+            after = options.continuation_token->substr(token_prefix.size());
         }
-
-        // Get from secondary
-        auto secondary_result = impl_->config.secondary_backend->list(options);
-        if (secondary_result.has_value()) {
-            for (auto& obj : secondary_result.value().objects) {
-                if (objects_map.find(obj.key) == objects_map.end()) {
-                    objects_map[obj.key] = std::move(obj);
+        std::map<std::string, stored_object_metadata> objects;
+        for (auto* backend : {impl_->config.primary_backend.get(), impl_->config.secondary_backend.get()}) {
+            if (options.backend_filter && backend->type() != *options.backend_filter) continue;
+            auto page_options = options;
+            page_options.max_results = 1000;
+            page_options.continuation_token.reset();
+            std::set<std::string> seen_tokens;
+            for (;;) {
+                auto page = backend->list(page_options);
+                if (!page) return unexpected{page.error()};
+                for (auto& object : page.value().objects) {
+                    if (options.tier_filter && object.tier != *options.tier_filter) continue;
+                    auto key = object.key;
+                    objects.try_emplace(std::move(key), std::move(object));
                 }
+                if (!page.value().is_truncated) break;
+                auto token = page.value().continuation_token;
+                if (!token || !seen_tokens.insert(*token).second)
+                    return unexpected{error{error_code::invalid_configuration, "Backend listing did not advance"}};
+                page_options.continuation_token = std::move(token);
             }
         }
-
-        for (auto& [_, obj] : objects_map) {
-            merged_result.objects.push_back(std::move(obj));
+        list_storage_result result;
+        result.total_count = objects.size();
+        auto it = options.continuation_token ? objects.upper_bound(after) : objects.begin();
+        auto limit = options.max_results ? options.max_results : 1000;
+        while (it != objects.end() && result.objects.size() < limit) {
+            result.objects.push_back(std::move(it->second)); ++it;
         }
-
-        // Sort by key
-        std::sort(merged_result.objects.begin(), merged_result.objects.end(),
-            [](const auto& a, const auto& b) { return a.key < b.key; });
-
-        // Apply max_results
-        if (merged_result.objects.size() > options.max_results) {
-            merged_result.objects.resize(options.max_results);
-            merged_result.is_truncated = true;
-        }
-
-        return result<list_storage_result>(std::move(merged_result));
+        result.is_truncated = it != objects.end();
+        if (result.is_truncated) result.continuation_token = std::string(token_prefix) + result.objects.back().key;
+        return result;
     }
 
     return impl_->config.primary_backend->list(options);

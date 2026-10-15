@@ -1,0 +1,35 @@
+diff --git a/src/session/messaging_session.cpp b/src/session/messaging_session.cpp
+index 78a0484..d821175 100644
+--- a/src/session/messaging_session.cpp
++++ b/src/session/messaging_session.cpp
+@@ -247,20 +247,18 @@ namespace kcenon::network::session
+ 			pending_messages_.pop_front();
+ 		}
+ 
+-		// Invoke receive callback if set
++		// A receive callback may apply backpressure. Do not hold the callback
++		// registry mutex while it waits: stop_session needs that mutex to notify
++		// disconnect and wake admission, and may run on another executor.
++		std::function<void(const std::vector<uint8_t>&)> receive;
+ 		{
+ 			std::lock_guard<std::mutex> lock(callback_mutex_);
+-			if (receive_callback_)
+-			{
+-				try
+-				{
+-					receive_callback_(message);
+-				}
+-				catch (...)
+-				{
+-					// Silently ignore exceptions - no logging during potential static destruction
+-				}
+-			}
++			receive = receive_callback_;
++		}
++		if (receive)
++		{
++			try { receive(message); }
++			catch (...) { /* callback errors must not escape the I/O executor */ }
+ 		}
+ 
+ 		// If there are more messages, process them asynchronously

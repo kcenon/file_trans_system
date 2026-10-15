@@ -4,6 +4,9 @@
  */
 
 #include <gtest/gtest.h>
+#include <fstream>
+#include <condition_variable>
+#include <set>
 
 #include "kcenon/file_transfer/cloud/azure_blob_storage.h"
 
@@ -19,6 +22,7 @@ namespace {
  */
 class mock_azure_http_client : public azure_http_client_interface {
 public:
+    bool fail_transport = false;
     // Default responses for common operations
     struct mock_response {
         int status_code = 200;
@@ -26,7 +30,7 @@ public:
         std::map<std::string, std::string> headers;
     };
 
-    mock_response put_block_response{201, ""};
+    mock_response put_block_response{201, "", {{"ETag", "\"uploaded-etag\""}}};
     mock_response commit_response{201, "", {{"ETag", "\"test-etag\""}}};
     mock_response delete_response{202, ""};
     mock_response head_response{200, "", {{"Content-Length", "100"}, {"Content-Type", "text/plain"}, {"ETag", "\"abc123\""}}};
@@ -37,6 +41,7 @@ public:
         const std::map<std::string, std::string>& /*query*/,
         const std::map<std::string, std::string>& /*headers*/)
         -> result<azure_http_response> override {
+        if (fail_transport) return unexpected{error{error_code::connection_failed, "Injected transport failure"}};
         azure_http_response resp;
         resp.status_code = get_response.status_code;
         resp.body = std::vector<uint8_t>(get_response.body.begin(), get_response.body.end());
@@ -50,6 +55,7 @@ public:
         const std::string& /*body*/,
         const std::map<std::string, std::string>& /*headers*/)
         -> result<azure_http_response> override {
+        if (fail_transport) return unexpected{error{error_code::connection_failed, "Injected transport failure"}};
         azure_http_response resp;
         if (url.find("comp=blocklist") != std::string::npos) {
             resp.status_code = commit_response.status_code;
@@ -75,6 +81,7 @@ public:
         const std::string& /*url*/,
         const std::map<std::string, std::string>& /*headers*/)
         -> result<azure_http_response> override {
+        if (fail_transport) return unexpected{error{error_code::connection_failed, "Injected transport failure"}};
         azure_http_response resp;
         resp.status_code = delete_response.status_code;
         resp.body = std::vector<uint8_t>(delete_response.body.begin(), delete_response.body.end());
@@ -86,6 +93,7 @@ public:
         const std::string& /*url*/,
         const std::map<std::string, std::string>& /*headers*/)
         -> result<azure_http_response> override {
+        if (fail_transport) return unexpected{error{error_code::connection_failed, "Injected transport failure"}};
         azure_http_response resp;
         resp.status_code = head_response.status_code;
         resp.body = std::vector<uint8_t>(head_response.body.begin(), head_response.body.end());
@@ -97,6 +105,81 @@ public:
 // ============================================================================
 // Azure Blob Credential Provider Tests
 // ============================================================================
+
+class gated_azure_client : public mock_azure_http_client {
+public:
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool released = false;
+    int active = 0, peak = 0, commits = 0;
+    std::multiset<std::string> block_bodies;
+    std::string commit_body;
+    auto put(const std::string& url, const std::string& body,
+             const std::map<std::string, std::string>& headers) -> result<azure_http_response> override {
+        std::unique_lock lock(mutex);
+        if (url.find("comp=blocklist") != std::string::npos) {
+            ++commits; commit_body = body;
+        } else {
+            block_bodies.insert(body); ++active; peak = std::max(peak, active); changed.notify_all();
+            if (!changed.wait_for(lock, std::chrono::seconds(3), [&] { return released; })) {
+                --active;
+                return unexpected{error{error_code::connection_timeout, "Fixture release deadline"}};
+            }
+            --active;
+        }
+        lock.unlock();
+        return mock_azure_http_client::put(url, body, headers);
+    }
+};
+
+TEST(AzureMultipartContractTest, ConcurrencyBoundAndCommitPreserveEveryBlock) {
+    azure_credentials credentials; credentials.account_name = "fixture"; credentials.account_key = "dGVzdA==";
+    auto config = cloud_config_builder::azure_blob().with_account_name("fixture").with_bucket("container").build_azure_blob();
+    config.multipart.part_size = 4; config.multipart.threshold = 1; config.multipart.max_concurrent_parts = 2;
+    auto client = std::make_shared<gated_azure_client>();
+    auto storage = azure_blob_storage::create(config, azure_blob_credential_provider::create(credentials), client);
+    ASSERT_TRUE(storage->connect());
+    auto stream = storage->create_upload_stream("object"); ASSERT_TRUE(stream);
+    const std::string data = "abcdefghijklm";
+    auto write = std::async(std::launch::async, [&] { return stream->write(std::as_bytes(std::span(data))); });
+    {
+        std::unique_lock lock(client->mutex);
+        EXPECT_TRUE(client->changed.wait_for(lock, std::chrono::seconds(2), [&] { return client->active == 2; }));
+        EXPECT_EQ(client->peak, 2); EXPECT_EQ(client->commits, 0);
+        client->released = true; client->changed.notify_all();
+    }
+    auto written = write.get(); ASSERT_TRUE(written); EXPECT_EQ(written.value(), data.size());
+    auto result = stream->finalize(); ASSERT_TRUE(result) << result.error().message;
+    EXPECT_EQ(result.value().bytes_uploaded, data.size()); EXPECT_EQ(result.value().etag, "\"test-etag\"");
+    EXPECT_EQ(client->block_bodies, (std::multiset<std::string>{"abcd", "efgh", "ijkl", "m"}));
+    EXPECT_LE(client->peak, 2); EXPECT_EQ(client->commits, 1);
+    EXPECT_NE(client->commit_body.find("<BlockList>"), std::string::npos);
+    EXPECT_FALSE(stream->finalize()); EXPECT_FALSE(stream->write(std::as_bytes(std::span(data))));
+}
+
+TEST(AzureMultipartContractTest, FailedBlocksOrCommitCannotProduceUploadSuccess) {
+    azure_credentials credentials; credentials.account_name = "fixture"; credentials.account_key = "dGVzdA==";
+    auto config = cloud_config_builder::azure_blob().with_account_name("fixture").with_bucket("container").build_azure_blob();
+    config.multipart.part_size = 4; config.multipart.threshold = 1; config.multipart.max_concurrent_parts = 1;
+    const std::string data = "abcdefghijklm";
+    for (int failure = 0; failure < 3; ++failure) {
+        auto client = std::make_shared<mock_azure_http_client>();
+        if (failure == 0) client->put_block_response.status_code = 503;
+        if (failure == 1) client->commit_response.status_code = 403;
+        if (failure == 2) client->fail_transport = true;
+        auto storage = azure_blob_storage::create(config, azure_blob_credential_provider::create(credentials), client);
+        ASSERT_TRUE(storage->connect());
+        EXPECT_FALSE(storage->upload("object", std::as_bytes(std::span(data))));
+        EXPECT_EQ(storage->get_statistics().bytes_uploaded, 0);
+    }
+    auto client = std::make_shared<mock_azure_http_client>(); client->commit_response.headers.clear();
+    auto storage = azure_blob_storage::create(config, azure_blob_credential_provider::create(credentials), client);
+    ASSERT_TRUE(storage->connect()); auto stream = storage->create_upload_stream("object");
+    ASSERT_TRUE(stream->write(std::as_bytes(std::span(data))));
+    auto result = stream->finalize(); ASSERT_TRUE(result); EXPECT_FALSE(result.value().etag.empty());
+    auto aborted = storage->create_upload_stream("aborted"); ASSERT_TRUE(aborted->abort());
+    EXPECT_FALSE(aborted->write(std::as_bytes(std::span(data)))); EXPECT_FALSE(aborted->finalize());
+}
 
 class AzureBlobCredentialProviderTest : public ::testing::Test {
 protected:
@@ -363,7 +446,7 @@ protected:
             .with_bucket("test-container")
             .build_azure_blob();
 
-        storage_ = azure_blob_storage::create(config, provider_);
+        storage_ = azure_blob_storage::create(config, provider_, std::make_shared<mock_azure_http_client>());
         storage_->connect();
     }
 
@@ -445,7 +528,7 @@ protected:
             .with_bucket("test-container")
             .build_azure_blob();
 
-        storage_ = azure_blob_storage::create(config, provider_);
+        storage_ = azure_blob_storage::create(config, provider_, std::make_shared<mock_azure_http_client>());
         storage_->connect();
     }
 
@@ -839,6 +922,53 @@ TEST_F(AzureBlobObjectOperationsTest, CopyObject) {
     auto result = storage_->copy_object("source/file.bin", "dest/file.bin");
     EXPECT_TRUE(result.has_value());
     EXPECT_EQ(result.value().key, "dest/file.bin");
+}
+
+
+TEST_F(AzureBlobObjectOperationsTest, HttpFailuresCannotBecomeSuccessfulTransfersOrMissingObjects) {
+    for (int status : {401, 403, 429, 500}) {
+        mock_http_client_->get_response.status_code = status;
+        mock_http_client_->head_response.status_code = status;
+        mock_http_client_->delete_response.status_code = status;
+
+        auto down = storage_->download("object"); ASSERT_FALSE(down); EXPECT_EQ(down.error().code, error_code::internal_error);
+        auto metadata = storage_->get_metadata("object"); EXPECT_FALSE(metadata);
+        EXPECT_FALSE(storage_->exists("object")); EXPECT_FALSE(storage_->delete_object("object"));
+        EXPECT_FALSE(storage_->list_objects());
+        EXPECT_EQ(storage_->get_statistics().download_count, 0);
+    }
+    mock_http_client_->get_response.status_code = 404;
+    mock_http_client_->head_response.status_code = 404;
+    auto missing = storage_->download("missing"); ASSERT_FALSE(missing); EXPECT_EQ(missing.error().code, error_code::file_not_found);
+    auto metadata = storage_->get_metadata("missing"); ASSERT_FALSE(metadata); EXPECT_EQ(metadata.error().code, error_code::file_not_found);
+    auto exists = storage_->exists("missing"); ASSERT_TRUE(exists); EXPECT_FALSE(exists.value());
+    mock_http_client_->fail_transport = true;
+    EXPECT_FALSE(storage_->download("object")); EXPECT_FALSE(storage_->get_metadata("object"));
+    EXPECT_FALSE(storage_->exists("object")); EXPECT_FALSE(storage_->delete_object("object"));
+    EXPECT_FALSE(storage_->list_objects());
+    auto stream = storage_->create_upload_stream("failed-block"); ASSERT_TRUE(stream);
+    ASSERT_TRUE(stream->write(std::vector<std::byte>(10))); EXPECT_FALSE(stream->finalize());
+    EXPECT_TRUE(stream->abort()); EXPECT_FALSE(stream->write(std::vector<std::byte>(1)));
+}
+TEST_F(AzureBlobObjectOperationsTest, AsyncDownloadFilesPreserveBinaryBodyAndSurfaceDestinationFailures) {
+    auto root = std::filesystem::temp_directory_path() / ("fts-cloud-file-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    struct cleanup { std::filesystem::path path; ~cleanup() { std::error_code ec; std::filesystem::remove_all(path, ec); } } cleanup{root};
+    mock_http_client_->get_response.body = std::string("cloud\0data", 10);
+    auto memory = storage_->download_async("object").get(); ASSERT_TRUE(memory);
+    ASSERT_EQ(memory.value().size(), 10); EXPECT_EQ(memory.value()[5], std::byte{0});
+    auto path = root / "nested/body";
+    auto file = storage_->download_file_async("object", path).get(); ASSERT_TRUE(file);
+    EXPECT_EQ(file.value().bytes_downloaded, 10);
+    std::ifstream input(path, std::ios::binary);
+    std::string bytes{std::istreambuf_iterator<char>{input}, {}};
+    EXPECT_EQ(bytes, mock_http_client_->get_response.body);
+    auto invalid_destination = storage_->download_file("object", root);
+    ASSERT_FALSE(invalid_destination); EXPECT_EQ(invalid_destination.error().code, error_code::file_access_denied);
+    EXPECT_FALSE(storage_->upload_file_async(root / "missing", "missing").get());
+    ASSERT_TRUE(storage_->disconnect());
+    EXPECT_FALSE(storage_->exists("object")); EXPECT_FALSE(storage_->get_metadata("object"));
+    EXPECT_FALSE(storage_->download_file("object", path)); EXPECT_FALSE(storage_->upload_file(path, "object"));
+    EXPECT_FALSE(storage_->create_upload_stream("object")); EXPECT_FALSE(storage_->create_download_stream("object"));
 }
 
 }  // namespace

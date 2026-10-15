@@ -81,17 +81,15 @@ struct connection_migration_manager::impl {
     }
 
     void emit_event(const migration_event_data& event) {
-        std::lock_guard lock(callback_mutex);
-        if (event_cb) {
-            event_cb(event);
-        }
+        event_callback callback;
+        { std::lock_guard lock(callback_mutex); callback = event_cb; }
+        if (callback) callback(event);
     }
 
     void emit_network_change(const std::vector<network_interface>& interfaces) {
-        std::lock_guard lock(callback_mutex);
-        if (network_cb) {
-            network_cb(interfaces);
-        }
+        network_change_callback callback;
+        { std::lock_guard lock(callback_mutex); callback = network_cb; }
+        if (callback) callback(interfaces);
     }
 
     void update_stats(const migration_result& result) {

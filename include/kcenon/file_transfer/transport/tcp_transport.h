@@ -74,6 +74,8 @@ public:
     [[nodiscard]] auto connect_async(const endpoint& remote)
         -> std::future<result<connection_result>> override;
     [[nodiscard]] auto disconnect() -> result<void> override;
+    void cancel_pending() override;
+    auto connect_cancellable(const endpoint&, std::chrono::milliseconds, std::stop_token) -> result<connection_result> override;
     [[nodiscard]] auto is_connected() const -> bool override;
     [[nodiscard]] auto state() const -> transport_state override;
 

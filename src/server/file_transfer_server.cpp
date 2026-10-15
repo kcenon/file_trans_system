@@ -5,6 +5,8 @@
 
 #include "kcenon/file_transfer/server/file_transfer_server.h"
 #include "kcenon/file_transfer/core/logging.h"
+#include "server_runtime.h"
+#include <kcenon/file_transfer/encryption/transfer_crypto.h>
 
 #include <chrono>
 #include <filesystem>
@@ -20,7 +22,7 @@ struct file_transfer_server::impl {
     std::atomic<server_state> current_state{server_state::stopped};
     uint16_t listen_port{0};
 
-    std::shared_ptr<kcenon::network::core::messaging_server> network_server;
+    std::unique_ptr<transfer_listener> listener;
 
     // Callbacks
     std::function<bool(const upload_request&)> upload_callback;
@@ -29,6 +31,7 @@ struct file_transfer_server::impl {
     std::function<void(const client_info&)> disconnect_callback;
     std::function<void(const transfer_result&)> complete_callback;
     std::function<void(const transfer_progress&)> progress_callback;
+    mutable std::mutex callbacks_mutex;
 
     // Statistics
     mutable std::mutex stats_mutex;
@@ -42,6 +45,13 @@ struct file_transfer_server::impl {
     std::shared_mutex clients_mutex;
     std::unordered_map<uint64_t, client_info> clients;
     std::atomic<uint64_t> next_client_id{1};
+    std::shared_ptr<detail::server_runtime> runtime;
+
+    auto callbacks() const -> detail::server_callbacks {
+        std::lock_guard lock(callbacks_mutex);
+        return {upload_callback, download_callback, connect_callback,
+                disconnect_callback, complete_callback, progress_callback};
+    }
 
     // Helper to log client connection
     void log_client_connected(const client_info& info) {
@@ -122,6 +132,16 @@ auto file_transfer_server::builder::with_chunk_size(std::size_t size) -> builder
     return *this;
 }
 
+auto file_transfer_server::builder::with_encryption_key(std::span<const std::byte> key) -> builder& {
+    config_.encryption_key.assign(key.begin(), key.end()); config_.encryption_password.clear(); config_.enable_encryption = true; return *this;
+}
+auto file_transfer_server::builder::with_encryption_password(const std::string& password) -> builder& {
+    config_.encryption_password = password; config_.encryption_key.clear(); config_.enable_encryption = true; return *this;
+}
+auto file_transfer_server::builder::with_required_encryption(bool required) -> builder& {
+    config_.require_encryption = required; if (required) config_.enable_encryption = true; return *this;
+}
+
 auto file_transfer_server::builder::with_storage_mode(storage_mode mode) -> builder& {
     config_.storage = mode;
     return *this;
@@ -187,7 +207,35 @@ auto file_transfer_server::builder::with_cloud_cache_directory(
     return *this;
 }
 
+auto file_transfer_server::builder::with_checkpoint_directory(std::filesystem::path directory) -> builder& {
+    config_.checkpoint_directory=std::move(directory); return *this;
+}
+
+auto file_transfer_server::builder::with_transport(transfer_transport_config config) -> builder& {
+    config_.transport = std::move(config); return *this;
+}
+
 auto file_transfer_server::builder::build() -> result<file_transfer_server> {
+    if (auto quic = std::get_if<quic_transport_config>(&config_.transport)) {
+#ifndef FILE_TRANS_ENABLE_QUIC
+        return unexpected{error{error_code::invalid_configuration, "QUIC transport is disabled in this build"}};
+#else
+        if (!quic->cert_path || !quic->key_path || quic->cert_path->empty() || quic->key_path->empty())
+            return unexpected{error{error_code::invalid_configuration, "QUIC server requires certificate and key files"}};
+#endif
+    }
+
+    if (config_.enable_encryption || config_.require_encryption) {
+        auto valid = transfer_crypto::validate_secret(config_.encryption_key, config_.encryption_password);
+        if (!valid) return unexpected{valid.error()};
+    }
+    auto chunk_validation = chunk_config{config_.chunk_size}.validate();
+    if (!chunk_validation) return unexpected{chunk_validation.error()};
+    if (config_.cloud_config && config_.cloud_config->credentials) {
+        return unexpected{error{error_code::invalid_configuration,
+            "Configure credentials on the cloud storage instance before with_cloud_storage(); "
+            "the storage interface cannot replace an existing backend's credentials"}};
+    }
     // Validate configuration based on storage mode
     if (!config_.is_valid()) {
         switch (config_.storage) {
@@ -246,8 +294,7 @@ file_transfer_server::file_transfer_server(server_config config)
     // Initialize logger (safe to call multiple times)
     get_logger().initialize();
 
-    impl_->network_server = std::make_shared<kcenon::network::core::messaging_server>(
-        "file_transfer_server");
+    impl_->listener = transfer_listener::create(impl_->config.transport);
 }
 
 file_transfer_server::file_transfer_server(file_transfer_server&&) noexcept = default;
@@ -272,8 +319,25 @@ auto file_transfer_server::start(const endpoint& listen_addr) -> result<void> {
     impl_->current_state = server_state::starting;
     impl_->listen_port = listen_addr.port;
 
-    auto result = impl_->network_server->start_server(listen_addr.port);
-    if (result.is_err()) {
+    auto* owner = impl_.get();
+    impl_->runtime = std::make_shared<detail::server_runtime>(impl_->config,
+        [owner] { return owner->callbacks(); });
+    auto initialized = impl_->runtime->start();
+    if (!initialized) {
+        impl_->runtime->stop();
+        impl_->current_state = server_state::stopped;
+        impl_->listen_port = 0;
+        return initialized;
+    }
+    auto runtime = std::weak_ptr<detail::server_runtime>{impl_->runtime};
+    impl_->listener->on_accept([runtime](auto session) {
+        if (auto active = runtime.lock()) active->connect(session);
+        else session->close();
+    });
+
+    auto result = impl_->listener->start(listen_addr);
+    if (!result) {
+        impl_->runtime->stop();
         impl_->current_state = server_state::stopped;
         FT_LOG_ERROR(log_category::server,
             "Failed to start network server: " + result.error().message);
@@ -297,8 +361,9 @@ auto file_transfer_server::stop() -> result<void> {
     FT_LOG_INFO(log_category::server, "Stopping server");
     impl_->current_state = server_state::stopping;
 
-    auto result = impl_->network_server->stop_server();
-    if (result.is_err()) {
+    if (impl_->runtime) impl_->runtime->stop();
+    auto result = impl_->listener->stop();
+    if (!result) {
         impl_->current_state = server_state::running;
         FT_LOG_ERROR(log_category::server,
             "Failed to stop network server: " + result.error().message);
@@ -311,6 +376,8 @@ auto file_transfer_server::stop() -> result<void> {
     FT_LOG_INFO(log_category::server, "Server stopped");
     return {};
 }
+
+auto file_transfer_server::transport_name() const -> std::string { return impl_->listener->type(); }
 
 auto file_transfer_server::is_running() const -> bool {
     return impl_->current_state == server_state::running;
@@ -327,40 +394,47 @@ auto file_transfer_server::port() const -> uint16_t {
 void file_transfer_server::on_upload_request(
     std::function<bool(const upload_request&)> callback) {
     FT_LOG_DEBUG(log_category::server, "Upload request callback registered");
+    std::lock_guard lock(impl_->callbacks_mutex);
     impl_->upload_callback = std::move(callback);
 }
 
 void file_transfer_server::on_download_request(
     std::function<bool(const download_request&)> callback) {
     FT_LOG_DEBUG(log_category::server, "Download request callback registered");
+    std::lock_guard lock(impl_->callbacks_mutex);
     impl_->download_callback = std::move(callback);
 }
 
 void file_transfer_server::on_client_connected(
     std::function<void(const client_info&)> callback) {
     FT_LOG_DEBUG(log_category::server, "Client connected callback registered");
+    std::lock_guard lock(impl_->callbacks_mutex);
     impl_->connect_callback = std::move(callback);
 }
 
 void file_transfer_server::on_client_disconnected(
     std::function<void(const client_info&)> callback) {
     FT_LOG_DEBUG(log_category::server, "Client disconnected callback registered");
+    std::lock_guard lock(impl_->callbacks_mutex);
     impl_->disconnect_callback = std::move(callback);
 }
 
 void file_transfer_server::on_transfer_complete(
     std::function<void(const transfer_result&)> callback) {
     FT_LOG_DEBUG(log_category::server, "Transfer complete callback registered");
+    std::lock_guard lock(impl_->callbacks_mutex);
     impl_->complete_callback = std::move(callback);
 }
 
 void file_transfer_server::on_progress(
     std::function<void(const transfer_progress&)> callback) {
     FT_LOG_DEBUG(log_category::server, "Progress callback registered");
+    std::lock_guard lock(impl_->callbacks_mutex);
     impl_->progress_callback = std::move(callback);
 }
 
 auto file_transfer_server::get_statistics() const -> server_statistics {
+    if (impl_->runtime) return impl_->runtime->statistics();
     std::lock_guard lock(impl_->stats_mutex);
     auto stats = impl_->statistics;
     std::shared_lock clients_lock(impl_->clients_mutex);
@@ -369,6 +443,7 @@ auto file_transfer_server::get_statistics() const -> server_statistics {
 }
 
 auto file_transfer_server::get_storage_stats() const -> storage_stats {
+    if (impl_->runtime) return impl_->runtime->storage_statistics();
     std::lock_guard lock(impl_->stats_mutex);
     return impl_->storage_statistics;
 }
@@ -395,53 +470,27 @@ auto file_transfer_server::get_quota_manager() const -> const quota_manager& {
 }
 
 auto file_transfer_server::get_quota_usage() const -> quota_usage {
-    if (impl_->quota_mgr) {
-        return impl_->quota_mgr->get_usage();
-    }
-    // Fallback if quota manager not available
+    // Public transfers commit through server_runtime. The standalone quota
+    // component's construction-time scan is not the live service usage.
+    if (!impl_->runtime && impl_->quota_mgr) return impl_->quota_mgr->get_usage();
+    auto storage = get_storage_stats();
     quota_usage usage;
-    std::lock_guard lock(impl_->stats_mutex);
-    usage.total_quota = impl_->storage_statistics.total_capacity;
-    usage.used_bytes = impl_->storage_statistics.used_size;
-    usage.available_bytes = impl_->storage_statistics.available_size;
-    usage.file_count = impl_->storage_statistics.file_count;
-    if (usage.total_quota > 0) {
-        usage.usage_percent = static_cast<double>(usage.used_bytes) /
-                              static_cast<double>(usage.total_quota) * 100.0;
-    }
+    usage.total_quota = storage.total_capacity;
+    usage.used_bytes = storage.used_size;
+    usage.available_bytes = storage.available_size;
+    usage.file_count = storage.file_count;
+    if (usage.total_quota > 0)
+        usage.usage_percent = static_cast<double>(usage.used_bytes) / usage.total_quota * 100.0;
     return usage;
 }
 
 auto file_transfer_server::check_upload_allowed(uint64_t file_size) -> result<void> {
-    if (impl_->quota_mgr) {
-        // Check file size limit
-        auto file_result = impl_->quota_mgr->check_file_size(file_size);
-        if (!file_result.has_value()) {
-            FT_LOG_WARN(log_category::server,
-                "Upload rejected: file too large (" + std::to_string(file_size) + " bytes)");
-            return file_result;
-        }
-
-        // Check quota
-        auto quota_result = impl_->quota_mgr->check_quota(file_size);
-        if (!quota_result.has_value()) {
-            FT_LOG_WARN(log_category::server,
-                "Upload rejected: quota exceeded");
-            return quota_result;
-        }
-    } else {
-        // Fallback check
-        if (impl_->config.max_file_size > 0 && file_size > impl_->config.max_file_size) {
-            return unexpected{error{error_code::file_too_large,
-                                   "File size exceeds maximum allowed"}};
-        }
-        std::lock_guard lock(impl_->stats_mutex);
-        if (impl_->storage_statistics.used_size + file_size >
-            impl_->storage_statistics.total_capacity) {
-            return unexpected{error{error_code::quota_exceeded,
-                                   "Storage quota would be exceeded"}};
-        }
-    }
+    if (impl_->config.max_file_size && file_size > impl_->config.max_file_size)
+        return unexpected{error{error_code::file_too_large, "File size exceeds maximum allowed"}};
+    auto usage = get_quota_usage();
+    if (usage.total_quota && file_size > usage.available_bytes)
+        return unexpected{error{error_code::quota_exceeded, "Storage quota would be exceeded"}};
+    // Advisory snapshot; the runtime reserves concurrent uploads atomically.
     return {};
 }
 

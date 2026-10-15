@@ -1,0 +1,40 @@
+diff --git a/include/kcenon/thread/core/thread_logger.h b/include/kcenon/thread/core/thread_logger.h
+index 269b479..a36c461 100644
+--- a/include/kcenon/thread/core/thread_logger.h
++++ b/include/kcenon/thread/core/thread_logger.h
+@@ -40,6 +40,7 @@
+ #include <atomic>
+ #include <cstdlib>
+ #include <ctime>
++#include <cstdio>
+ 
+ namespace kcenon::thread {
+ 
+@@ -181,7 +182,8 @@ public:
+         localtime_r(&time_t_val, &tm_buf);
+ #endif
+ 
+-        std::cerr << "["
++        std::ostringstream line;
++        line << "["
+                   << std::put_time(&tm_buf, "%Y-%m-%d %H:%M:%S")
+                   << "." << std::setfill('0') << std::setw(3) << ms.count()
+                   << "] "
+@@ -191,10 +193,15 @@ public:
+                   << message;
+ 
+         if (!context.empty()) {
+-            std::cerr << " | Context: " << context;
++            line << " | Context: " << context;
+         }
+ 
+-        std::cerr << std::endl;
++        line << '\n';
++        // Formatting flags on std::cerr are shared with other logging systems;
++        // a mutex owned only by this logger cannot protect their accesses.
++        const auto text = line.str();
++        std::fwrite(text.data(), 1, text.size(), stderr);
++        std::fflush(stderr);
+     }
+ 
+     /**

@@ -1,0 +1,19 @@
+diff --git a/src/core/messaging_client.cpp b/src/core/messaging_client.cpp
+index 389d3a1..dabe83e 100644
+--- a/src/core/messaging_client.cpp
++++ b/src/core/messaging_client.cpp
+@@ -320,6 +320,14 @@ auto messaging_client::do_stop_impl() -> VoidResult {
+       io_context_future_.wait();
+     }
+ 
++    // tcp_socket::close() posts the native close onto this executor. Drain it
++    // after the I/O runner exits, before abandoning the context; otherwise the
++    // peer never observes EOF and the socket remains open indefinitely.
++    if (io_context_) {
++      io_context_->restart();
++      io_context_->poll();
++    }
++
+     // Clear pending resources after io_context is stopped
+     {
+       std::lock_guard<std::mutex> lock(pending_mutex_);

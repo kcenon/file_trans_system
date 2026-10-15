@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <variant>
 
 namespace kcenon::file_transfer {
 
@@ -40,6 +41,9 @@ enum class transport_type {
  */
 struct transport_config {
     transport_type type = transport_type::tcp;
+
+    /// Deliver receive bytes only through events (avoids retaining a second copy).
+    bool event_delivery_only = false;
 
     /// Connection timeout
     std::chrono::milliseconds connect_timeout{30000};
@@ -165,6 +169,8 @@ struct quic_transport_config : transport_config {
     /// Server name for SNI
     std::optional<std::string> server_name;
 };
+
+using transfer_transport_config = std::variant<tcp_transport_config, quic_transport_config>;
 
 /**
  * @brief Transport configuration builder

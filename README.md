@@ -1,6 +1,6 @@
 > Status: archived 2026-09. No further maintenance; kept for reference.
 >
-> Performance figures and feature claims in this README were written during active development and have not been re-verified.
+> Selected TCP behavior was rechecked locally in the audit implementation; see the scoped evidence and remaining gaps below.
 
 # file_trans_system
 
@@ -8,137 +8,139 @@
 [![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD_3--Clause-blue.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/version-0.2.0-green.svg)](https://github.com/kcenon/file_trans_system)
 
-A high-performance, production-ready C++20 library for reliable file transfer with Client-Server architecture, LZ4 compression, resume capability, and multi-stage pipeline processing.
+A C++20 library for reliable file transfer with Client-Server architecture, LZ4 compression, resume capability, and multi-stage pipeline processing.
 
 ## Key Features
 
-- **Client-Server Architecture**: Central server with multiple client connections
-- **Bidirectional Transfer**: Upload files to server, download files from server
-- **High Performance**: ≥500 MB/s LAN throughput with multi-stage pipeline processing
-- **LZ4 Compression**: Adaptive compression with ~400 MB/s speed and ~2.1:1 ratio
-- **AES-256-GCM Encryption**: End-to-end encryption with authenticated encryption
-- **Resume Support**: Automatic checkpoint-based transfer resume on interruption
-- **Auto-Reconnect**: Automatic reconnection with exponential backoff policy
-- **File Management**: List, upload, and download files from server storage
-- **Progress Tracking**: Real-time progress callbacks with statistics
-- **Integrity Verification**: CRC32 per-chunk + SHA-256 per-file verification
-- **Concurrent Transfers**: Support for ≥100 simultaneous client connections
-- **Low Memory Footprint**: Bounded memory usage (~32MB per direction)
-- **Transport Abstraction**: Pluggable transport layer with TCP and QUIC support
+- **Real TCP transfers**: Verified upload, download and metadata listing through public APIs.
+- **Compression and integrity**: Adaptive LZ4, chunk CRC32 and file SHA-256.
+- **Encryption**: AES-256-GCM chunks with configured shared secrets; this does not satisfy the TLS 1.3 requirement.
+- **Recovery**: Disconnect-driven reconnect and opt-in durable transfer checkpoints.
+- **Batch and flow control**: Completion-driven batches, throttling, quotas and bounded pipeline admission.
+- **Measured limits**: 1 GB round trips pass locally. At 100 clients, downloads pass but uploads hit the server receive budget.
+- **Transport status**: TCP is integrated. QUIC, 0-RTT and migration retain a dependency blocker.
+- **Cloud status**: S3 passed local MinIO validation; GCS signing passed independent vectors. Other live-cloud operations remain unverified.
+
+[Requirement status and remaining work](docs/IMPLEMENTATION_STATUS.md) ·
+[Executed tests](docs/validation/REGRESSION_GATES.md) ·
+[Measured performance](docs/validation/PUBLIC_API_BENCHMARKS.md) ·
+[Issues #175–#191 implementation report](docs/validation/ISSUES_175_191.md)
 
 ## Quick Start
 
+These snippets are synchronized from compiled example sources. Completion is printed only after both transfers reach verified terminal success.
+
 ### File Transfer Server
 
-```cpp
+<!-- server:start -->
+~~~cpp
 #include <kcenon/file_transfer/file_transfer.h>
+#include <iostream>
 
 using namespace kcenon::file_transfer;
 
-int main() {
-    // Create server with storage directory
-    auto server = file_transfer_server::builder()
-        .with_storage_directory("/data/files")
-        .with_max_connections(100)
-        .with_max_file_size(10ULL * 1024 * 1024 * 1024)  // 10GB
-        .build();
-
-    if (!server) {
-        std::cerr << "Failed to create server: " << server.error().message() << "\n";
+int main(int argc, char** argv) {
+    if (argc != 3) {
+        std::cerr << "Usage: quick_start_server STORAGE_DIRECTORY PORT\n";
+        return 2;
+    }
+    try {
+        const auto port = std::stoul(argv[2]);
+        if (!port || port > 65535) return 2;
+        auto built = file_transfer_server::builder()
+            .with_storage_directory(argv[1])
+            .with_max_connections(100)
+            .build();
+        if (!built) {
+            std::cerr << built.error().message << '\n';
+            return 1;
+        }
+        auto server = std::move(built.value());
+        server.on_transfer_complete([](const transfer_result& result) {
+            if (result.success)
+                std::cout << "Verified transfer: " << result.filename << '\n';
+            else
+                std::cerr << "Transfer failed: " << result.error_message << '\n';
+        });
+        auto started = server.start({"127.0.0.1", static_cast<uint16_t>(port)});
+        if (!started) {
+            std::cerr << started.error().message << '\n';
+            return 1;
+        }
+        std::cout << "READY; press Enter to stop." << std::endl;
+        std::string line;
+        std::getline(std::cin, line);
+        auto stopped = server.stop();
+        if (!stopped) std::cerr << stopped.error().message << '\n';
+        return stopped ? 0 : 1;
+    } catch (const std::exception& error) {
+        std::cerr << error.what() << '\n';
         return 1;
     }
-
-    // Accept uploads under 5GB
-    server->on_upload_request([](const upload_request& req) {
-        return req.file_size < 5ULL * 1024 * 1024 * 1024;
-    });
-
-    // Allow all downloads
-    server->on_download_request([](const download_request& req) {
-        return true;
-    });
-
-    // Handle upload completion
-    server->on_upload_complete([](const transfer_result& result) {
-        if (result.verified) {
-            std::cout << "Received: " << result.filename << "\n";
-        }
-    });
-
-    // Start server
-    server->start(endpoint{"0.0.0.0", 19000});
-
-    std::cout << "Server listening on port 19000...\n";
-    std::this_thread::sleep_for(std::chrono::hours(24));
-
-    server->stop();
 }
-```
+~~~
+<!-- server:end -->
 
 ### File Transfer Client
 
-```cpp
+<!-- client:start -->
+~~~cpp
 #include <kcenon/file_transfer/file_transfer.h>
+#include <chrono>
+#include <iostream>
+#include <stdexcept>
 
 using namespace kcenon::file_transfer;
+using namespace std::chrono_literals;
 
-int main() {
-    // Create client with auto-reconnect and encryption
-    auto client = file_transfer_client::builder()
-        .with_compression(compression_mode::adaptive)
-        .with_encryption(true)  // Enable end-to-end encryption
-        .with_encryption_password("secure_password")  // Or use with_encryption_key()
-        .with_auto_reconnect(true)
-        .with_reconnect_policy(reconnect_policy{
-            .initial_delay = std::chrono::seconds(1),
-            .max_delay = std::chrono::seconds(30),
-            .multiplier = 2.0,
-            .max_attempts = 10
-        })
-        .build();
+int main(int argc, char** argv) {
+    if (argc != 4) {
+        std::cerr << "Usage: quick_start_client PORT SOURCE_FILE DOWNLOAD_PATH\n";
+        return 2;
+    }
+    try {
+        const auto port = std::stoul(argv[1]);
+        if (!port || port > 65535) return 2;
+        auto built = file_transfer_client::builder()
+            .with_compression(compression_mode::adaptive)
+            .with_auto_reconnect(true, reconnect_policy{})
+            .with_connect_timeout(5s)
+            .with_transfer_timeout(30s)
+            .build();
+        if (!built) throw std::runtime_error(built.error().message);
+        auto client = std::move(built.value());
+        auto connected = client.connect({"127.0.0.1", static_cast<uint16_t>(port)});
+        if (!connected) throw std::runtime_error(connected.error().message);
 
-    if (!client) {
-        std::cerr << "Failed to create client: " << client.error().message() << "\n";
+        auto wait_verified = [](result<transfer_handle> pending) {
+            if (!pending) throw std::runtime_error(pending.error().message);
+            auto finished = pending.value().wait_for(120s);
+            if (!finished) throw std::runtime_error(finished.error().message);
+            if (!finished.value().success)
+                throw std::runtime_error(finished.value().error_message.value_or("Transfer failed"));
+            return finished.value().bytes_transferred;
+        };
+        const auto uploaded = wait_verified(client.upload_file(argv[2], "quick-start.bin"));
+        const auto downloaded = wait_verified(client.download_file("quick-start.bin", argv[3]));
+        auto disconnected = client.disconnect();
+        if (!disconnected) throw std::runtime_error(disconnected.error().message);
+        std::cout << "Verified upload: " << uploaded
+                  << " bytes; verified download: " << downloaded << " bytes\n";
+        return 0;
+    } catch (const std::exception& error) {
+        std::cerr << error.what() << '\n';
         return 1;
     }
-
-    // Connect to server
-    auto connect_result = client->connect(endpoint{"192.168.1.100", 19000});
-    if (!connect_result) {
-        std::cerr << "Connection failed: " << connect_result.error().message() << "\n";
-        return 1;
-    }
-
-    // Register progress callback
-    client->on_progress([](const transfer_progress& p) {
-        double percent = 100.0 * p.bytes_transferred / p.total_bytes;
-        std::cout << p.direction << ": " << percent << "% - "
-                  << p.transfer_rate / 1e6 << " MB/s\n";
-    });
-
-    // Upload file
-    auto upload_result = client->upload_file("/local/data.zip", "data.zip");
-    if (upload_result) {
-        std::cout << "Upload complete: " << upload_result->id.to_string() << "\n";
-    }
-
-    // Download file
-    auto download_result = client->download_file("report.pdf", "/local/report.pdf");
-    if (download_result) {
-        std::cout << "Download complete: " << download_result->output_path << "\n";
-    }
-
-    // List server files
-    auto files = client->list_files();
-    if (files) {
-        for (const auto& file : *files) {
-            std::cout << file.filename << " (" << file.file_size << " bytes)\n";
-        }
-    }
-
-    client->disconnect();
 }
-```
+~~~
+<!-- client:end -->
+
+~~~sh
+# Terminal 1 (keep stdin open)
+./build/bin/quick_start_server ./storage 8080
+# Terminal 2: use an existing input file and a new output path
+./build/bin/quick_start_client 8080 ./input.bin ./download.bin
+~~~
 
 ## Architecture
 
@@ -154,7 +156,7 @@ file_trans_system uses a **Client-Server architecture** with **multi-stage pipel
                     │                                 │
                     │  on_upload_request()            │
                     │  on_download_request()          │
-                    │  on_upload_complete()           │
+                    │  on_transfer_complete()           │
                     │  on_download_complete()         │
                     └────────────┬────────────────────┘
                                  │
@@ -199,12 +201,16 @@ Each transfer uses a multi-stage pipeline for maximum throughput:
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Each stage runs independently with bounded queues providing backpressure, ensuring:
-- **Memory Bounds**: Fixed maximum memory usage regardless of file size
-- **Parallelism**: I/O and CPU operations execute concurrently
-- **Throughput**: Each stage runs at its maximum speed
+Pipeline jobs share a bounded admission budget through the final callback.
+[Buffer reservations](docs/protocol/PIPELINE_CAPACITY.md) exclude caller-owned
+copies and fixed library overhead. Process RSS is measured separately.
+The server runtime receive queue has a separate 8 MiB rejection limit; the
+100-upload benchmark exposes its remaining backpressure gap.
 
 ## Performance Targets
+
+These are PRD targets, not achieved guarantees. The 1 GB loopback means were 19.27 MB/s upload and 74.39 MB/s download. Dedicated LAN qualification is unmeasured; 100 simultaneous uploads failed on the receive budget.
+[Raw data, environment, variance and memory measurements](docs/validation/PUBLIC_API_BENCHMARKS.md).
 
 | Metric | Target |
 |--------|--------|
@@ -225,7 +231,6 @@ auto server = file_transfer_server::builder()
     .with_max_connections(100)                     // Default: 100
     .with_max_file_size(10ULL * 1024 * 1024 * 1024) // Default: 10GB
     .with_storage_quota(1ULL * 1024 * 1024 * 1024 * 1024) // 1TB
-    .with_pipeline_config(pipeline_config::auto_detect())
     .build();
 ```
 
@@ -238,50 +243,30 @@ auto client = file_transfer_client::builder()
     .with_encryption(true)                         // Enable AES-256-GCM encryption
     .with_encryption_password("secure_password")   // Derive key from password
     // .with_encryption_key(raw_key)               // Or use raw 32-byte key
-    .with_auto_reconnect(true)                     // Enable auto-reconnect
-    .with_reconnect_policy(reconnect_policy{
-        .initial_delay = 1s,
-        .max_delay = 30s,
-        .multiplier = 2.0,
-        .max_attempts = 10
-    })
-    .with_pipeline_config(pipeline_config::auto_detect())
+    .with_auto_reconnect(true, reconnect_policy{})
     .build();
 ```
 
 ### Encryption Configuration
 
-The library supports AES-256-GCM authenticated encryption for end-to-end secure transfers:
+Both endpoints must have the same application-supplied secret. Configure it
+through the actual builders; check build results as in Quick Start.
 
-```cpp
-// Client with password-based key derivation
-auto client = file_transfer_client::builder()
-    .with_encryption(true)
-    .with_encryption_password("secure_password")  // Uses Argon2id for key derivation
+~~~cpp
+auto server_result = file_transfer_server::builder()
+    .with_storage_directory("./storage")
+    .with_encryption_password(shared_password)
+    .with_required_encryption()
     .build();
-
-// Client with raw encryption key
-std::array<std::byte, 32> key;  // 256-bit key
-// ... populate key from secure source ...
-auto client = file_transfer_client::builder()
-    .with_encryption_key(key)
+auto client_result = file_transfer_client::builder()
+    .with_encryption_password(shared_password)
     .build();
+~~~
 
-// Server with encryption enabled
-server_config config;
-config.enable_encryption = true;           // Allow encrypted transfers
-config.require_encryption = true;          // Require encryption (reject unencrypted)
-config.encryption_password = "shared_key"; // Shared key with clients
-```
-
-| Feature | Description |
-|---------|-------------|
-| Algorithm | AES-256-GCM (authenticated encryption) |
-| Key Size | 256-bit |
-| IV Size | 96-bit (NIST recommended) |
-| Tag Size | 128-bit authentication tag |
-| Key Derivation | Argon2id (password) or raw key |
-| Per-chunk Encryption | Each chunk encrypted independently |
+Password derivation uses PBKDF2; HKDF derives per-transfer keys. AES-256-GCM
+protects chunks, and HMAC authenticates negotiation/completion acknowledgements.
+This protocol does not authenticate every control message or replace TLS.
+See [security boundaries](docs/protocol/ENCRYPTION.md).
 
 ### Compression Modes
 
@@ -295,88 +280,38 @@ config.encryption_password = "shared_key"; // Shared key with clients
 
 ```cpp
 pipeline_config config{
-    .io_read_workers = 2,       // File read parallelism
+    .io_workers = 2,       // File read parallelism
     .compression_workers = 4,    // LZ4 compression threads
     .network_workers = 2,        // Network send/receive
-    .send_queue_size = 64        // Backpressure buffer
+    .queue_size = 64        // Backpressure buffer
 };
 
 // Or use auto-detection
-auto config = pipeline_config::auto_detect();
+auto detected_config = pipeline_config::auto_detect();
 ```
 
 ### Transport Layer
 
-The library supports pluggable transport layers through the `transport_interface`:
+The public builders select a shared transport configuration; TCP is the default.
 
-**TCP Transport (Default)**
-```cpp
-auto config = transport_config_builder::tcp()
-    .with_connect_timeout(std::chrono::seconds{10})
-    .with_keep_alive(true)
-    .build_tcp();
+~~~cpp
+auto client_result = file_transfer_client::builder()
+    .with_transport(tcp_transport_config{})
+    .build();
+~~~
 
-auto transport = tcp_transport::create(config);
-```
-
-**QUIC Transport**
-```cpp
-auto config = transport_config_builder::quic()
-    .with_connect_timeout(std::chrono::seconds{10})
-    .with_0rtt(true)  // Enable 0-RTT for faster connection establishment
-    .with_max_idle_timeout(std::chrono::seconds{60})
-    .build_quic();
-
-auto transport = quic_transport::create(config);
-```
-
-**QUIC Connection Migration**
-
-QUIC transport supports seamless connection migration when network conditions change (e.g., WiFi to cellular):
-
-```cpp
-// Enable automatic network monitoring
-auto result = transport->start_network_monitoring();
-
-// Set migration event callback
-transport->on_migration_event([](const migration_event_data& event) {
-    std::cout << "Migration event: " << to_string(event.event) << "\n";
-    if (event.event == migration_event::migration_completed) {
-        std::cout << "Migrated to: " << event.new_path->to_string() << "\n";
-    }
-});
-
-// Manual migration to specific network path
-network_path new_path;
-new_path.local_address = "192.168.1.100";
-new_path.remote_address = "10.0.0.1";
-new_path.remote_port = 443;
-
-auto migration_result = transport->migrate_to(new_path);
-if (migration_result && migration_result->success) {
-    std::cout << "Migration completed in "
-              << migration_result->duration.count() << "ms\n";
-}
-
-// Get migration statistics
-auto stats = transport->get_migration_statistics();
-std::cout << "Total migrations: " << stats.total_migrations
-          << ", Success rate: "
-          << (stats.successful_migrations * 100 / stats.total_migrations) << "%\n";
-```
-
-| Transport | Advantages | Use Case |
-|-----------|------------|----------|
-| TCP | Mature, widely supported | Default choice, compatibility |
-| QUIC | 0-RTT, multiplexed streams, built-in TLS 1.3, connection migration | High-latency networks, mobile clients |
+QUIC is disabled by default. Enabling it exposes handshake/timeout-cleanup
+defects in the pinned network dependency. 0-RTT and migration have component
+implementations and are not validated public transfer capabilities.
+See [transport evidence and blocker #184](docs/protocol/TRANSPORTS.md).
 
 ## Protocol
 
 The library uses a custom lightweight binary protocol optimized for file transfer:
 
-- **54 bytes** per-chunk overhead (vs HTTP ~800 bytes)
-- **TLS 1.3** encryption by default
-- **Efficient resume**: Bitmap-based missing chunk tracking
+- FTS1 framing with explicit bounds and checksums; overhead depends on message/encryption metadata.
+- TCP does not enable TLS by default. Optional shared-key encryption has [documented limits](docs/protocol/ENCRYPTION.md).
+- Resume uses durable checkpoints and verified partial prefixes; see [resume behavior](docs/protocol/RESUME.md).
 
 ### Message Types
 
@@ -434,12 +369,29 @@ file_trans_system is built on top of the kcenon ecosystem libraries:
 
 ## Building
 
+Use the pinned compatible dependencies for this implementation branch:
+~~~sh
+python3 tools/bootstrap_dependencies.py --jobs 4
+python3 tools/ci_build.py --build build --examples
+python3 tools/sync_readme_snippets.py
+python3 tools/check_quick_start.py --build build --artifacts build/quick-start-results
+~~~
+Linux requires CMake, Ninja, a C++20 compiler, OpenSSL, LZ4 and libcurl development
+packages. macOS requires the corresponding Homebrew tools/libraries and
+CMAKE_PREFIX_PATH set to the Homebrew prefix. Local validation used Apple Clang
+21; CI configures Clang 18 on Ubuntu 24.04 and Apple Clang 21 on macOS 26.
+The compiler's standard library must implement C++20 `std::jthread` and
+`std::stop_token`; CMake checks this requirement before compiling the project.
+Build all pinned sibling dependencies with the same toolchain. Windows is unverified.
+
+
 ### Requirements
 
 - C++20 compatible compiler:
   - GCC 11+
   - Clang 14+
   - MSVC 19.29+
+  - Apple Clang 21 / Xcode 26 on macOS (validated configuration)
 - CMake 3.20+
 - LZ4 library (v1.9.0+)
 - OpenSSL (v3.0+) for TLS and QUIC transport support
@@ -457,18 +409,15 @@ parent_directory/
 └── container_system/      # Required: Data containers
 ```
 
-Clone all required repositories:
+Bootstrap the exact sibling revisions instead of checking out arbitrary dependency heads:
 
-```bash
-# Clone into sibling directories
-git clone https://github.com/kcenon/common_system.git
-git clone https://github.com/kcenon/thread_system.git
-git clone https://github.com/kcenon/network_system.git
-git clone https://github.com/kcenon/container_system.git
-git clone https://github.com/kcenon/file_trans_system.git
-```
+~~~sh
+python3 tools/bootstrap_dependencies.py --jobs 4
+~~~
 
-> **Note**: The CMake configuration will automatically find these dependencies in sibling directories.
+Revisions are pinned in cmake/dependency-revisions.json. The script verifies
+existing checkouts and applies required patches. Use a separate workspace if
+your existing siblings have different revisions.
 
 ### Build Commands
 
@@ -484,7 +433,7 @@ Build and run tests:
 
 ```bash
 mkdir build && cd build
-cmake .. -DBUILD_TESTING=ON
+cmake .. -DFILE_TRANS_BUILD_TESTS=ON
 cmake --build . --parallel
 
 # Run all tests
@@ -565,6 +514,8 @@ UBSAN_OPTIONS="print_stacktrace=1:abort_on_error=1" ctest --test-dir build
 
 ### Benchmarks
 
+[Public TCP measurements and runnable harness](docs/validation/PUBLIC_API_BENCHMARKS.md). The splitting/assembly tests below are component microbenchmarks and do not measure network throughput.
+
 Build and run performance benchmarks:
 
 ```bash
@@ -586,7 +537,7 @@ cmake --build build --parallel
 
 | Category | Description | Target |
 |----------|-------------|--------|
-| **Throughput** | File split/assembly throughput | ≥ 500 MB/s |
+| **Throughput** | Local split/assembly microbenchmark | No LAN inference |
 | **Chunk Operations** | Chunk splitter and assembler performance | - |
 | **Checksum** | CRC32 and SHA-256 performance | - |
 
@@ -620,6 +571,8 @@ See the [examples/](examples/) directory for:
 - `quota_management.cpp` - Storage quota configuration and monitoring
 
 ## Cloud Storage Integration
+
+Cloud snippets below illustrate component APIs. Consult the status table for executed service evidence; only S3 has real local MinIO integration validation in this series.
 
 file_trans_system supports cloud storage backends for direct upload/download operations:
 
@@ -690,9 +643,9 @@ auto sas_url = storage->generate_blob_sas("path/to/file.bin", options);
 
 | Provider | Status | Features |
 |----------|--------|----------|
-| **AWS S3** | Supported | Multipart upload, presigned URLs, transfer acceleration |
-| **Azure Blob** | Supported | Block blobs, SAS tokens, access tiers (Hot/Cool/Archive) |
-| **Google Cloud Storage** | Supported | Resumable uploads, signed URLs, storage classes |
+| **AWS S3** | Validated on local MinIO | Real HTTP, multipart, ranged download and presigned URLs; AWS live untested |
+| **Azure Blob** | Component / live unverified | Example compilation does not prove remote persistence |
+| **Google Cloud Storage** | Signing vectors validated | V4 RSA GET/PUT signatures; live service unverified |
 
 ### Cloud Storage Examples
 
@@ -716,37 +669,7 @@ See the [examples/cloud/](examples/cloud/) directory:
 
 ## Error Handling
 
-All operations return `Result<T>` for explicit error handling:
-
-```cpp
-// Upload with error handling
-auto result = client->upload_file(path, filename);
-if (!result) {
-    auto code = result.error().code();
-    switch (code) {
-        case error::upload_rejected:
-            std::cerr << "Server rejected upload\n";
-            break;
-        case error::storage_full:
-            std::cerr << "Server storage is full\n";
-            break;
-        case error::transfer_timeout:
-            // Retryable - can resume
-            client->resume_upload(transfer_id);
-            break;
-        default:
-            std::cerr << "Error: " << result.error().message() << "\n";
-    }
-}
-
-// Download with error handling
-auto download = client->download_file(filename, local_path);
-if (!download) {
-    if (download.error().code() == error::file_not_found_on_server) {
-        std::cerr << "File not found on server\n";
-    }
-}
-```
+Check both the initial result and the terminal handle result. The maintained Quick Start wait_verified helper handles both failure paths before printing success. error().message is a field. Resume uses the [checkpoint API](docs/protocol/RESUME.md).
 
 ### Common Error Codes
 
@@ -765,29 +688,20 @@ if (!download) {
 
 ## Auto-Reconnect
 
-The client supports automatic reconnection with exponential backoff:
+Configure disconnect-driven retries through the public builder. Handle initial connection failure explicitly; transfer recovery also requires resumable checkpoints.
 
-```cpp
-auto client = file_transfer_client::builder()
-    .with_auto_reconnect(true)
-    .with_reconnect_policy(reconnect_policy{
-        .initial_delay = std::chrono::seconds(1),
-        .max_delay = std::chrono::seconds(30),
-        .multiplier = 2.0,
-        .max_attempts = 10
-    })
+~~~cpp
+auto built = file_transfer_client::builder()
+    .with_auto_reconnect(true, reconnect_policy{})
     .build();
-
-// Set reconnection callback
-client->on_reconnect([](int attempt, const reconnect_info& info) {
-    std::cout << "Reconnecting (attempt " << attempt << ")...\n";
+if (!built) throw std::runtime_error(built.error().message);
+auto client = std::move(built.value());
+client.on_connection_state_changed([](connection_state state) {
+    std::cout << "Connection state: " << static_cast<int>(state) << "\n";
 });
+~~~
 
-// Set connection restored callback
-client->on_connection_restored([]() {
-    std::cout << "Connection restored!\n";
-});
-```
+[Reconnect behavior and limits](docs/protocol/RECONNECTION.md).
 
 ## License
 
@@ -799,11 +713,16 @@ Contributions are welcome! Please read our contributing guidelines before submit
 
 ## Roadmap
 
-- [x] **Phase 1**: Client-Server architecture with TCP transfer and LZ4 compression
-- [x] **Phase 2**: QUIC transport support
-- [x] **Phase 3**: Encryption layer (AES-256-GCM)
-- [x] **Phase 4**: Cloud storage integration (AWS S3, Azure Blob, GCS)
+The seven PRD phases share the scoped evidence in [implementation status](docs/IMPLEMENTATION_STATUS.md). No entire phase is marked complete.
 
----
-
-*file_trans_system v0.2.0 | High-Performance File Transfer Library with Client-Server Architecture*
+<!-- roadmap:start -->
+| PRD phase | Requirements | Current status and evidence | Remaining acceptance |
+|---|---|---|---|
+| 1. Core infrastructure | FR-08, FR-11, FR-14, FR-17/18 | Validated (scoped): codec, CRC/SHA, LZ4 and bounded pipeline [#175–#178, #188](docs/protocol/PIPELINE_CAPACITY.md) | NFR-03/07/08 absolute performance unmeasured [#190](https://github.com/kcenon/file_trans_system/issues/190) |
+| 2. Server foundation | FR-01/03/05/07/16 | Validated (scoped): real storage, requests, listing, quotas [#175–#179](docs/validation/REGRESSION_GATES.md) | Broad platform/service qualification; retention policies have component evidence only |
+| 3. Client foundation | FR-02/03/05/07, NFR-13 | Validated (scoped): TCP transfers, failure handling and reconnect [#176–#179, #185](docs/protocol/RECONNECTION.md) | Optional authentication and TLS 1.3 NFR-16/17 remain open; reconnect does not imply resume |
+| 4. Compression and resume | FR-09/11/14/15 | Validated (scoped): plain/encrypted process crash recovery and compression [#183, #186](docs/protocol/RESUME.md) | Subsecond recovery only measured on a small loopback fixture; large-prefix validation remains linear |
+| 5. Advanced features | FR-04/06/10/12/13/16/18 | Validated (scoped): batch, progress, throttling, quotas and admission [#187–#188](docs/protocol/BATCH_TRANSFERS.md) | “Without degradation” and 5% bandwidth tolerance need qualification; 100-client uploads and downloads now all pass [#190](docs/validation/PUBLIC_API_BENCHMARKS.md) |
+| 6. Integration and polish | PRD §10, NFR-01–10/22 | Validated (scoped): public monitoring/quota, logger, cloud/hybrid persistence and compiled examples [#189–#191](docs/validation/CONTINUATION_176_190.md) | Coverage 73.52% <80%; full macOS TSAN fails on reproduced errno runtime reports; leak freedom, Windows and dedicated LAN unverified |
+| 7. QUIC (optional) | PRD §9 phase 7, NFR-16 | Component: public transport selection and repaired QUIC timeout cleanup [#184](docs/protocol/TRANSPORTS.md) | QUIC handshake/key installation and certificate/UDP routing remain blocked in pinned dependency; 0-RTT/migration unvalidated |
+<!-- roadmap:end -->

@@ -6,6 +6,7 @@
 #ifndef KCENON_FILE_TRANSFER_SERVER_SERVER_TYPES_H
 #define KCENON_FILE_TRANSFER_SERVER_SERVER_TYPES_H
 
+#include "kcenon/file_transfer/transport/transport_config.h"
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -135,6 +136,8 @@ struct cloud_storage_server_config {
  * @brief Server configuration
  */
 struct server_config {
+    std::filesystem::path checkpoint_directory;
+    transfer_transport_config transport = tcp_transport_config{};
     std::filesystem::path storage_directory;
     std::size_t max_connections = 100;
     uint64_t max_file_size = 10ULL * 1024 * 1024 * 1024;      // 10GB

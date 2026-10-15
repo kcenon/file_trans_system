@@ -22,6 +22,7 @@
 #include <filesystem>
 #include <fstream>
 #include <thread>
+#include <limits>
 #include <vector>
 
 namespace kcenon::file_transfer {
@@ -29,7 +30,10 @@ namespace kcenon::file_transfer {
 struct server_pipeline::impl {
     pipeline_config config;
     std::atomic<bool> running{false};
+    std::atomic<bool> accepting{false};
+    std::mutex lifecycle_mutex;
     pipeline_stats statistics;
+    std::shared_ptr<detail::pipeline_admission> admission;
 
     // Thread pool for job execution
     std::shared_ptr<thread::thread_pool> thread_pool;
@@ -46,28 +50,15 @@ struct server_pipeline::impl {
 
     explicit impl(pipeline_config cfg) : config(std::move(cfg)) {
         // Create thread pool
-        auto total_threads = config.io_workers + config.compression_workers +
-                            config.network_workers;
+        auto total_threads = config.worker_threads ? config.worker_threads :
+            config.io_workers + config.compression_workers + config.network_workers;
+        admission = std::make_shared<detail::pipeline_admission>(config, statistics);
         thread_pool = std::make_shared<thread::thread_pool>(
             "server_pipeline_pool");
 
         // Create pipeline context
         context = std::make_shared<pipeline_context>();
         context->thread_pool = thread_pool;
-
-        // Create job queues for each stage with bounded size for backpressure
-        context->decompress_queue = std::make_shared<thread::job_queue>(
-            config.queue_size);
-        context->verify_queue = std::make_shared<thread::job_queue>(
-            config.queue_size);
-        context->write_queue = std::make_shared<thread::job_queue>(
-            config.queue_size);
-        context->read_queue = std::make_shared<thread::job_queue>(
-            config.queue_size);
-        context->compress_queue = std::make_shared<thread::job_queue>(
-            config.queue_size);
-        context->send_queue = std::make_shared<thread::job_queue>(
-            config.queue_size);
 
         // Create compression engines for workers
         auto total_compression_workers = config.compression_workers;
@@ -77,24 +68,8 @@ struct server_pipeline::impl {
                 std::make_unique<compression_engine>(compression_level::fast));
         }
 
-        // Create encryption queues if encryption is enabled
-        if (config.enable_encryption) {
-            context->decrypt_queue = std::make_shared<thread::job_queue>(
-                config.queue_size);
-            context->encrypt_queue = std::make_shared<thread::job_queue>(
-                config.queue_size);
-            context->encryption_enabled = true;
-
-#ifdef FILE_TRANS_ENABLE_ENCRYPTION
-            // Create encryption engines for workers
-            auto total_encryption_workers = config.encryption_workers;
-            context->encryption_engines.reserve(total_encryption_workers);
-            for (std::size_t i = 0; i < total_encryption_workers; ++i) {
-                context->encryption_engines.push_back(
-                    aes_gcm_engine::create(aes_gcm_config{}));
-            }
-#endif
-        }
+        context->encryption_enabled = config.enable_encryption;
+        context->encryption_provider = config.encryption_provider;
 
         // Set statistics pointer in context
         context->statistics = &statistics;
@@ -121,74 +96,43 @@ struct server_pipeline::impl {
     }
 
     ~impl() {
-        // Always cleanup regardless of running state to prevent memory leaks
-        // from circular references (jobs hold shared_ptr<pipeline_context>,
-        // which holds shared_ptr<thread_pool>)
+        accepting = false;
+        admission->close();
         running = false;
-        stop_queues();
-        clear_queues();  // Break circular references by clearing pending jobs
-
         if (thread_pool) {
-            // Clear the thread_pool's job queue to break circular references
-            // This is necessary even if stop() was already called and returns early,
-            // because pending jobs hold shared_ptr<pipeline_context> which holds
-            // shared_ptr<thread_pool>, creating a reference cycle
-            auto queue = thread_pool->get_job_queue();
-            if (queue) {
-                queue->stop();
-                queue->clear();
-            }
-            thread_pool->stop(true);
+            (void)thread_pool->stop(true);
+            thread_pool->get_job_queue()->clear();
         }
-
-        // Explicitly break circular reference by clearing context's thread_pool pointer
-        if (context) {
-            context->thread_pool.reset();
-        }
+        admission->drain();
+        context->thread_pool.reset();
     }
 
     auto start() -> common::VoidResult {
-        return thread_pool->start();
+        auto started = thread_pool->start();
+        if (started.is_ok()) { admission->open(); accepting = true; }
+        return started;
     }
 
     auto stop(bool wait_for_completion) -> void {
-        stop_queues();
-
-        if (!wait_for_completion) {
-            clear_queues();
-        }
-
-        thread_pool->stop(!wait_for_completion);
+        accepting = false;
+        admission->close(); // Wake blocked producers before waiting for workers.
+        if (wait_for_completion) admission->drain();
+        running = false;
+        (void)thread_pool->stop(true);
+        thread_pool->get_job_queue()->clear(); // Release every pending token.
+        admission->drain();
     }
 
-    auto stop_queues() -> void {
-        context->decompress_queue->stop();
-        context->verify_queue->stop();
-        context->write_queue->stop();
-        context->read_queue->stop();
-        context->compress_queue->stop();
-        context->send_queue->stop();
-        if (context->decrypt_queue) {
-            context->decrypt_queue->stop();
-        }
-        if (context->encrypt_queue) {
-            context->encrypt_queue->stop();
-        }
-    }
-
-    auto clear_queues() -> void {
-        context->decompress_queue->clear();
-        context->verify_queue->clear();
-        context->write_queue->clear();
-        context->read_queue->clear();
-        context->compress_queue->clear();
-        context->send_queue->clear();
-        if (context->decrypt_queue) {
-            context->decrypt_queue->clear();
-        }
-        if (context->encrypt_queue) {
-            context->encrypt_queue->clear();
-        }
+    auto reserve(const transfer_id& id, std::size_t largest_buffer,
+                 std::chrono::milliseconds timeout, std::stop_token cancellation)
+        -> result<std::shared_ptr<detail::pipeline_reservation>> {
+        // Original/input plus transformed output and crypto/compression scratch,
+        // with a fixed allowance for metadata and at most two overlapping jobs.
+        if (largest_buffer > (std::numeric_limits<std::size_t>::max() - 4096) / 4)
+            return unexpected{error{error_code::invalid_configuration, "Chunk size overflows memory budget"}};
+        if (detail::executing_pipeline == context.get() && timeout != std::chrono::milliseconds(0))
+            return unexpected{error{error_code::invalid_state_transition, "Use nonblocking submission from pipeline callbacks"}};
+        return admission->reserve(id, 4 * largest_buffer + 4096, timeout, cancellation);
     }
 
     auto get_worker_id() -> std::size_t {
@@ -221,7 +165,7 @@ auto pipeline_config::is_valid() const -> bool {
            compression_workers > 0 &&
            network_workers > 0 &&
            queue_size > 0 &&
-           max_memory_per_transfer > 0;
+           max_memory_per_transfer > 0 && max_buffered_bytes > 0 && worker_threads <= 256;
 }
 
 // pipeline_stats implementation
@@ -231,6 +175,8 @@ auto pipeline_stats::reset() -> void {
     compression_saved_bytes = 0;
     stalls_detected = 0;
     backpressure_events = 0;
+    peak_admitted_chunks = admitted_chunks.load();
+    peak_reserved_bytes = reserved_bytes.load();
     chunks_encrypted = 0;
     chunks_decrypted = 0;
     encryption_bytes = 0;
@@ -244,7 +190,7 @@ pipeline_chunk::pipeline_chunk(const chunk& c)
     , checksum(c.header.checksum)
     , is_compressed(c.is_compressed())
     , original_size(c.header.original_size)
-    , is_encrypted(false)
+    , is_encrypted(kcenon::file_transfer::is_encrypted(c.header.flags))
     , enc_metadata(nullptr) {}
 
 pipeline_chunk::pipeline_chunk(const pipeline_chunk& other)
@@ -309,10 +255,20 @@ server_pipeline::~server_pipeline() {
 }
 
 auto server_pipeline::start() -> result<void> {
+    std::lock_guard lock(impl_->lifecycle_mutex);
     if (impl_->running) {
         FT_LOG_WARN(log_category::pipeline, "Pipeline start failed: already running");
         return unexpected{error{error_code::already_initialized,
                                "Pipeline is already running"}};
+    }
+
+    if (impl_->config.enable_encryption) {
+#ifndef FILE_TRANS_ENABLE_ENCRYPTION
+        return unexpected{error{error_code::invalid_configuration, "Pipeline encryption support is disabled"}};
+#else
+        if (!impl_->config.encryption_provider)
+            return unexpected{error{error_code::invalid_configuration, "Pipeline encryption requires a transfer key provider"}};
+#endif
     }
 
     FT_LOG_INFO(log_category::pipeline,
@@ -334,6 +290,9 @@ auto server_pipeline::start() -> result<void> {
 }
 
 auto server_pipeline::stop(bool wait_for_completion) -> result<void> {
+    if (detail::executing_pipeline == impl_->context.get())
+        return unexpected{error{error_code::invalid_state_transition, "Cannot join a pipeline from its callback"}};
+    std::lock_guard lock(impl_->lifecycle_mutex);
     if (!impl_->running) {
         FT_LOG_WARN(log_category::pipeline, "Pipeline stop failed: not running");
         return unexpected{error{error_code::not_initialized,
@@ -344,7 +303,6 @@ auto server_pipeline::stop(bool wait_for_completion) -> result<void> {
         "Stopping pipeline (wait_for_completion=" +
         std::string(wait_for_completion ? "true" : "false") + ")");
 
-    impl_->running = false;
     impl_->stop(wait_for_completion);
 
     FT_LOG_INFO(log_category::pipeline,
@@ -356,79 +314,73 @@ auto server_pipeline::stop(bool wait_for_completion) -> result<void> {
 }
 
 auto server_pipeline::is_running() const -> bool {
-    return impl_->running;
+    return impl_->accepting;
 }
 
 auto server_pipeline::submit_upload_chunk(pipeline_chunk data) -> result<void> {
-    if (!impl_->running) {
-        return unexpected{error{error_code::not_initialized,
-                               "Pipeline is not running"}};
+    return submit_upload_chunk(std::move(data), std::chrono::milliseconds::max());
+}
+
+auto server_pipeline::submit_upload_chunk(pipeline_chunk data,
+    std::chrono::milliseconds timeout, std::stop_token cancellation) -> result<void> {
+    if (!impl_->accepting)
+        return unexpected{error{error_code::not_initialized, "Pipeline is not running"}};
+    if (data.is_encrypted != impl_->config.enable_encryption)
+        return unexpected{error{error_code::invalid_configuration, "Pipeline chunk encryption policy mismatch"}};
+    auto largest = std::max(data.data.capacity(), data.original_size);
+    if (data.enc_metadata) {
+        for (auto capacity : {data.enc_metadata->iv.capacity(), data.enc_metadata->salt.capacity(),
+                             data.enc_metadata->auth_tag.capacity(), data.enc_metadata->aad.capacity()}) {
+            if (capacity > std::numeric_limits<std::size_t>::max() - largest)
+                return unexpected{error{error_code::invalid_configuration, "Metadata size overflows memory budget"}};
+            largest += capacity;
+        }
     }
-
-    // Apply recv bandwidth limit if configured
-    if (impl_->recv_limiter) {
-        impl_->recv_limiter->acquire(data.data.size());
+    auto deadline = timeout == std::chrono::milliseconds::max()
+        ? std::chrono::steady_clock::time_point::max() : std::chrono::steady_clock::now() + timeout;
+    auto admitted = impl_->reserve(data.id, largest, timeout, cancellation);
+    if (!admitted) return unexpected{admitted.error()};
+    data.admission_ = std::move(admitted.value());
+    auto remaining = data.data.size();
+    while (remaining && impl_->recv_limiter && impl_->recv_limiter->is_enabled()) {
+        if (cancellation.stop_requested() || !impl_->admission->accepting())
+            return unexpected{error{error_code::invalid_state_transition, "Pipeline submission interrupted"}};
+        auto step = std::min(remaining, std::max<std::size_t>(1, impl_->recv_limiter->bucket_capacity()));
+        if (impl_->recv_limiter->try_acquire(step)) remaining -= step;
+        else {
+            if (std::chrono::steady_clock::now() >= deadline)
+                return unexpected{error{error_code::transfer_timeout, "Pipeline bandwidth wait timed out"}};
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
     }
-
-    // Create decompress job and submit to thread pool
-    auto worker_id = impl_->get_worker_id();
-    auto job = std::make_unique<decompress_job>(
-        impl_->context, std::move(data), worker_id);
-
-    auto enqueue_result = impl_->thread_pool->enqueue(std::move(job));
-    if (!enqueue_result.is_ok()) {
-        impl_->statistics.backpressure_events++;
-        return unexpected{error{error_code::internal_error,
-                               "Queue full - backpressure applied"}};
-    }
-
+    std::unique_ptr<pipeline_job_base> job;
+    auto worker = impl_->get_worker_id();
+    if (data.is_encrypted) job = std::make_unique<decrypt_job>(impl_->context, std::move(data), worker);
+    else job = std::make_unique<decompress_job>(impl_->context, std::move(data), worker);
+    if (!impl_->thread_pool->enqueue(std::move(job)).is_ok())
+        return unexpected{error{error_code::not_initialized, "Pipeline stopped before enqueue"}};
     return {};
 }
 
 auto server_pipeline::try_submit_upload_chunk(pipeline_chunk data) -> bool {
-    if (!impl_->running) return false;
-
-    // Try to apply recv bandwidth limit without blocking
-    if (impl_->recv_limiter && !impl_->recv_limiter->try_acquire(data.data.size())) {
-        return false;
-    }
-
-    // Create decompress job and submit to thread pool
-    auto worker_id = impl_->get_worker_id();
-    auto job = std::make_unique<decompress_job>(
-        impl_->context, std::move(data), worker_id);
-
-    auto enqueue_result = impl_->thread_pool->enqueue(std::move(job));
-    if (!enqueue_result.is_ok()) {
-        impl_->statistics.backpressure_events++;
-        return false;
-    }
-
-    return true;
+    return submit_upload_chunk(std::move(data), std::chrono::milliseconds(0)).has_value();
 }
 
-auto server_pipeline::submit_download_request(
-    const transfer_id& id,
-    uint64_t chunk_index,
-    const std::filesystem::path& file_path,
-    uint64_t offset,
-    std::size_t size) -> result<void> {
-    if (!impl_->running) {
-        return unexpected{error{error_code::not_initialized,
-                               "Pipeline is not running"}};
-    }
-
-    // Create read job and submit to thread pool
-    auto job = std::make_unique<read_job>(
-        impl_->context, id, chunk_index, file_path, offset, size);
-
-    auto enqueue_result = impl_->thread_pool->enqueue(std::move(job));
-    if (!enqueue_result.is_ok()) {
-        impl_->statistics.backpressure_events++;
-        return unexpected{error{error_code::internal_error,
-                               "Queue full - backpressure applied"}};
-    }
-
+auto server_pipeline::submit_download_request(const transfer_id& id, uint64_t chunk_index,
+    const std::filesystem::path& file_path, uint64_t offset, std::size_t size) -> result<void> {
+    return submit_download_request(id, chunk_index, file_path, offset, size, std::chrono::milliseconds::max());
+}
+auto server_pipeline::submit_download_request(const transfer_id& id, uint64_t chunk_index,
+    const std::filesystem::path& file_path, uint64_t offset, std::size_t size,
+    std::chrono::milliseconds timeout, std::stop_token cancellation) -> result<void> {
+    if (!impl_->accepting)
+        return unexpected{error{error_code::not_initialized, "Pipeline is not running"}};
+    auto admitted = impl_->reserve(id, std::max(size, file_path.native().capacity() * sizeof(std::filesystem::path::value_type)), timeout, cancellation);
+    if (!admitted) return unexpected{admitted.error()};
+    auto job = std::make_unique<read_job>(impl_->context, id, chunk_index, file_path, offset, size,
+                                         std::move(admitted.value()));
+    if (!impl_->thread_pool->enqueue(std::move(job)).is_ok())
+        return unexpected{error{error_code::not_initialized, "Pipeline stopped before enqueue"}};
     return {};
 }
 
@@ -459,23 +411,14 @@ auto server_pipeline::reset_stats() -> void {
 
 auto server_pipeline::queue_sizes() const
     -> std::vector<std::pair<pipeline_stage, std::size_t>> {
-    std::vector<std::pair<pipeline_stage, std::size_t>> sizes = {
-        {pipeline_stage::decompress, impl_->context->decompress_queue->size()},
-        {pipeline_stage::chunk_verify, impl_->context->verify_queue->size()},
-        {pipeline_stage::file_write, impl_->context->write_queue->size()},
-        {pipeline_stage::file_read, impl_->context->read_queue->size()},
-        {pipeline_stage::compress, impl_->context->compress_queue->size()},
-        {pipeline_stage::network_send, impl_->context->send_queue->size()},
-    };
-
-    // Add encryption queue sizes if enabled
-    if (impl_->context->decrypt_queue) {
-        sizes.push_back({pipeline_stage::decrypt, impl_->context->decrypt_queue->size()});
-    }
-    if (impl_->context->encrypt_queue) {
-        sizes.push_back({pipeline_stage::encrypt, impl_->context->encrypt_queue->size()});
-    }
-
+    std::vector<std::pair<pipeline_stage, std::size_t>> sizes;
+    for (auto stage : {pipeline_stage::decompress, pipeline_stage::chunk_verify,
+                      pipeline_stage::file_write, pipeline_stage::file_read,
+                      pipeline_stage::compress, pipeline_stage::network_send})
+        sizes.emplace_back(stage, impl_->context->queued[static_cast<std::size_t>(stage)].load());
+    if (impl_->config.enable_encryption)
+        for (auto stage : {pipeline_stage::decrypt, pipeline_stage::encrypt})
+            sizes.emplace_back(stage, impl_->context->queued[static_cast<std::size_t>(stage)].load());
     return sizes;
 }
 

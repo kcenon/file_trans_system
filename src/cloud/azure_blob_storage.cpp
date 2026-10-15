@@ -1175,13 +1175,38 @@ auto azure_blob_storage::upload(
         return result;
     }
 
-    // Single PUT request for small blobs
-    auto content_hash = sha256_bytes(data);
-    std::string payload_hash = bytes_to_hex(content_hash);
+    // A small upload must be acknowledged by the service just like a multipart
+    // upload. A locally computed digest is not evidence of persistence.
+    if (!impl_->http_client_) {
+        return unexpected{error{error_code::not_initialized, "HTTP client not initialized"}};
+    }
+    std::map<std::string, std::string> headers{
+        {"x-ms-version", impl_->config_.api_version}, {"x-ms-date", get_rfc1123_time()},
+        {"x-ms-blob-type", "BlockBlob"}, {"Content-Length", std::to_string(data.size())},
+        {"Content-Type", options.content_type.value_or(detect_content_type(key))}};
+    if (options.storage_class) headers["x-ms-access-tier"] = *options.storage_class;
+    for (const auto& [name, value] : options.metadata) headers["x-ms-meta-" + name] = value;
+    const auto resource = "/" + impl_->config_.container + "/" + key;
+    auto auth = impl_->create_authorization_header("PUT", resource, headers,
+        data.empty() ? "" : std::to_string(data.size()));
+    if (!auth.empty()) headers["Authorization"] = std::move(auth);
+    std::vector<uint8_t> body(data.size());
+    if (!data.empty()) std::memcpy(body.data(), data.data(), data.size());
+    auto response = impl_->http_client_->put(impl_->get_blob_endpoint() + "/" +
+        impl_->config_.container + "/" + url_encode(key, false), body, headers);
+    if (!response) {
+        impl_->update_error_stats();
+        return unexpected{response.error()};
+    }
+    if (response.value().status_code != 201) {
+        impl_->update_error_stats();
+        return unexpected{error{error_code::internal_error,
+            "Blob upload failed, status: " + std::to_string(response.value().status_code)}};
+    }
 
     upload_result result;
     result.key = key;
-    result.etag = "\"" + payload_hash + "\"";
+    result.etag = response.value().get_header("ETag").value_or("");
     result.bytes_uploaded = data.size();
 
     auto end_time = std::chrono::steady_clock::now();
@@ -1420,7 +1445,11 @@ auto azure_blob_storage::exists(const std::string& key) -> result<bool> {
             "Failed to check blob existence: " + response.error().message}};
     }
 
-    return response.value().status_code == 200;
+    if (response.value().status_code == 200) return true;
+    if (response.value().status_code == 404) return false;
+    impl_->update_error_stats();
+    return unexpected{error{error_code::internal_error,
+        "Blob existence check failed, status: " + std::to_string(response.value().status_code)}};
 #else
     return false;
 #endif

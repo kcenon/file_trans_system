@@ -1,0 +1,40 @@
+name: Compatible dependencies
+description: Install tools and build pinned ecosystem revisions with required patches.
+inputs:
+  build-type:
+    description: Dependency build type
+    default: Debug
+  sanitizer:
+    description: Optional ASAN, TSAN or UBSAN instrumentation for dependencies
+    default: ''
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        if [[ "$RUNNER_OS" == "Linux" ]]; then
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang-18 llvm-18 libssl-dev liblz4-dev libcurl4-openssl-dev
+          echo "CC=clang-18" >> "$GITHUB_ENV"
+          echo "CXX=clang++-18" >> "$GITHUB_ENV"
+        else
+          brew install ninja openssl@3 lz4
+          echo "CMAKE_PREFIX_PATH=$(brew --prefix)" >> "$GITHUB_ENV"
+          echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+        fi
+    - shell: bash
+      env:
+        FTS_SANITIZER: ${{ inputs.sanitizer }}
+        FTS_BUILD_TYPE: ${{ inputs.build-type }}
+      run: |
+        case "$FTS_SANITIZER" in
+          ASAN) instrumentation=address ;;
+          TSAN) instrumentation=thread ;;
+          UBSAN) instrumentation=undefined ;;
+          *) instrumentation= ;;
+        esac
+        if [[ -n "$instrumentation" ]]; then
+          python3 tools/bootstrap_dependencies.py --jobs 4 --build-directory build-instrumented --sanitizer "$instrumentation"
+        else
+          python3 tools/bootstrap_dependencies.py --jobs 4 --build-type "$FTS_BUILD_TYPE" --build-directory build
+        fi

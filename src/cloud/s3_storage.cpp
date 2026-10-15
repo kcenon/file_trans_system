@@ -7,10 +7,13 @@
 #include "kcenon/file_transfer/cloud/s3_storage.h"
 #include "kcenon/file_transfer/cloud/cloud_utils.h"
 #include "kcenon/file_transfer/config/feature_flags.h"
+#include "kcenon/file_transfer/core/checksum.h"
+#include "kcenon/file_transfer/core/file_commit.h"
 
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <charconv>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -22,9 +25,6 @@
 #include <thread>
 
 // HTTP client integration enabled (see #147, #148)
-#if KCENON_WITH_NETWORK_SYSTEM
-#include <kcenon/network/core/http_client.h>
-#endif
 
 namespace kcenon::file_transfer {
 
@@ -121,744 +121,48 @@ auto build_complete_multipart_xml(
     return xml.str();
 }
 
+auto upload_headers(const std::string& key, const cloud_transfer_options& options)
+    -> std::map<std::string, std::string> {
+    std::map<std::string, std::string> headers{{"Content-Type", options.content_type.value_or(detect_content_type(key))}};
+    if (options.storage_class) headers["x-amz-storage-class"] = *options.storage_class;
+    if (options.server_side_encryption) headers["x-amz-server-side-encryption"] = *options.server_side_encryption;
+    if (options.kms_key_id) headers["x-amz-server-side-encryption-aws-kms-key-id"] = *options.kms_key_id;
+    if (options.acl) headers["x-amz-acl"] = *options.acl;
+    if (options.cache_control) headers["Cache-Control"] = *options.cache_control;
+    if (options.content_disposition) headers["Content-Disposition"] = *options.content_disposition;
+    if (options.content_encoding) headers["Content-Encoding"] = *options.content_encoding;
+    for (const auto& [key, value] : options.metadata) headers["x-amz-meta-" + key] = value;
+    return headers;
+}
+
 }  // namespace
 
 // ============================================================================
 // S3 Upload Stream Implementation
 // ============================================================================
 
-struct s3_upload_stream::impl {
-    std::string key;
-    s3_config config;
-    std::shared_ptr<credential_provider> credentials;
-    cloud_transfer_options options;
-
-    std::string upload_id_;
-    std::vector<std::pair<int, std::string>> completed_parts;  // part_number, etag
-    int current_part_number = 1;
-    std::vector<std::byte> part_buffer;
-    uint64_t bytes_written_ = 0;
-    bool finalized = false;
-    bool aborted = false;
-    bool initialized = false;
-
-#if KCENON_WITH_NETWORK_SYSTEM
-    std::shared_ptr<kcenon::network::core::http_client> http_client_;
-#endif
-
-    // Concurrent uploads support
-    struct pending_part {
-        int part_number;
-        std::future<result<std::string>> future;
-    };
-    std::vector<pending_part> pending_uploads;
-    std::mutex pending_mutex;
-
-    impl(const std::string& k,
-         const s3_config& cfg,
-         std::shared_ptr<credential_provider> creds,
-         const cloud_transfer_options& opts)
-        : key(k), config(cfg), credentials(std::move(creds)), options(opts) {
-        part_buffer.reserve(config.multipart.part_size);
-#if KCENON_WITH_NETWORK_SYSTEM
-        // Only initialize HTTP client when a custom endpoint is configured
-        if (config.endpoint.has_value()) {
-            http_client_ = std::make_shared<kcenon::network::core::http_client>(
-                std::chrono::milliseconds(300000));  // 5 minute timeout for uploads
-        }
-#endif
-    }
-
-    auto get_host() const -> std::string {
-        if (config.endpoint.has_value()) {
-            auto info = parse_endpoint(config.endpoint.value());
-            return info.host;
-        }
-
-        if (config.use_transfer_acceleration) {
-            return config.bucket + ".s3-accelerate.amazonaws.com";
-        }
-
-        if (config.use_path_style) {
-            return "s3." + config.region + ".amazonaws.com";
-        }
-
-        return config.bucket + ".s3." + config.region + ".amazonaws.com";
-    }
-
-    auto get_path(const std::string& object_key) const -> std::string {
-        if (config.use_path_style && !config.endpoint.has_value()) {
-            return "/" + config.bucket + "/" + object_key;
-        }
-        return "/" + object_key;
-    }
-
-    auto create_authorization_header(
-        const std::string& method,
-        const std::string& uri,
-        const std::string& query_string,
-        const std::map<std::string, std::string>& headers,
-        const std::string& payload_hash) const -> std::string {
-#ifdef FILE_TRANS_ENABLE_ENCRYPTION
-        auto creds = credentials->get_credentials();
-        if (!creds) {
-            return "";
-        }
-
-        auto static_creds = std::dynamic_pointer_cast<const static_credentials>(creds);
-        if (!static_creds) {
-            return "";
-        }
-
-        std::string date_stamp = get_date_stamp();
-        std::string amz_date = get_iso8601_time();
-
-        // Create canonical request
-        std::ostringstream canonical_request;
-        canonical_request << method << "\n";
-        canonical_request << url_encode(uri, false) << "\n";
-        canonical_request << query_string << "\n";
-
-        // Canonical headers (must be sorted)
-        std::map<std::string, std::string> sorted_headers;
-        for (const auto& [key, value] : headers) {
-            std::string lower_key = key;
-            std::transform(lower_key.begin(), lower_key.end(), lower_key.begin(),
-                           [](unsigned char c) { return std::tolower(c); });
-            sorted_headers[lower_key] = value;
-        }
-
-        std::ostringstream signed_headers_builder;
-        bool first = true;
-        for (const auto& [key, value] : sorted_headers) {
-            canonical_request << key << ":" << value << "\n";
-            if (!first) signed_headers_builder << ";";
-            signed_headers_builder << key;
-            first = false;
-        }
-        canonical_request << "\n";
-
-        std::string signed_headers = signed_headers_builder.str();
-        canonical_request << signed_headers << "\n";
-        canonical_request << payload_hash;
-
-        // Create string to sign
-        std::string algorithm = "AWS4-HMAC-SHA256";
-        std::string credential_scope = date_stamp + "/" + config.region + "/s3/aws4_request";
-
-        auto canonical_request_hash = sha256(canonical_request.str());
-
-        std::ostringstream string_to_sign;
-        string_to_sign << algorithm << "\n";
-        string_to_sign << amz_date << "\n";
-        string_to_sign << credential_scope << "\n";
-        string_to_sign << bytes_to_hex(canonical_request_hash);
-
-        // Calculate signature
-        auto k_date = hmac_sha256("AWS4" + static_creds->secret_access_key, date_stamp);
-        auto k_region = hmac_sha256(k_date, config.region);
-        auto k_service = hmac_sha256(k_region, "s3");
-        auto k_signing = hmac_sha256(k_service, "aws4_request");
-        auto signature = hmac_sha256(k_signing, string_to_sign.str());
-
-        // Build authorization header
-        std::ostringstream auth_header;
-        auth_header << algorithm << " ";
-        auth_header << "Credential=" << static_creds->access_key_id << "/" << credential_scope << ", ";
-        auth_header << "SignedHeaders=" << signed_headers << ", ";
-        auth_header << "Signature=" << bytes_to_hex(signature);
-
-        return auth_header.str();
-#else
-        return "";
-#endif
-    }
-
-    auto get_active_upload_count() -> std::size_t {
-        std::lock_guard<std::mutex> lock(pending_mutex);
-        std::size_t count = 0;
-        for (auto& pending : pending_uploads) {
-            if (pending.future.valid()) {
-                auto status = pending.future.wait_for(std::chrono::milliseconds(0));
-                if (status != std::future_status::ready) {
-                    ++count;
-                }
-            }
-        }
-        return count;
-    }
-
-    auto wait_for_slot() -> result<void> {
-        while (get_active_upload_count() >= config.multipart.max_concurrent_parts) {
-            // Wait for any pending upload to complete
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-
-            // Check for completed uploads and collect results
-            auto collect_result = collect_completed_uploads();
-            if (!collect_result.has_value()) {
-                return unexpected{collect_result.error()};
-            }
-        }
-        return result<void>{};
-    }
-
-    auto collect_completed_uploads() -> result<void> {
-        std::lock_guard<std::mutex> lock(pending_mutex);
-
-        for (auto it = pending_uploads.begin(); it != pending_uploads.end();) {
-            if (!it->future.valid()) {
-                it = pending_uploads.erase(it);
-                continue;
-            }
-
-            auto status = it->future.wait_for(std::chrono::milliseconds(0));
-            if (status == std::future_status::ready) {
-                auto etag_result = it->future.get();
-                if (!etag_result.has_value()) {
-                    return unexpected{etag_result.error()};
-                }
-                completed_parts.emplace_back(it->part_number, etag_result.value());
-                it = pending_uploads.erase(it);
-            } else {
-                ++it;
-            }
-        }
-        return result<void>{};
-    }
-
-    auto wait_all_uploads() -> result<void> {
-        std::lock_guard<std::mutex> lock(pending_mutex);
-
-        for (auto& pending : pending_uploads) {
-            if (pending.future.valid()) {
-                auto etag_result = pending.future.get();
-                if (!etag_result.has_value()) {
-                    return unexpected{etag_result.error()};
-                }
-                completed_parts.emplace_back(pending.part_number, etag_result.value());
-            }
-        }
-        pending_uploads.clear();
-        return result<void>{};
-    }
-
-    auto upload_part_async(int part_number, std::vector<std::byte> data) -> void {
-        auto future = std::async(std::launch::async, [this, part_number, data = std::move(data)]() {
-            return this->upload_part(part_number, std::span<const std::byte>(data));
-        });
-
-        std::lock_guard<std::mutex> lock(pending_mutex);
-        pending_uploads.push_back({part_number, std::move(future)});
-    }
-
-    auto initiate_multipart_upload() -> result<std::string> {
-#if KCENON_WITH_NETWORK_SYSTEM
-        if (http_client_) {
-            std::string path = get_path(key);
-            std::string query = "uploads=";
-            std::string host = get_host();
-            std::string amz_date = get_iso8601_time();
-            std::string payload_hash = bytes_to_hex(sha256(""));
-
-            // Build headers
-            std::map<std::string, std::string> headers;
-            headers["Host"] = host;
-            headers["x-amz-date"] = amz_date;
-            headers["x-amz-content-sha256"] = payload_hash;
-            headers["Content-Type"] = detect_content_type(key);
-
-            // Create authorization header
-            std::string auth = create_authorization_header("POST", path, query, headers, payload_hash);
-            if (!auth.empty()) {
-                headers["Authorization"] = auth;
-            }
-
-            // Build full URL
-            std::string url = build_s3_url(host, config.use_ssl, path, query);
-
-            // Send POST request
-            auto response = http_client_->post(url, std::string{}, headers);
-            if (response.is_ok()) {
-                auto& resp = response.value();
-                if (resp.status_code == 200) {
-                    // Parse UploadId from XML response
-                    std::string body_str = resp.get_body_string();
-                    auto upload_id = extract_xml_element(body_str, "UploadId");
-                    if (upload_id.has_value()) {
-                        upload_id_ = upload_id.value();
-                        initialized = true;
-                        return upload_id_;
-                    }
-                } else {
-                    // Server returned error - don't fall back
-                    return unexpected{error{error_code::internal_error,
-                        "S3 CreateMultipartUpload failed with status " + std::to_string(resp.status_code)}};
-                }
-            }
-            // If request failed (network error), fall through to local simulation
-        }
-#endif
-        // Fallback: Local simulation when network system is not available or request failed
-        upload_id_ = bytes_to_hex(generate_random_bytes(16));
-        initialized = true;
-        return upload_id_;
-    }
-
-    auto upload_part(int part_number, std::span<const std::byte> data) -> result<std::string> {
-        auto hash = sha256_bytes(data);
-        std::string payload_hash = bytes_to_hex(hash);
-
-#if KCENON_WITH_NETWORK_SYSTEM
-        if (http_client_) {
-            std::string path = get_path(key);
-            std::string query = "partNumber=" + std::to_string(part_number) + "&uploadId=" + upload_id_;
-            std::string host = get_host();
-            std::string amz_date = get_iso8601_time();
-
-            // Build headers
-            std::map<std::string, std::string> headers;
-            headers["Host"] = host;
-            headers["x-amz-date"] = amz_date;
-            headers["x-amz-content-sha256"] = payload_hash;
-            headers["Content-Length"] = std::to_string(data.size());
-
-            // Create authorization header
-            std::string auth = create_authorization_header("PUT", path, query, headers, payload_hash);
-            if (!auth.empty()) {
-                headers["Authorization"] = auth;
-            }
-
-            // Build full URL
-            std::string url = build_s3_url(host, config.use_ssl, path, query);
-
-            // Convert data to string for PUT request
-            std::string body_str(reinterpret_cast<const char*>(data.data()), data.size());
-
-            // Send PUT request
-            auto response = http_client_->put(url, body_str, headers);
-            if (response.is_ok()) {
-                auto& resp = response.value();
-                if (resp.status_code == 200) {
-                    // Get ETag from response headers
-                    auto etag = resp.get_header("ETag");
-                    if (etag.has_value()) {
-                        return etag.value();
-                    }
-                    // Fallback: compute ETag locally
-                    return "\"" + payload_hash + "\"";
-                }
-                // Server returned error - don't fall back
-                return unexpected{error{error_code::internal_error,
-                    "S3 UploadPart failed with status " + std::to_string(resp.status_code)}};
-            }
-            // If request failed (network error), fall through to local simulation
-        }
-#endif
-        // Fallback: Local simulation
-        return "\"" + payload_hash + "\"";
-    }
-
-    auto complete_multipart_upload() -> result<upload_result> {
-        // Sort parts by part number
-        std::sort(completed_parts.begin(), completed_parts.end(),
-                  [](const auto& a, const auto& b) { return a.first < b.first; });
-
-#if KCENON_WITH_NETWORK_SYSTEM
-        if (http_client_) {
-            // Build XML body
-            std::string xml_body = build_complete_multipart_xml(completed_parts);
-
-            std::string path = get_path(key);
-            std::string query = "uploadId=" + upload_id_;
-            std::string host = get_host();
-            std::string amz_date = get_iso8601_time();
-            std::string payload_hash = bytes_to_hex(sha256(xml_body));
-
-            // Build headers
-            std::map<std::string, std::string> headers;
-            headers["Host"] = host;
-            headers["x-amz-date"] = amz_date;
-            headers["x-amz-content-sha256"] = payload_hash;
-            headers["Content-Type"] = "application/xml";
-            headers["Content-Length"] = std::to_string(xml_body.size());
-
-            // Create authorization header
-            std::string auth = create_authorization_header("POST", path, query, headers, payload_hash);
-            if (!auth.empty()) {
-                headers["Authorization"] = auth;
-            }
-
-            // Build full URL
-            std::string url = build_s3_url(host, config.use_ssl, path, query);
-
-            // Send POST request
-            auto response = http_client_->post(url, xml_body, headers);
-            if (response.is_ok()) {
-                auto& resp = response.value();
-                if (resp.status_code == 200) {
-                    // Parse response
-                    std::string body_str = resp.get_body_string();
-
-                    upload_result result;
-                    result.key = key;
-                    result.bytes_uploaded = bytes_written_;
-                    result.upload_id = upload_id_;
-
-                    auto etag = extract_xml_element(body_str, "ETag");
-                    if (etag.has_value()) {
-                        result.etag = etag.value();
-                    }
-
-                    return result;
-                }
-                // Server returned error - don't fall back
-                return unexpected{error{error_code::internal_error,
-                    "S3 CompleteMultipartUpload failed with status " + std::to_string(resp.status_code)}};
-            }
-            // If request failed (network error), fall through to local simulation
-        }
-#endif
-        // Fallback: Local simulation
-        upload_result result;
-        result.key = key;
-        result.bytes_uploaded = bytes_written_;
-        result.upload_id = upload_id_;
-
-        std::ostringstream etag_builder;
-        etag_builder << "\"";
-        for (const auto& [num, part_etag] : completed_parts) {
-            auto clean_etag = part_etag;
-            if (!clean_etag.empty() && clean_etag.front() == '"') {
-                clean_etag = clean_etag.substr(1);
-            }
-            if (!clean_etag.empty() && clean_etag.back() == '"') {
-                clean_etag = clean_etag.substr(0, clean_etag.size() - 1);
-            }
-            etag_builder << clean_etag;
-        }
-        etag_builder << "-" << completed_parts.size() << "\"";
-        result.etag = etag_builder.str();
-
-        return result;
-    }
-
-    auto abort_multipart_upload() -> result<void> {
-#if KCENON_WITH_NETWORK_SYSTEM
-        if (!http_client_ || upload_id_.empty()) {
-            aborted = true;
-            return result<void>{};
-        }
-
-        std::string path = get_path(key);
-        std::string query = "uploadId=" + upload_id_;
-        std::string host = get_host();
-        std::string amz_date = get_iso8601_time();
-        std::string payload_hash = bytes_to_hex(sha256(""));
-
-        // Build headers
-        std::map<std::string, std::string> headers;
-        headers["Host"] = host;
-        headers["x-amz-date"] = amz_date;
-        headers["x-amz-content-sha256"] = payload_hash;
-
-        // Create authorization header
-        std::string auth = create_authorization_header("DELETE", path, query, headers, payload_hash);
-        if (!auth.empty()) {
-            headers["Authorization"] = auth;
-        }
-
-        // Build full URL
-        std::string url = build_s3_url(host, config.use_ssl, path, query);
-
-        // Send DELETE request
-        auto response = http_client_->del(url, headers);
-        // Ignore response - abort is best effort
-
-        aborted = true;
-        return result<void>{};
-#else
-        aborted = true;
-        return result<void>{};
-#endif
-    }
-};
-
-s3_upload_stream::s3_upload_stream(
-    const std::string& key,
-    const s3_config& config,
-    std::shared_ptr<credential_provider> credentials,
-    const cloud_transfer_options& options)
-    : impl_(std::make_unique<impl>(key, config, std::move(credentials), options)) {
-    // Initiate multipart upload
-    impl_->initiate_multipart_upload();
-}
-
-s3_upload_stream::~s3_upload_stream() {
-    if (impl_ && !impl_->finalized && !impl_->aborted) {
-        // Abort incomplete upload on destruction
-        impl_->abort_multipart_upload();
-    }
-}
-
-s3_upload_stream::s3_upload_stream(s3_upload_stream&&) noexcept = default;
-auto s3_upload_stream::operator=(s3_upload_stream&&) noexcept -> s3_upload_stream& = default;
-
-auto s3_upload_stream::write(std::span<const std::byte> data) -> result<std::size_t> {
-    if (!impl_) {
-        return unexpected{error{error_code::not_initialized, "Stream not initialized"}};
-    }
-
-    if (impl_->finalized || impl_->aborted) {
-        return unexpected{error{error_code::internal_error, "Stream already closed"}};
-    }
-
-    std::size_t bytes_processed = 0;
-    const std::byte* ptr = data.data();
-    std::size_t remaining = data.size();
-
-    while (remaining > 0) {
-        std::size_t space_in_buffer = impl_->config.multipart.part_size - impl_->part_buffer.size();
-        std::size_t to_copy = std::min(remaining, space_in_buffer);
-
-        impl_->part_buffer.insert(impl_->part_buffer.end(), ptr, ptr + to_copy);
-        ptr += to_copy;
-        remaining -= to_copy;
-        bytes_processed += to_copy;
-
-        // Upload part if buffer is full
-        if (impl_->part_buffer.size() >= impl_->config.multipart.part_size) {
-            // Wait for a slot if max concurrent uploads reached
-            auto wait_result = impl_->wait_for_slot();
-            if (!wait_result.has_value()) {
-                return unexpected{wait_result.error()};
-            }
-
-            // Collect any completed uploads
-            auto collect_result = impl_->collect_completed_uploads();
-            if (!collect_result.has_value()) {
-                return unexpected{collect_result.error()};
-            }
-
-            // Start async upload
-            int part_num = impl_->current_part_number;
-            std::vector<std::byte> part_data(impl_->part_buffer.begin(), impl_->part_buffer.end());
-            impl_->upload_part_async(part_num, std::move(part_data));
-
-            impl_->current_part_number++;
-            impl_->part_buffer.clear();
-        }
-    }
-
-    impl_->bytes_written_ += bytes_processed;
-    return bytes_processed;
-}
-
-auto s3_upload_stream::finalize() -> result<upload_result> {
-    if (!impl_) {
-        return unexpected{error{error_code::not_initialized, "Stream not initialized"}};
-    }
-
-    if (impl_->finalized) {
-        return unexpected{error{error_code::internal_error, "Stream already finalized"}};
-    }
-
-    if (impl_->aborted) {
-        return unexpected{error{error_code::internal_error, "Stream was aborted"}};
-    }
-
-    // Upload remaining data as final part
-    if (!impl_->part_buffer.empty()) {
-        auto result = impl_->upload_part(
-            impl_->current_part_number,
-            std::span<const std::byte>(impl_->part_buffer));
-
-        if (!result.has_value()) {
-            // Try to abort on failure
-            impl_->abort_multipart_upload();
-            return unexpected{result.error()};
-        }
-
-        impl_->completed_parts.emplace_back(impl_->current_part_number, result.value());
-    }
-
-    // Wait for all pending async uploads to complete
-    auto wait_result = impl_->wait_all_uploads();
-    if (!wait_result.has_value()) {
-        // Try to abort on failure
-        impl_->abort_multipart_upload();
-        return unexpected{wait_result.error()};
-    }
-
-    impl_->finalized = true;
-    return impl_->complete_multipart_upload();
-}
-
-auto s3_upload_stream::abort() -> result<void> {
-    if (!impl_) {
-        return unexpected{error{error_code::not_initialized, "Stream not initialized"}};
-    }
-
-    if (impl_->aborted) {
-        return result<void>{};
-    }
-
-    return impl_->abort_multipart_upload();
-}
-
-auto s3_upload_stream::bytes_written() const -> uint64_t {
-    return impl_ ? impl_->bytes_written_ : 0;
-}
-
-auto s3_upload_stream::upload_id() const -> std::optional<std::string> {
-    if (impl_ && !impl_->upload_id_.empty()) {
-        return impl_->upload_id_;
-    }
-    return std::nullopt;
-}
-
-// ============================================================================
-// S3 Download Stream Implementation
-// ============================================================================
-
-struct s3_download_stream::impl {
-    std::string key;
-    s3_config config;
-    std::shared_ptr<credential_provider> credentials;
-
-    cloud_object_metadata metadata_;
-    uint64_t bytes_read_ = 0;
-    uint64_t total_size_ = 0;
-    std::vector<std::byte> buffer;
-    std::size_t buffer_pos = 0;
-    bool initialized = false;
-
-    impl(const std::string& k,
-         const s3_config& cfg,
-         std::shared_ptr<credential_provider> creds)
-        : key(k), config(cfg), credentials(std::move(creds)) {}
-
-    auto initialize() -> result<void> {
-        // TODO: Implement HEAD request to get object metadata
-        // HEAD /{bucket}/{key}
-        metadata_.key = key;
-        metadata_.size = 0;  // Will be set from response
-        metadata_.content_type = detect_content_type(key);
-        initialized = true;
-        return result<void>{};
-    }
-
-    auto fetch_range(uint64_t start, uint64_t end) -> result<std::vector<std::byte>> {
-        // TODO: Implement GET request with Range header
-        // GET /{bucket}/{key} with Range: bytes={start}-{end}
-        return std::vector<std::byte>{};
-    }
-};
-
-s3_download_stream::s3_download_stream(
-    const std::string& key,
-    const s3_config& config,
-    std::shared_ptr<credential_provider> credentials)
-    : impl_(std::make_unique<impl>(key, config, std::move(credentials))) {
-    impl_->initialize();
-}
-
-s3_download_stream::~s3_download_stream() = default;
-
-s3_download_stream::s3_download_stream(s3_download_stream&&) noexcept = default;
-auto s3_download_stream::operator=(s3_download_stream&&) noexcept -> s3_download_stream& = default;
-
-auto s3_download_stream::read(std::span<std::byte> buffer) -> result<std::size_t> {
-    if (!impl_) {
-        return unexpected{error{error_code::not_initialized, "Stream not initialized"}};
-    }
-
-    // TODO: Implement actual streaming download
-    return 0;
-}
-
-auto s3_download_stream::has_more() const -> bool {
-    return impl_ && impl_->bytes_read_ < impl_->total_size_;
-}
-
-auto s3_download_stream::bytes_read() const -> uint64_t {
-    return impl_ ? impl_->bytes_read_ : 0;
-}
-
-auto s3_download_stream::total_size() const -> uint64_t {
-    return impl_ ? impl_->total_size_ : 0;
-}
-
-auto s3_download_stream::metadata() const -> const cloud_object_metadata& {
-    static cloud_object_metadata empty_metadata;
-    return impl_ ? impl_->metadata_ : empty_metadata;
-}
-
-// ============================================================================
-// S3 Storage Implementation
-// ============================================================================
-
-struct s3_storage::impl {
+struct s3_requester {
     s3_config config_;
     std::shared_ptr<credential_provider> credentials_;
-    cloud_storage_state state_ = cloud_storage_state::disconnected;
-    cloud_storage_statistics stats_;
-
-#if KCENON_WITH_NETWORK_SYSTEM
-    std::shared_ptr<kcenon::network::core::http_client> http_client_;
-#endif
-
-    std::function<void(const upload_progress&)> upload_progress_callback_;
-    std::function<void(const download_progress&)> download_progress_callback_;
-    std::function<void(cloud_storage_state)> state_changed_callback_;
-
-    mutable std::mutex mutex_;
-    std::chrono::steady_clock::time_point connected_at_;
-
-    impl(const s3_config& config, std::shared_ptr<credential_provider> credentials)
-        : config_(config), credentials_(std::move(credentials)) {
-#if KCENON_WITH_NETWORK_SYSTEM
-        // Only initialize HTTP client when a custom endpoint is configured
-        // (e.g., MinIO, LocalStack) to enable real API calls.
-        // For standard AWS S3 without custom endpoint, use simulation mode
-        // to avoid network dependencies in unit tests.
-        if (config_.endpoint.has_value()) {
-            http_client_ = std::make_shared<kcenon::network::core::http_client>(
-                std::chrono::milliseconds(30000));  // 30 second timeout
-        }
-#endif
-    }
-
-    void set_state(cloud_storage_state new_state) {
-        state_ = new_state;
-        if (state_changed_callback_) {
-            state_changed_callback_(new_state);
-        }
-    }
-
+    cloud_http_transport transport_;
+    s3_requester(const s3_config& config, std::shared_ptr<credential_provider> credentials,
+                 cloud_http_transport transport)
+        : config_(config), credentials_(std::move(credentials)),
+          transport_(transport ? std::move(transport) : make_default_cloud_http_transport()) {}
     auto get_host() const -> std::string {
-        if (config_.endpoint.has_value()) {
-            auto info = parse_endpoint(config_.endpoint.value());
-            return info.host;
+        if (config_.endpoint) {
+            auto info = parse_endpoint(*config_.endpoint);
+            auto host = info.host;
+            if (!config_.use_path_style) host = config_.bucket + "." + host;
+            if (info.port != (info.use_ssl ? "443" : "80")) host += ":" + info.port;
+            return host;
         }
-
-        if (config_.use_transfer_acceleration) {
-            return config_.bucket + ".s3-accelerate.amazonaws.com";
-        }
-
-        if (config_.use_path_style) {
-            return "s3." + config_.region + ".amazonaws.com";
-        }
-
-        return config_.bucket + ".s3." + config_.region + ".amazonaws.com";
+        if (config_.use_transfer_acceleration) return config_.bucket + ".s3-accelerate.amazonaws.com";
+        return (config_.use_path_style ? "" : config_.bucket + ".") + "s3." + config_.region + ".amazonaws.com";
     }
-
     auto get_path(const std::string& key) const -> std::string {
-        if (config_.use_path_style && !config_.endpoint.has_value()) {
-            return "/" + config_.bucket + "/" + key;
-        }
-        return "/" + key;
+        return (config_.use_path_style ? "/" + config_.bucket : "") + "/" + key;
     }
-
     auto create_authorization_header(
         const std::string& method,
         const std::string& uri,
@@ -876,8 +180,8 @@ struct s3_storage::impl {
             return "";
         }
 
-        std::string date_stamp = get_date_stamp();
-        std::string amz_date = get_iso8601_time();
+        std::string date_stamp = headers.at("x-amz-date").substr(0, 8);
+        std::string amz_date = headers.at("x-amz-date");
 
         // Create canonical request
         std::ostringstream canonical_request;
@@ -940,10 +244,501 @@ struct s3_storage::impl {
 #endif
     }
 
+
+    auto send_request(const std::string& method, const std::string& path, const std::string& query,
+                      std::span<const std::byte> body,
+                      const std::map<std::string, std::string>& extra_headers = {},
+                      std::size_t max_response_bytes = 1024 * 1024,
+                      const cloud_http_body_source* source = nullptr) -> result<cloud_http_response> {
+        auto creds = std::dynamic_pointer_cast<const static_credentials>(credentials_->get_credentials());
+        if (!creds) return unexpected{error{error_code::invalid_configuration, "Missing S3 signing credentials"}};
+        cloud_http_request request;
+        request.method = method; request.body = body;
+        if (source) request.source = *source;
+        request.connect_timeout = config_.connect_timeout;
+        request.timeout = config_.request_timeout;
+        request.verify_ssl = config_.verify_ssl; request.ca_cert_path = config_.ca_cert_path;
+        request.max_response_bytes = max_response_bytes;
+        request.headers = extra_headers;
+        request.headers["Host"] = get_host(); request.headers["x-amz-date"] = get_iso8601_time();
+        const auto payload_hash = source ? source->sha256 : bytes_to_hex(sha256_bytes(body));
+        request.headers["x-amz-content-sha256"] = payload_hash;
+        if (creds->session_token) request.headers["x-amz-security-token"] = *creds->session_token;
+        // SigV4 requires lexicographic ordering of encoded query pairs.
+        std::vector<std::string> query_parts;
+        std::istringstream split(query); std::string part;
+        while (std::getline(split, part, '&')) if (!part.empty()) query_parts.push_back(part);
+        std::sort(query_parts.begin(), query_parts.end()); std::string canonical_query;
+        for (const auto& pair : query_parts) { if (!canonical_query.empty()) canonical_query += '&'; canonical_query += pair; }
+        auto authorization = create_authorization_header(method, path, canonical_query, request.headers, payload_hash);
+        if (authorization.empty()) return unexpected{error{error_code::invalid_configuration, "S3 signing requires encryption support"}};
+        request.headers["Authorization"] = std::move(authorization);
+        auto ssl = config_.endpoint ? parse_endpoint(*config_.endpoint).use_ssl : config_.use_ssl;
+        request.url = build_s3_url(get_host(), ssl, url_encode(path, false), canonical_query);
+        const auto attempts = std::max<std::size_t>(1, config_.retry.max_attempts);
+        for (std::size_t attempt = 0;; ++attempt) {
+            auto response = transport_(request);
+            const bool retry = response ?
+                ((response.value().status_code == 429 && config_.retry.retry_on_rate_limit) ||
+                 (response.value().status_code >= 500 && config_.retry.retry_on_server_error)) :
+                (config_.retry.retry_on_connection_error &&
+                 (response.error().code == error_code::connection_failed || response.error().code == error_code::connection_timeout));
+            if (!retry || attempt + 1 >= attempts) return response;
+            std::this_thread::sleep_for(calculate_retry_delay(config_.retry, attempt + 1));
+        }
+    }
+};
+
+struct s3_upload_stream::impl {
+    std::string key;
+    s3_config config;
+    std::shared_ptr<credential_provider> credentials;
+    cloud_transfer_options options;
+
+    std::string upload_id_;
+    std::vector<std::pair<int, std::string>> completed_parts;  // part_number, etag
+    int current_part_number = 1;
+    std::vector<std::byte> part_buffer;
+    uint64_t bytes_written_ = 0;
+    bool finalized = false;
+    bool aborted = false;
+    bool initialized = false;
+
+    s3_requester requester;
+    std::optional<error> failure;
+
+    // Concurrent uploads support
+    struct pending_part {
+        int part_number;
+        std::future<result<std::string>> future;
+    };
+    std::vector<pending_part> pending_uploads;
+    std::mutex pending_mutex;
+
+    impl(const std::string& k, const s3_config& cfg,
+         std::shared_ptr<credential_provider> creds, const cloud_transfer_options& opts,
+         cloud_http_transport transport)
+        : key(k), config(cfg), credentials(creds), options(opts), requester(cfg, std::move(creds), std::move(transport)) {
+        part_buffer.reserve(config.multipart.part_size);
+        requester.config_.request_timeout = options.timeout.count() > 0 ? options.timeout : config.multipart.part_timeout;
+    }
+
+    auto get_active_upload_count() -> std::size_t {
+        std::lock_guard<std::mutex> lock(pending_mutex);
+        std::size_t count = 0;
+        for (auto& pending : pending_uploads) {
+            if (pending.future.valid()) {
+                auto status = pending.future.wait_for(std::chrono::milliseconds(0));
+                if (status != std::future_status::ready) {
+                    ++count;
+                }
+            }
+        }
+        return count;
+    }
+
+    auto wait_for_slot() -> result<void> {
+        while (get_active_upload_count() >= config.multipart.max_concurrent_parts) {
+            // Wait for any pending upload to complete
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
+            // Check for completed uploads and collect results
+            auto collect_result = collect_completed_uploads();
+            if (!collect_result.has_value()) {
+                return unexpected{collect_result.error()};
+            }
+        }
+        return result<void>{};
+    }
+
+    auto collect_completed_uploads() -> result<void> {
+        if (failure) return unexpected{*failure};
+        std::lock_guard<std::mutex> lock(pending_mutex);
+
+        for (auto it = pending_uploads.begin(); it != pending_uploads.end();) {
+            if (!it->future.valid()) {
+                it = pending_uploads.erase(it);
+                continue;
+            }
+
+            auto status = it->future.wait_for(std::chrono::milliseconds(0));
+            if (status == std::future_status::ready) {
+                auto etag_result = it->future.get();
+                if (!etag_result.has_value()) {
+                    failure = etag_result.error();
+                    return unexpected{etag_result.error()};
+                }
+                completed_parts.emplace_back(it->part_number, etag_result.value());
+                it = pending_uploads.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        return result<void>{};
+    }
+
+    auto wait_all_uploads() -> result<void> {
+        std::lock_guard<std::mutex> lock(pending_mutex);
+
+        for (auto& pending : pending_uploads) {
+            if (pending.future.valid()) {
+                auto etag_result = pending.future.get();
+                if (!etag_result.has_value()) {
+                    if (!failure) failure = etag_result.error();
+                } else completed_parts.emplace_back(pending.part_number, etag_result.value());
+            }
+        }
+        pending_uploads.clear();
+        return failure ? result<void>{unexpected{*failure}} : result<void>{};
+    }
+
+    auto upload_part_async(int part_number, std::vector<std::byte> data) -> void {
+        auto future = std::async(std::launch::async, [this, part_number, data = std::move(data)]() {
+            return this->upload_part(part_number, std::span<const std::byte>(data));
+        });
+
+        std::lock_guard<std::mutex> lock(pending_mutex);
+        pending_uploads.push_back({part_number, std::move(future)});
+    }
+
+    auto initiate_multipart_upload() -> result<std::string> {
+        auto response = requester.send_request("POST", requester.get_path(key), "uploads=", {}, upload_headers(key, options));
+        if (!response) return unexpected{response.error()};
+        auto body = response.value().get_body_string();
+        auto id = extract_xml_element(body, "UploadId");
+        if (response.value().status_code != 200 || !id || id->empty() ||
+            body.find("<InitiateMultipartUploadResult") == std::string::npos ||
+            body.find("</InitiateMultipartUploadResult>") == std::string::npos)
+            return unexpected{error{error_code::internal_error, "S3 CreateMultipartUpload failed or returned invalid XML (HTTP " + std::to_string(response.value().status_code) + ")"}};
+        upload_id_ = *id; initialized = true; return upload_id_;
+    }
+    auto upload_part(int number, std::span<const std::byte> data) -> result<std::string> {
+        if (number > 10000) return unexpected{error{error_code::file_too_large, "S3 multipart upload exceeds 10000 parts"}};
+        auto part_requester = requester;
+        part_requester.config_.retry.max_attempts = config.multipart.max_part_retries + 1;
+        auto response = part_requester.send_request("PUT", requester.get_path(key),
+            "partNumber=" + std::to_string(number) + "&uploadId=" + url_encode(upload_id_), data);
+        if (!response) return unexpected{response.error()};
+        auto etag = response.value().get_header("ETag");
+        if (response.value().status_code != 200 || !etag || etag->empty())
+            return unexpected{error{error_code::internal_error, "S3 UploadPart failed or omitted ETag (HTTP " + std::to_string(response.value().status_code) + ")"}};
+        return *etag;
+    }
+    auto complete_multipart_upload() -> result<upload_result> {
+        std::sort(completed_parts.begin(), completed_parts.end());
+        auto xml = build_complete_multipart_xml(completed_parts);
+        auto response = requester.send_request("POST", requester.get_path(key), "uploadId=" + url_encode(upload_id_),
+            std::as_bytes(std::span{xml.data(), xml.size()}), {{"Content-Type", "application/xml"}});
+        if (!response) return unexpected{response.error()};
+        auto body = response.value().get_body_string(); auto etag = extract_xml_element(body, "ETag");
+        if (response.value().status_code != 200 || body.find("<Error") != std::string::npos ||
+            body.find("<CompleteMultipartUploadResult") == std::string::npos ||
+            body.find("</CompleteMultipartUploadResult>") == std::string::npos || !etag || etag->empty())
+            return unexpected{error{error_code::internal_error, "S3 CompleteMultipartUpload failed or returned invalid XML (HTTP " + std::to_string(response.value().status_code) + ")"}};
+        upload_result result; result.key = key; result.bytes_uploaded = bytes_written_;
+        result.upload_id = upload_id_; result.etag = *etag; return result;
+    }
+    auto abort_multipart_upload() -> result<void> {
+        // Drain all part requests before aborting, including when one failed.
+        (void)wait_all_uploads();
+        if (upload_id_.empty()) { aborted = true; return {}; }
+        auto response = requester.send_request("DELETE", requester.get_path(key), "uploadId=" + url_encode(upload_id_), {});
+        if (!response) return unexpected{response.error()};
+        if (response.value().status_code != 204 && response.value().status_code != 404)
+            return unexpected{error{error_code::internal_error, "S3 AbortMultipartUpload failed (HTTP " + std::to_string(response.value().status_code) + ")"}};
+        aborted = true; return {};
+    }
+
+};
+
+s3_upload_stream::s3_upload_stream(
+    const std::string& key,
+    const s3_config& config,
+    std::shared_ptr<credential_provider> credentials,
+    const cloud_transfer_options& options, cloud_http_transport transport)
+    : impl_(std::make_unique<impl>(key, config, std::move(credentials), options, std::move(transport))) {
+    auto initialized = impl_->initiate_multipart_upload();
+    if (!initialized) impl_->failure = initialized.error();
+}
+
+s3_upload_stream::~s3_upload_stream() {
+    if (impl_ && !impl_->finalized && !impl_->aborted) {
+        // Abort incomplete upload on destruction
+        impl_->abort_multipart_upload();
+    }
+}
+
+s3_upload_stream::s3_upload_stream(s3_upload_stream&&) noexcept = default;
+auto s3_upload_stream::operator=(s3_upload_stream&&) noexcept -> s3_upload_stream& = default;
+
+auto s3_upload_stream::write(std::span<const std::byte> data) -> result<std::size_t> {
+    if (!impl_) {
+        return unexpected{error{error_code::not_initialized, "Stream not initialized"}};
+    }
+
+    if (impl_->finalized || impl_->aborted) {
+        return unexpected{error{error_code::internal_error, "Stream already closed"}};
+    }
+    if (impl_->failure) return unexpected{*impl_->failure};
+
+    std::size_t bytes_processed = 0;
+    const std::byte* ptr = data.data();
+    std::size_t remaining = data.size();
+
+    while (remaining > 0) {
+        std::size_t space_in_buffer = impl_->config.multipart.part_size - impl_->part_buffer.size();
+        std::size_t to_copy = std::min(remaining, space_in_buffer);
+
+        impl_->part_buffer.insert(impl_->part_buffer.end(), ptr, ptr + to_copy);
+        ptr += to_copy;
+        remaining -= to_copy;
+        bytes_processed += to_copy;
+
+        // Upload part if buffer is full
+        if (impl_->part_buffer.size() >= impl_->config.multipart.part_size) {
+            // Wait for a slot if max concurrent uploads reached
+            auto wait_result = impl_->wait_for_slot();
+            if (!wait_result.has_value()) {
+                return unexpected{wait_result.error()};
+            }
+
+            // Collect any completed uploads
+            auto collect_result = impl_->collect_completed_uploads();
+            if (!collect_result.has_value()) {
+                return unexpected{collect_result.error()};
+            }
+
+            // Start async upload
+            int part_num = impl_->current_part_number;
+            std::vector<std::byte> part_data(impl_->part_buffer.begin(), impl_->part_buffer.end());
+            impl_->upload_part_async(part_num, std::move(part_data));
+
+            impl_->current_part_number++;
+            impl_->part_buffer.clear();
+        }
+    }
+
+    impl_->bytes_written_ += bytes_processed;
+    return bytes_processed;
+}
+
+auto s3_upload_stream::finalize() -> result<upload_result> {
+    if (!impl_) {
+        return unexpected{error{error_code::not_initialized, "Stream not initialized"}};
+    }
+
+    if (impl_->finalized) {
+        return unexpected{error{error_code::internal_error, "Stream already finalized"}};
+    }
+
+    if (impl_->aborted) {
+        return unexpected{error{error_code::internal_error, "Stream was aborted"}};
+    }
+    if (impl_->failure) return unexpected{*impl_->failure};
+
+    // Upload remaining data as final part
+    // Finish the bounded in-flight set first; the last part must not exceed
+    // max_concurrent_parts by creating one additional synchronous request.
+    auto drained = impl_->wait_all_uploads();
+    if (!drained) { (void)impl_->abort_multipart_upload(); return unexpected{drained.error()}; }
+    if (!impl_->part_buffer.empty() || impl_->bytes_written_ == 0) {
+        auto result = impl_->upload_part(
+            impl_->current_part_number,
+            std::span<const std::byte>(impl_->part_buffer));
+
+        if (!result.has_value()) {
+            impl_->failure = result.error();
+            // Try to abort on failure
+            impl_->abort_multipart_upload();
+            return unexpected{result.error()};
+        }
+
+        impl_->completed_parts.emplace_back(impl_->current_part_number, result.value());
+    }
+
+    // Wait for all pending async uploads to complete
+    auto wait_result = impl_->wait_all_uploads();
+    if (!wait_result.has_value()) {
+        // Try to abort on failure
+        impl_->abort_multipart_upload();
+        return unexpected{wait_result.error()};
+    }
+
+    auto completed = impl_->complete_multipart_upload();
+    if (!completed) {
+        impl_->failure = completed.error();
+        (void)impl_->abort_multipart_upload();
+        return unexpected{completed.error()};
+    }
+    impl_->finalized = true;
+    return completed;
+}
+
+auto s3_upload_stream::abort() -> result<void> {
+    if (!impl_) {
+        return unexpected{error{error_code::not_initialized, "Stream not initialized"}};
+    }
+
+    if (impl_->aborted) {
+        return result<void>{};
+    }
+
+    auto aborted = impl_->abort_multipart_upload();
+    if (!aborted && !impl_->failure) impl_->failure = aborted.error();
+    return aborted;
+}
+
+auto s3_upload_stream::bytes_written() const -> uint64_t {
+    return impl_ ? impl_->bytes_written_ : 0;
+}
+
+auto s3_upload_stream::upload_id() const -> std::optional<std::string> {
+    if (impl_ && !impl_->upload_id_.empty()) {
+        return impl_->upload_id_;
+    }
+    return std::nullopt;
+}
+
+// ============================================================================
+// S3 Download Stream Implementation
+// ============================================================================
+
+namespace {
+auto unsigned_value(std::string_view text) -> std::optional<uint64_t> {
+    uint64_t value{}; auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size()) return std::nullopt;
+    return value;
+}
+auto object_metadata(const std::string& key, const cloud_http_response& response) -> result<cloud_object_metadata> {
+    if (response.status_code != 200) return unexpected{error{response.status_code == 404 ? error_code::file_not_found : error_code::file_read_error,
+        "S3 object HEAD failed (HTTP " + std::to_string(response.status_code) + ")"}};
+    auto length = response.get_header("Content-Length"), etag = response.get_header("ETag");
+    auto size = length ? unsigned_value(*length) : std::nullopt;
+    if (!size || !etag || etag->empty()) return unexpected{error{error_code::file_read_error, "S3 metadata omitted a valid size or object identity"}};
+    cloud_object_metadata metadata; metadata.key = key; metadata.size = *size; metadata.etag = *etag;
+    metadata.content_type = response.get_header("Content-Type").value_or(detect_content_type(key));
+    metadata.version_id = response.get_header("x-amz-version-id");
+    metadata.content_encoding = response.get_header("Content-Encoding");
+    metadata.storage_class = response.get_header("x-amz-storage-class");
+    if (auto modified = response.get_header("Last-Modified")) {
+        std::tm value{}; std::istringstream text(*modified); text >> std::get_time(&value, "%a, %d %b %Y %H:%M:%S");
+        if (!text.fail()) metadata.last_modified = std::chrono::system_clock::from_time_t(
+#ifdef _WIN32
+            _mkgmtime(&value)
+#else
+            timegm(&value)
+#endif
+        );
+    }
+    return metadata;
+}
+}
+
+struct s3_download_stream::impl {
+    std::string key;
+    s3_requester requester;
+    cloud_object_metadata metadata_;
+    uint64_t bytes_read_ = 0;
+    std::vector<uint8_t> buffer;
+    std::size_t buffer_pos = 0;
+    std::optional<error> failure;
+    impl(const std::string& k, const s3_config& config, std::shared_ptr<credential_provider> credentials,
+         cloud_http_transport transport) : key(k), requester(config, std::move(credentials), std::move(transport)) {}
+    auto initialize() -> result<void> {
+        auto response = requester.send_request("HEAD", requester.get_path(key), "", {});
+        if (!response) return unexpected{response.error()};
+        auto metadata = object_metadata(key, response.value());
+        if (!metadata) return unexpected{metadata.error()};
+        metadata_ = std::move(metadata.value()); return {};
+    }
+    auto fetch_range(uint64_t start, uint64_t end) -> result<void> {
+        auto response = requester.send_request("GET", requester.get_path(key), "", {},
+            {{"Range", "bytes=" + std::to_string(start) + "-" + std::to_string(end)}, {"If-Match", metadata_.etag}},
+            static_cast<std::size_t>(end - start + 1));
+        if (!response) return unexpected{response.error()};
+        const auto& value = response.value();
+        auto expected_range = "bytes " + std::to_string(start) + "-" + std::to_string(end) + "/" + std::to_string(metadata_.size);
+        if (value.status_code != 206 || value.get_header("Content-Range") != expected_range ||
+            value.get_header("ETag") != metadata_.etag || value.body.size() != end - start + 1)
+            return unexpected{error{error_code::file_read_error, "S3 range was invalid, truncated, or from a changed object (HTTP " + std::to_string(value.status_code) + ")"}};
+        buffer = std::move(response.value().body); buffer_pos = 0; return {};
+    }
+};
+
+s3_download_stream::s3_download_stream(const std::string& key, const s3_config& config,
+    std::shared_ptr<credential_provider> credentials, cloud_http_transport transport)
+    : impl_(std::make_unique<impl>(key, config, std::move(credentials), std::move(transport))) {
+    auto initialized = impl_->initialize(); if (!initialized) impl_->failure = initialized.error();
+}
+
+s3_download_stream::~s3_download_stream() = default;
+
+s3_download_stream::s3_download_stream(s3_download_stream&&) noexcept = default;
+auto s3_download_stream::operator=(s3_download_stream&&) noexcept -> s3_download_stream& = default;
+
+auto s3_download_stream::read(std::span<std::byte> buffer) -> result<std::size_t> {
+    if (!impl_) return unexpected{error{error_code::not_initialized, "Stream not initialized"}};
+    if (impl_->failure) return unexpected{*impl_->failure};
+    if (buffer.empty() || impl_->bytes_read_ == impl_->metadata_.size) return std::size_t{0};
+    if (impl_->buffer_pos == impl_->buffer.size()) {
+        auto size = std::min<uint64_t>(impl_->requester.config_.download_range_size, impl_->metadata_.size - impl_->bytes_read_);
+        auto fetched = impl_->fetch_range(impl_->bytes_read_, impl_->bytes_read_ + size - 1);
+        if (!fetched) { impl_->failure = fetched.error(); return unexpected{*impl_->failure}; }
+    }
+    auto count = std::min(buffer.size(), impl_->buffer.size() - impl_->buffer_pos);
+    std::memcpy(buffer.data(), impl_->buffer.data() + impl_->buffer_pos, count);
+    impl_->buffer_pos += count; impl_->bytes_read_ += count; return count;
+}
+
+auto s3_download_stream::has_more() const -> bool {
+    // A pending error must be observed through read(), never mistaken for EOF.
+    return impl_ && (impl_->failure || impl_->bytes_read_ < impl_->metadata_.size);
+}
+auto s3_download_stream::bytes_read() const -> uint64_t { return impl_ ? impl_->bytes_read_ : 0; }
+auto s3_download_stream::total_size() const -> uint64_t { return impl_ ? impl_->metadata_.size : 0; }
+
+auto s3_download_stream::metadata() const -> const cloud_object_metadata& {
+    static cloud_object_metadata empty_metadata;
+    return impl_ ? impl_->metadata_ : empty_metadata;
+}
+
+// ============================================================================
+// S3 Storage Implementation
+// ============================================================================
+
+struct s3_storage::impl : s3_requester {
+    std::atomic<cloud_storage_state> state_{cloud_storage_state::disconnected};
+    cloud_storage_statistics stats_;
+
+
+    std::function<void(const upload_progress&)> upload_progress_callback_;
+    std::function<void(const download_progress&)> download_progress_callback_;
+    std::function<void(cloud_storage_state)> state_changed_callback_;
+
+    mutable std::mutex mutex_;
+    std::chrono::steady_clock::time_point connected_at_;
+
+    impl(const s3_config& config, std::shared_ptr<credential_provider> credentials, cloud_http_transport transport)
+        : s3_requester(config, std::move(credentials), std::move(transport)) {}
+
+    void set_state(cloud_storage_state new_state) {
+        state_ = new_state;
+        std::function<void(cloud_storage_state)> callback;
+        { std::lock_guard lock(mutex_); callback = state_changed_callback_; }
+        if (callback) { try { callback(new_state); } catch (...) {} }
+    }
+
     void update_upload_stats(uint64_t bytes) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        stats_.bytes_uploaded += bytes;
-        stats_.upload_count++;
+        std::function<void(const upload_progress&)> callback;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stats_.bytes_uploaded += bytes; ++stats_.upload_count;
+            callback = upload_progress_callback_;
+        }
+        if (callback) {
+            upload_progress progress; progress.bytes_transferred = progress.total_bytes = bytes;
+            try { callback(progress); } catch (...) {}
+        }
     }
 
     void update_download_stats(uint64_t bytes) {
@@ -967,89 +762,13 @@ struct s3_storage::impl {
         stats_.errors++;
     }
 
-#if KCENON_WITH_NETWORK_SYSTEM
-    /**
-     * @brief Send HTTP request to S3
-     */
-    auto send_request(
-        const std::string& method,
-        const std::string& path,
-        const std::string& query_string,
-        const std::vector<std::byte>& body,
-        const std::map<std::string, std::string>& extra_headers = {})
-        -> result<kcenon::network::internal::http_response> {
 
-        if (!http_client_) {
-            return unexpected{error{error_code::not_initialized, "HTTP client not initialized"}};
-        }
-
-        std::string host = get_host();
-        std::string amz_date = get_iso8601_time();
-        std::string payload_hash = body.empty() ?
-            bytes_to_hex(sha256("")) :
-            bytes_to_hex(sha256_bytes(std::span<const std::byte>(body)));
-
-        // Build headers
-        std::map<std::string, std::string> headers;
-        headers["Host"] = host;
-        headers["x-amz-date"] = amz_date;
-        headers["x-amz-content-sha256"] = payload_hash;
-
-        // Add content length for non-empty body
-        if (!body.empty()) {
-            headers["Content-Length"] = std::to_string(body.size());
-        }
-
-        // Add extra headers
-        for (const auto& [key, value] : extra_headers) {
-            headers[key] = value;
-        }
-
-        // Create authorization header
-        std::string auth = create_authorization_header(method, path, query_string, headers, payload_hash);
-        if (!auth.empty()) {
-            headers["Authorization"] = auth;
-        }
-
-        // Build full URL
-        std::string url = build_s3_url(host, config_.use_ssl, path, query_string);
-
-        // Convert body to uint8_t vector for http_client
-        std::vector<uint8_t> body_uint8(body.size());
-        std::memcpy(body_uint8.data(), body.data(), body.size());
-
-        // Helper lambda to handle response
-        auto handle_response = [](kcenon::network::Result<kcenon::network::internal::http_response>&& response)
-            -> result<kcenon::network::internal::http_response> {
-            if (response.is_err()) {
-                return unexpected{error{error_code::connection_failed, "HTTP request failed"}};
-            }
-            return response.value();
-        };
-
-        // Send request based on method
-        if (method == "GET") {
-            return handle_response(http_client_->get(url, {}, headers));
-        } else if (method == "PUT") {
-            std::string body_str(reinterpret_cast<const char*>(body_uint8.data()), body_uint8.size());
-            return handle_response(http_client_->put(url, body_str, headers));
-        } else if (method == "POST") {
-            return handle_response(http_client_->post(url, body_uint8, headers));
-        } else if (method == "DELETE") {
-            return handle_response(http_client_->del(url, headers));
-        } else if (method == "HEAD") {
-            return handle_response(http_client_->head(url, headers));
-        } else {
-            return unexpected{error{error_code::internal_error, "Unsupported HTTP method: " + method}};
-        }
-    }
-#endif
 };
 
 s3_storage::s3_storage(
     const s3_config& config,
-    std::shared_ptr<credential_provider> credentials)
-    : impl_(std::make_unique<impl>(config, std::move(credentials))) {}
+    std::shared_ptr<credential_provider> credentials, cloud_http_transport transport)
+    : impl_(std::make_unique<impl>(config, std::move(credentials), std::move(transport))) {}
 
 s3_storage::~s3_storage() = default;
 
@@ -1058,8 +777,9 @@ auto s3_storage::operator=(s3_storage&&) noexcept -> s3_storage& = default;
 
 auto s3_storage::create(
     const s3_config& config,
-    std::shared_ptr<credential_provider> credentials) -> std::unique_ptr<s3_storage> {
-    if (config.bucket.empty()) {
+    std::shared_ptr<credential_provider> credentials, cloud_http_transport transport) -> std::unique_ptr<s3_storage> {
+    if (config.bucket.empty() || config.multipart.part_size == 0 || config.multipart.max_concurrent_parts == 0 ||
+        config.download_range_size == 0 || config.file_io_buffer_size == 0) {
         return nullptr;
     }
 
@@ -1071,7 +791,7 @@ auto s3_storage::create(
         return nullptr;
     }
 
-    return std::unique_ptr<s3_storage>(new s3_storage(config, std::move(credentials)));
+    return std::unique_ptr<s3_storage>(new s3_storage(config, std::move(credentials), std::move(transport)));
 }
 
 auto s3_storage::provider() const -> cloud_provider {
@@ -1095,13 +815,15 @@ auto s3_storage::connect() -> result<void> {
         return unexpected{error{error_code::internal_error, "Invalid credentials"}};
     }
 
-#if KCENON_WITH_NETWORK_SYSTEM
-    // Try to perform HEAD request on bucket to validate access
-    // If the request fails (e.g., no network), fall back to local simulation mode
+    // A successful bucket HEAD is required before reporting connection readiness.
     std::string path = impl_->config_.use_path_style ?
         "/" + impl_->config_.bucket : "/";
 
     auto response = impl_->send_request("HEAD", path, "", {});
+    if (!response) {
+        impl_->set_state(cloud_storage_state::error); impl_->update_error_stats();
+        return unexpected{response.error()};
+    }
     if (response.has_value()) {
         auto& resp = response.value();
         if (resp.status_code == 403) {
@@ -1120,9 +842,6 @@ auto s3_storage::connect() -> result<void> {
                 "Failed to access bucket with status " + std::to_string(resp.status_code)}};
         }
     }
-    // If send_request fails (network error, no server available),
-    // we proceed anyway to allow local simulation mode for testing
-#endif
 
     impl_->connected_at_ = std::chrono::steady_clock::now();
     impl_->stats_.connected_at = impl_->connected_at_;
@@ -1145,7 +864,7 @@ auto s3_storage::is_connected() const -> bool {
 }
 
 auto s3_storage::state() const -> cloud_storage_state {
-    return impl_ ? impl_->state_ : cloud_storage_state::disconnected;
+    return impl_ ? impl_->state_.load() : cloud_storage_state::disconnected;
 }
 
 auto s3_storage::upload(
@@ -1192,83 +911,76 @@ auto s3_storage::upload(
         return result;
     }
 
-    // Single PUT request for small files
-    auto content_hash = sha256_bytes(data);
-    std::string payload_hash = bytes_to_hex(content_hash);
-
-#if KCENON_WITH_NETWORK_SYSTEM
-    std::string path = impl_->get_path(key);
-    std::map<std::string, std::string> extra_headers;
-    extra_headers["Content-Type"] = detect_content_type(key);
-
-    std::vector<std::byte> body_vec(data.begin(), data.end());
-    auto response = impl_->send_request("PUT", path, "", body_vec, extra_headers);
-    if (response.has_value()) {
-        auto& resp = response.value();
-        if (resp.status_code != 200 && resp.status_code != 201) {
-            impl_->update_error_stats();
-            return unexpected{error{error_code::internal_error,
-                "S3 PutObject failed with status " + std::to_string(resp.status_code)}};
-        }
-
-        upload_result result;
-        result.key = key;
-        auto etag = resp.get_header("ETag");
-        result.etag = etag.value_or("\"" + payload_hash + "\"");
-        result.bytes_uploaded = data.size();
-
-        auto end_time = std::chrono::steady_clock::now();
-        result.duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-            end_time - start_time);
-
-        impl_->update_upload_stats(data.size());
-        return result;
+    auto response = impl_->send_request("PUT", impl_->get_path(key), "", data,
+        upload_headers(key, options));
+    if (!response) { impl_->update_error_stats(); return unexpected{response.error()}; }
+    auto etag = response.value().get_header("ETag");
+    if ((response.value().status_code != 200 && response.value().status_code != 201) || !etag || etag->empty()) {
+        impl_->update_error_stats();
+        return unexpected{error{error_code::internal_error, "S3 PutObject failed or omitted ETag (HTTP " + std::to_string(response.value().status_code) + ")"}};
     }
-    // If send_request fails (network error), fall through to local simulation
-#endif
-
-    // Local simulation fallback
-    upload_result result;
-    result.key = key;
-    result.etag = "\"" + payload_hash + "\"";
-    result.bytes_uploaded = data.size();
-
-    auto end_time = std::chrono::steady_clock::now();
-    result.duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-        end_time - start_time);
-
-    impl_->update_upload_stats(data.size());
-    return result;
+    upload_result result; result.key = key; result.etag = *etag; result.bytes_uploaded = data.size();
+    result.duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start_time);
+    impl_->update_upload_stats(data.size()); return result;
 }
 
-auto s3_storage::upload_file(
-    const std::filesystem::path& local_path,
-    const std::string& key,
+auto s3_storage::upload_file(const std::filesystem::path& local_path, const std::string& key,
     const cloud_transfer_options& options) -> result<upload_result> {
-    if (!is_connected()) {
-        return unexpected{error{error_code::not_initialized, "Not connected"}};
-    }
-
-    if (!std::filesystem::exists(local_path)) {
-        return unexpected{error{error_code::file_not_found, "File not found: " + local_path.string()}};
-    }
-
-    auto file_size = std::filesystem::file_size(local_path);
-
-    // Read file content
+    if (!is_connected()) return unexpected{error{error_code::not_initialized, "Not connected"}};
+    std::error_code ec;
+    auto size = std::filesystem::file_size(local_path, ec);
+    if (ec) return unexpected{error{error_code::file_read_error, "Cannot read upload file: " + ec.message()}};
     std::ifstream file(local_path, std::ios::binary);
-    if (!file) {
-        return unexpected{error{error_code::file_access_denied, "Cannot open file: " + local_path.string()}};
+    if (!file) return unexpected{error{error_code::file_access_denied, "Cannot open upload file"}};
+    const auto started = std::chrono::steady_clock::now();
+    result<upload_result> uploaded = unexpected{error{error_code::internal_error, "Upload did not complete"}};
+    if (impl_->config_.multipart.enabled && size >= impl_->config_.multipart.threshold) {
+        auto stream = create_upload_stream(key, options);
+        if (!stream) return unexpected{error{error_code::not_initialized, "Cannot create multipart stream"}};
+        std::vector<std::byte> buffer(impl_->config_.file_io_buffer_size);
+        uint64_t offset = 0;
+        while (offset < size) {
+            auto length = static_cast<std::size_t>(std::min<uint64_t>(buffer.size(), size - offset));
+            file.read(reinterpret_cast<char*>(buffer.data()), length);
+            if (file.gcount() != static_cast<std::streamsize>(length)) {
+                (void)stream->abort(); impl_->update_error_stats();
+                return unexpected{error{error_code::file_read_error, "Upload file changed or ended early"}};
+            }
+            auto written = stream->write(std::span{buffer}.first(length));
+            if (!written || written.value() != length) {
+                (void)stream->abort(); impl_->update_error_stats();
+                return unexpected{written ? error{error_code::file_write_error, "Incomplete multipart write"} : written.error()};
+            }
+            offset += length;
+        }
+        if (file.peek() != std::char_traits<char>::eof()) {
+            (void)stream->abort(); return unexpected{error{error_code::file_read_error, "Upload file grew during transfer"}};
+        }
+        uploaded = stream->finalize();
+    } else {
+        auto hash = checksum::sha256_file(local_path);
+        if (!hash) return unexpected{hash.error()};
+        cloud_http_body_source source;
+        source.size = size; source.sha256 = hash.value();
+        source.read = [&](uint64_t offset, std::span<std::byte> buffer) -> result<std::size_t> {
+            file.clear(); file.seekg(static_cast<std::streamoff>(offset));
+            file.read(reinterpret_cast<char*>(buffer.data()), buffer.size());
+            if (file.gcount() != static_cast<std::streamsize>(buffer.size()))
+                return unexpected{error{error_code::file_read_error, "Cannot read complete upload source"}};
+            return buffer.size();
+        };
+        auto response = impl_->send_request("PUT", impl_->get_path(key), "", {}, upload_headers(key, options), 1024 * 1024, &source);
+        if (!response) uploaded = unexpected{response.error()};
+        else {
+            auto etag = response.value().get_header("ETag");
+            if ((response.value().status_code != 200 && response.value().status_code != 201) || !etag || etag->empty())
+                uploaded = unexpected{error{error_code::file_write_error, "S3 file PUT did not confirm persistence"}};
+            else { upload_result result; result.key = key; result.bytes_uploaded = size; result.etag = *etag; uploaded = result; }
+        }
     }
-
-    std::vector<std::byte> data(file_size);
-    file.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(file_size));
-
-    if (!file) {
-        return unexpected{error{error_code::file_read_error, "Failed to read file: " + local_path.string()}};
-    }
-
-    return upload(key, data, options);
+    if (!uploaded) { impl_->update_error_stats(); return uploaded; }
+    uploaded.value().duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
+    impl_->update_upload_stats(size); return uploaded;
 }
 
 auto s3_storage::download(const std::string& key) -> result<std::vector<std::byte>> {
@@ -1276,10 +988,11 @@ auto s3_storage::download(const std::string& key) -> result<std::vector<std::byt
         return unexpected{error{error_code::not_initialized, "Not connected"}};
     }
 
-#if KCENON_WITH_NETWORK_SYSTEM
     std::string path = impl_->get_path(key);
 
-    auto response = impl_->send_request("GET", path, "", {});
+    // download() explicitly returns a whole-object vector; file/stream APIs use
+    // bounded range requests instead.
+    auto response = impl_->send_request("GET", path, "", {}, {}, 0);
     if (!response.has_value()) {
         impl_->update_error_stats();
         return unexpected{response.error()};
@@ -1302,58 +1015,35 @@ auto s3_storage::download(const std::string& key) -> result<std::vector<std::byt
 
     impl_->update_download_stats(data.size());
     return data;
-#else
-    // Fallback: Return empty data (stub implementation)
-    impl_->update_download_stats(0);
-    return std::vector<std::byte>{};
-#endif
 }
 
-auto s3_storage::download_file(
-    const std::string& key,
-    const std::filesystem::path& local_path) -> result<download_result> {
-    if (!is_connected()) {
-        return unexpected{error{error_code::not_initialized, "Not connected"}};
+auto s3_storage::download_file(const std::string& key, const std::filesystem::path& local_path) -> result<download_result> {
+    if (!is_connected()) return unexpected{error{error_code::not_initialized, "Not connected"}};
+    auto stream = create_download_stream(key);
+    if (!stream) return unexpected{error{error_code::not_initialized, "Cannot create download stream"}};
+    auto started = std::chrono::steady_clock::now();
+    std::error_code ec;
+    if (!local_path.parent_path().empty()) std::filesystem::create_directories(local_path.parent_path(), ec);
+    if (ec) return unexpected{error{error_code::file_write_error, ec.message()}};
+    auto temporary = local_path; temporary += "." + transfer_id::generate().to_string() + ".part";
+    struct cleanup { std::filesystem::path path; ~cleanup() { std::error_code ec; std::filesystem::remove(path, ec); } } guard{temporary};
+    std::ofstream file(temporary, std::ios::binary);
+    if (!file) return unexpected{error{error_code::file_write_error, "Cannot create download temporary file"}};
+    std::vector<std::byte> buffer(impl_->config_.file_io_buffer_size);
+    for (;;) {
+        auto read = stream->read(buffer);
+        if (!read) { impl_->update_error_stats(); return unexpected{read.error()}; }
+        if (!read.value()) break;
+        file.write(reinterpret_cast<const char*>(buffer.data()), read.value());
+        if (!file) return unexpected{error{error_code::file_write_error, "Cannot write downloaded data"}};
     }
-
-    auto start_time = std::chrono::steady_clock::now();
-
-    auto data_result = download(key);
-    if (!data_result.has_value()) {
-        return unexpected{data_result.error()};
-    }
-
-    auto& data = data_result.value();
-
-    // Create parent directories if needed
-    auto parent_path = local_path.parent_path();
-    if (!parent_path.empty() && !std::filesystem::exists(parent_path)) {
-        std::filesystem::create_directories(parent_path);
-    }
-
-    // Write to file
-    std::ofstream file(local_path, std::ios::binary);
-    if (!file) {
-        return unexpected{error{error_code::file_access_denied, "Cannot create file: " + local_path.string()}};
-    }
-
-    file.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
-
-    if (!file) {
-        return unexpected{error{error_code::file_write_error, "Failed to write file: " + local_path.string()}};
-    }
-
-    auto end_time = std::chrono::steady_clock::now();
-
-    download_result result;
-    result.key = key;
-    result.bytes_downloaded = data.size();
-    result.metadata.key = key;
-    result.metadata.size = data.size();
-    result.duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-        end_time - start_time);
-
-    return result;
+    file.close();
+    if (!file || stream->bytes_read() != stream->total_size()) return unexpected{error{error_code::file_write_error, "Incomplete file download"}};
+    auto committed = commit_file(temporary, local_path, true);
+    if (!committed) return unexpected{committed.error()};
+    download_result result; result.key = key; result.bytes_downloaded = stream->bytes_read(); result.metadata = stream->metadata();
+    result.duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
+    impl_->update_download_stats(result.bytes_downloaded); return result;
 }
 
 auto s3_storage::delete_object(const std::string& key) -> result<delete_result> {
@@ -1361,7 +1051,6 @@ auto s3_storage::delete_object(const std::string& key) -> result<delete_result> 
         return unexpected{error{error_code::not_initialized, "Not connected"}};
     }
 
-#if KCENON_WITH_NETWORK_SYSTEM
     std::string path = impl_->get_path(key);
 
     auto response = impl_->send_request("DELETE", path, "", {});
@@ -1383,13 +1072,6 @@ auto s3_storage::delete_object(const std::string& key) -> result<delete_result> 
 
     impl_->update_delete_stats();
     return result;
-#else
-    delete_result result;
-    result.key = key;
-
-    impl_->update_delete_stats();
-    return result;
-#endif
 }
 
 auto s3_storage::delete_objects(
@@ -1419,7 +1101,6 @@ auto s3_storage::exists(const std::string& key) -> result<bool> {
         return unexpected{error{error_code::not_initialized, "Not connected"}};
     }
 
-#if KCENON_WITH_NETWORK_SYSTEM
     std::string path = impl_->get_path(key);
 
     auto response = impl_->send_request("HEAD", path, "", {});
@@ -1439,9 +1120,6 @@ auto s3_storage::exists(const std::string& key) -> result<bool> {
     // Other status codes are errors
     return unexpected{error{error_code::internal_error,
         "S3 HeadObject failed with status " + std::to_string(resp.status_code)}};
-#else
-    return false;  // Stub
-#endif
 }
 
 auto s3_storage::get_metadata(const std::string& key) -> result<cloud_object_metadata> {
@@ -1449,7 +1127,6 @@ auto s3_storage::get_metadata(const std::string& key) -> result<cloud_object_met
         return unexpected{error{error_code::not_initialized, "Not connected"}};
     }
 
-#if KCENON_WITH_NETWORK_SYSTEM
     std::string path = impl_->get_path(key);
 
     auto response = impl_->send_request("HEAD", path, "", {});
@@ -1505,13 +1182,6 @@ auto s3_storage::get_metadata(const std::string& key) -> result<cloud_object_met
     }
 
     return metadata;
-#else
-    cloud_object_metadata metadata;
-    metadata.key = key;
-    metadata.content_type = detect_content_type(key);
-
-    return metadata;
-#endif
 }
 
 auto s3_storage::list_objects(
@@ -1520,7 +1190,6 @@ auto s3_storage::list_objects(
         return unexpected{error{error_code::not_initialized, "Not connected"}};
     }
 
-#if KCENON_WITH_NETWORK_SYSTEM
     // Build query string for ListObjectsV2
     std::ostringstream query_builder;
     query_builder << "list-type=2";
@@ -1638,14 +1307,6 @@ auto s3_storage::list_objects(
     }
 
     return result;
-#else
-    impl_->update_list_stats();
-
-    list_objects_result result;
-    result.is_truncated = false;
-
-    return result;
-#endif
 }
 
 auto s3_storage::copy_object(
@@ -1656,7 +1317,6 @@ auto s3_storage::copy_object(
         return unexpected{error{error_code::not_initialized, "Not connected"}};
     }
 
-#if KCENON_WITH_NETWORK_SYSTEM
     std::string path = impl_->get_path(dest_key);
 
     // Build copy source header
@@ -1711,12 +1371,6 @@ auto s3_storage::copy_object(
     }
 
     return metadata;
-#else
-    cloud_object_metadata metadata;
-    metadata.key = dest_key;
-
-    return metadata;
-#endif
 }
 
 auto s3_storage::upload_async(
@@ -1760,7 +1414,7 @@ auto s3_storage::create_upload_stream(
     }
 
     return std::unique_ptr<cloud_upload_stream>(
-        new s3_upload_stream(key, impl_->config_, impl_->credentials_, options));
+        new s3_upload_stream(key, impl_->config_, impl_->credentials_, options, impl_->transport_));
 }
 
 auto s3_storage::create_download_stream(
@@ -1770,7 +1424,7 @@ auto s3_storage::create_download_stream(
     }
 
     return std::unique_ptr<cloud_download_stream>(
-        new s3_download_stream(key, impl_->config_, impl_->credentials_));
+        new s3_download_stream(key, impl_->config_, impl_->credentials_, impl_->transport_));
 }
 
 auto s3_storage::generate_presigned_url(
@@ -1908,9 +1562,10 @@ auto s3_storage::generate_presigned_url(
     auto signature = hmac_sha256(k_signing, string_to_sign.str());
 
     // Build final URL
-    std::string protocol = impl_->config_.use_ssl ? "https" : "http";
+    const bool ssl = impl_->config_.endpoint ? parse_endpoint(*impl_->config_.endpoint).use_ssl : impl_->config_.use_ssl;
+    std::string protocol = ssl ? "https" : "http";
     std::ostringstream url_builder;
-    url_builder << protocol << "://" << host << uri;
+    url_builder << protocol << "://" << host << url_encode(uri, false);
     url_builder << "?" << query_string;
     url_builder << "&X-Amz-Signature=" << bytes_to_hex(signature);
 
@@ -1923,6 +1578,7 @@ auto s3_storage::generate_presigned_url(
 void s3_storage::on_upload_progress(
     std::function<void(const upload_progress&)> callback) {
     if (impl_) {
+        std::lock_guard lock(impl_->mutex_);
         impl_->upload_progress_callback_ = std::move(callback);
     }
 }
@@ -1930,6 +1586,7 @@ void s3_storage::on_upload_progress(
 void s3_storage::on_download_progress(
     std::function<void(const download_progress&)> callback) {
     if (impl_) {
+        std::lock_guard lock(impl_->mutex_);
         impl_->download_progress_callback_ = std::move(callback);
     }
 }
@@ -1937,6 +1594,7 @@ void s3_storage::on_download_progress(
 void s3_storage::on_state_changed(
     std::function<void(cloud_storage_state)> callback) {
     if (impl_) {
+        std::lock_guard lock(impl_->mutex_);
         impl_->state_changed_callback_ = std::move(callback);
     }
 }

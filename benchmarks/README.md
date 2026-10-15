@@ -1,3 +1,6 @@
+> Component microbenchmarks below do not measure verified network transfer.
+> Use the [public API harness](../docs/validation/PUBLIC_API_BENCHMARKS.md) for separate-process TCP throughput, RSS and concurrency measurements. Absolute LAN targets remain unqualified.
+
 # file_trans_system Benchmarks
 
 Performance benchmarks for the file_trans_system library, built with [Google Benchmark](https://github.com/google/benchmark).

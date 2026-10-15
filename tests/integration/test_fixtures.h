@@ -7,6 +7,8 @@
 #define KCENON_FILE_TRANSFER_TEST_FIXTURES_H
 
 #include <gtest/gtest.h>
+#include <asio.hpp>
+#include <kcenon/file_transfer/core/checksum.h>
 
 #include <kcenon/file_transfer/file_transfer.h>
 
@@ -18,6 +20,55 @@
 #include <vector>
 
 namespace kcenon::file_transfer::test {
+using namespace std::chrono_literals;
+
+template<class Predicate>
+bool eventually(Predicate condition, std::chrono::milliseconds timeout = 3s) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (!condition()) {
+        if (std::chrono::steady_clock::now() >= deadline) return false;
+        std::this_thread::sleep_for(1ms);
+    }
+    return true;
+}
+
+inline bool transfer_matches(result<transfer_handle>& pending,
+    const std::filesystem::path& source, const std::filesystem::path& destination,
+    std::chrono::milliseconds timeout = 10s) {
+    if (!pending) { ADD_FAILURE() << pending.error().message; return false; }
+    auto finished = pending.value().wait_for(timeout);
+    if (!finished) { ADD_FAILURE() << finished.error().message; return false; }
+    if (!finished.value().success) {
+        ADD_FAILURE() << finished.value().error_message.value_or("Transfer failed"); return false;
+    }
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(destination, ec)) {
+        ADD_FAILURE() << "Missing persisted destination " << destination; return false;
+    }
+    auto size = std::filesystem::file_size(source);
+    EXPECT_EQ(finished.value().bytes_transferred, size);
+    EXPECT_EQ(std::filesystem::file_size(destination), size);
+    auto expected = checksum::sha256_file(source), actual = checksum::sha256_file(destination);
+    if (!expected || !actual) { ADD_FAILURE() << "Cannot hash persisted files"; return false; }
+    EXPECT_EQ(actual.value(), expected.value());
+    std::ifstream left(source, std::ios::binary), right(destination, std::ios::binary);
+    std::array<char, 65536> a{}, b{};
+    bool equal = true;
+    do {
+        left.read(a.data(), a.size()); right.read(b.data(), b.size());
+        equal = left.gcount() == right.gcount() &&
+                std::equal(a.begin(), a.begin() + left.gcount(), b.begin());
+    } while (equal && left.gcount());
+    EXPECT_TRUE(equal) << "Persisted bytes differ";
+    return equal && actual.value() == expected.value() && finished.value().bytes_transferred == size;
+}
+
+inline void transfer_fails(result<transfer_handle>& pending) {
+    ASSERT_TRUE(pending) << pending.error().message;
+    auto finished = pending.value().wait_for(5s); ASSERT_TRUE(finished);
+    EXPECT_FALSE(finished.value().success); EXPECT_TRUE(finished.value().error_message.has_value());
+}
+
 
 /**
  * @brief Test fixture for temporary directory management
@@ -47,9 +98,11 @@ protected:
         std::mt19937 gen(42);  // Fixed seed for reproducibility
         std::uniform_int_distribution<> dis(0, 255);
 
-        for (std::size_t i = 0; i < size; ++i) {
-            char byte = static_cast<char>(dis(gen));
-            file.write(&byte, 1);
+        std::array<char, 65536> buffer{};
+        for (auto& byte : buffer) byte = static_cast<char>(dis(gen));
+        for (std::size_t written = 0; written < size;) {
+            auto count = std::min(buffer.size(), size - written);
+            file.write(buffer.data(), count); written += count;
         }
 
         return path;
@@ -135,9 +188,9 @@ protected:
 
 public:
     static auto get_available_port() -> uint16_t {
-        // Return a port in the dynamic range
-        static std::atomic<uint16_t> port_counter{50000};
-        return port_counter++;
+        asio::io_context context;
+        asio::ip::tcp::acceptor acceptor(context, {asio::ip::tcp::v4(), 0});
+        return acceptor.local_endpoint().port();
     }
 };
 
@@ -152,6 +205,8 @@ protected:
         auto client_result = file_transfer_client::builder()
             .with_compression(compression_mode::adaptive)
             .with_auto_reconnect(false)
+            .with_connect_timeout(2s)
+            .with_transfer_timeout(3s)
             .build();
 
         ASSERT_TRUE(client_result.has_value()) << "Failed to create client";
@@ -190,6 +245,8 @@ protected:
         auto client_result = file_transfer_client::builder()
             .with_compression(compression_mode::adaptive)
             .with_auto_reconnect(false)
+            .with_connect_timeout(2s)
+            .with_transfer_timeout(3s)
             .build();
 
         ASSERT_TRUE(client_result.has_value()) << "Failed to create client";

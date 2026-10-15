@@ -91,10 +91,7 @@ TEST_F(ClientConnectionTest, ClientStatistics) {
 }
 
 TEST_F(ClientConnectionTest, ClientDisconnectWithoutConnect) {
-    // Disconnecting when not connected should fail
-    auto result = client_->disconnect();
-    EXPECT_FALSE(result.has_value());
-    EXPECT_EQ(result.error().code, error_code::not_initialized);
+    EXPECT_TRUE(client_->disconnect()); EXPECT_EQ(client_->state(), connection_state::disconnected);
 }
 
 TEST_F(ClientConnectionTest, ClientUploadWithoutConnect) {
@@ -264,53 +261,27 @@ TEST_F(TestDataTest, CreateBinaryFile) {
 class ServerClientIntegrationTest : public IntegrationFixture {};
 
 TEST_F(ServerClientIntegrationTest, ClientConnectDisconnect) {
-    // Connect client to server
-    ASSERT_TRUE(connect_client()) << "Failed to connect client to server";
-
-    EXPECT_TRUE(client_->is_connected());
-    EXPECT_EQ(client_->state(), connection_state::connected);
-
-    // Verify server sees connection
-    auto server_stats = server_->get_statistics();
-    // Note: In stub implementation, connection tracking may not be fully implemented
-    // This test validates the API contract
-
-    // Disconnect client
-    auto disconnect_result = client_->disconnect();
-    EXPECT_TRUE(disconnect_result.has_value());
-    EXPECT_FALSE(client_->is_connected());
+    ASSERT_TRUE(connect_client());
+    EXPECT_TRUE(eventually([&] { return server_->get_statistics().active_connections == 1; }));
+    EXPECT_TRUE(client_->disconnect());
+    EXPECT_TRUE(eventually([&] { return server_->get_statistics().active_connections == 0; }));
     EXPECT_EQ(client_->state(), connection_state::disconnected);
 }
 
 TEST_F(ServerClientIntegrationTest, ClientDoubleConnect) {
     ASSERT_TRUE(connect_client());
-
-    // Trying to connect again should fail
-    auto result = client_->connect(endpoint{"127.0.0.1", server_port_});
-    EXPECT_FALSE(result.has_value());
-    EXPECT_EQ(result.error().code, error_code::already_initialized);
+    auto duplicate = client_->connect({"127.0.0.1", server_port_});
+    ASSERT_FALSE(duplicate); EXPECT_EQ(duplicate.error().code, error_code::already_initialized);
+    ASSERT_TRUE(client_->list_files()); EXPECT_EQ(client_->state(), connection_state::connected);
 }
 
 TEST_F(ServerClientIntegrationTest, ClientStateCallback) {
-    std::vector<connection_state> observed_states;
-    std::mutex states_mutex;
-
-    client_->on_connection_state_changed([&](connection_state state) {
-        std::lock_guard lock(states_mutex);
-        observed_states.push_back(state);
-    });
-
-    // Connect
-    ASSERT_TRUE(connect_client());
-
-    // Disconnect
-    auto disconnect_result = client_->disconnect();
-    EXPECT_TRUE(disconnect_result.has_value());
-
-    // Verify states were observed (implementation may vary)
-    std::lock_guard lock(states_mutex);
-    // At minimum, we should see connecting->connected->disconnected transitions
-    EXPECT_FALSE(observed_states.empty());
+    std::mutex mutex; std::vector<connection_state> states;
+    client_->on_connection_state_changed([&](auto state) { std::lock_guard lock(mutex); states.push_back(state); });
+    ASSERT_TRUE(connect_client()); ASSERT_TRUE(client_->disconnect());
+    EXPECT_TRUE(eventually([&] { std::lock_guard lock(mutex); return states.size() == 3; }));
+    client_.reset();
+    EXPECT_EQ(states, (std::vector<connection_state>{connection_state::connecting, connection_state::connected, connection_state::disconnected}));
 }
 
 // =============================================================================
@@ -321,18 +292,9 @@ class FileUploadIntegrationTest : public IntegrationFixture {};
 
 TEST_F(FileUploadIntegrationTest, UploadSmallFile) {
     ASSERT_TRUE(connect_client());
-
-    // Create test file
-    auto test_file = create_test_file("upload_small.bin", test_data::small_file_size);
-    ASSERT_TRUE(std::filesystem::exists(test_file));
-
-    // Attempt upload
-    auto result = client_->upload_file(test_file, "remote_small.bin");
-    EXPECT_TRUE(result.has_value()) << "Upload should return a handle";
-
-    if (result.has_value()) {
-        EXPECT_TRUE(result.value().is_valid());
-    }
+    auto source = create_test_file("upload_small.bin", test_data::small_file_size);
+    auto transfer = client_->upload_file(source, "remote_small.bin");
+    ASSERT_TRUE(transfer_matches(transfer, source, storage_dir_ / "remote_small.bin"));
 }
 
 TEST_F(FileUploadIntegrationTest, UploadNonExistentFile) {
@@ -352,7 +314,7 @@ TEST_F(FileUploadIntegrationTest, UploadTextFile) {
     ASSERT_TRUE(std::filesystem::exists(test_file));
 
     auto result = client_->upload_file(test_file, "remote_text.txt");
-    EXPECT_TRUE(result.has_value());
+    ASSERT_TRUE(transfer_matches(result, test_file, storage_dir_ / "remote_text.txt"));
 }
 
 TEST_F(FileUploadIntegrationTest, UploadBinaryFile) {
@@ -363,7 +325,7 @@ TEST_F(FileUploadIntegrationTest, UploadBinaryFile) {
     ASSERT_TRUE(std::filesystem::exists(test_file));
 
     auto result = client_->upload_file(test_file, "remote_binary.bin");
-    EXPECT_TRUE(result.has_value());
+    ASSERT_TRUE(transfer_matches(result, test_file, storage_dir_ / "remote_binary.bin"));
 }
 
 TEST_F(FileUploadIntegrationTest, UploadWithOptions) {
@@ -376,7 +338,7 @@ TEST_F(FileUploadIntegrationTest, UploadWithOptions) {
     options.compression = compression_mode::always;
 
     auto result = client_->upload_file(test_file, "remote_options.bin", options);
-    EXPECT_TRUE(result.has_value());
+    ASSERT_TRUE(transfer_matches(result, test_file, storage_dir_ / "remote_options.bin"));
 }
 
 // =============================================================================
@@ -387,13 +349,10 @@ class FileDownloadIntegrationTest : public IntegrationFixture {};
 
 TEST_F(FileDownloadIntegrationTest, DownloadToValidPath) {
     ASSERT_TRUE(connect_client());
-
-    auto download_path = download_dir_ / "downloaded.bin";
-
-    auto result = client_->download_file("some_file.bin", download_path);
-    // Note: Actual download may not succeed if file doesn't exist on server,
-    // but the API call should succeed (return handle)
-    EXPECT_TRUE(result.has_value());
+    auto source = create_test_file("seed.bin", 180000);
+    std::filesystem::copy_file(source, storage_dir_ / "some_file.bin");
+    auto transfer = client_->download_file("some_file.bin", download_dir_ / "downloaded.bin");
+    ASSERT_TRUE(transfer_matches(transfer, source, download_dir_ / "downloaded.bin"));
 }
 
 TEST_F(FileDownloadIntegrationTest, DownloadEmptyFilename) {
@@ -406,13 +365,12 @@ TEST_F(FileDownloadIntegrationTest, DownloadEmptyFilename) {
 
 TEST_F(FileDownloadIntegrationTest, DownloadWithOptions) {
     ASSERT_TRUE(connect_client());
-
-    download_options options;
-    options.overwrite = true;
-    options.verify_hash = true;
-
-    auto result = client_->download_file("test.bin", download_dir_ / "test.bin", options);
-    EXPECT_TRUE(result.has_value());
+    auto source = create_test_file("seed.bin", 180000);
+    std::filesystem::copy_file(source, storage_dir_ / "test.bin");
+    std::ofstream(download_dir_ / "test.bin") << "old content";
+    download_options options; options.overwrite = true; options.verify_hash = true;
+    auto transfer = client_->download_file("test.bin", download_dir_ / "test.bin", options);
+    ASSERT_TRUE(transfer_matches(transfer, source, download_dir_ / "test.bin"));
 }
 
 // =============================================================================
@@ -423,39 +381,30 @@ class FileListIntegrationTest : public IntegrationFixture {};
 
 TEST_F(FileListIntegrationTest, ListFilesDefault) {
     ASSERT_TRUE(connect_client());
-
-    auto result = client_->list_files();
-    EXPECT_TRUE(result.has_value());
-
-    // Empty storage should return empty list
-    if (result.has_value()) {
-        // Note: In current stub implementation, this returns empty vector
-        auto& files = result.value();
-        EXPECT_TRUE(files.empty() || files.size() >= 0);
-    }
+    auto source = create_test_file("seed.bin", 180000);
+    auto up = client_->upload_file(source, "listed.bin"); ASSERT_TRUE(transfer_matches(up, source, storage_dir_ / "listed.bin"));
+    auto listed = client_->list_files(); ASSERT_TRUE(listed); ASSERT_EQ(listed.value().size(), 1);
+    EXPECT_EQ(listed.value()[0].filename, "listed.bin"); EXPECT_EQ(listed.value()[0].size, 180000);
+    EXPECT_EQ(listed.value()[0].sha256_hash, checksum::sha256_file(source).value());
+    auto down = client_->download_file(listed.value()[0].filename, download_dir_ / "listed.bin");
+    ASSERT_TRUE(transfer_matches(down, source, download_dir_ / "listed.bin"));
 }
 
 TEST_F(FileListIntegrationTest, ListFilesWithOptions) {
     ASSERT_TRUE(connect_client());
-
-    list_options options;
-    options.pattern = "*.txt";
-    options.offset = 0;
-    options.limit = 100;
-
-    auto result = client_->list_files(options);
-    EXPECT_TRUE(result.has_value());
+    std::ofstream(storage_dir_ / "a.txt") << "known";
+    std::ofstream(storage_dir_ / "b.bin") << "excluded";
+    list_options options; options.pattern = "*.txt";
+    auto listed = client_->list_files(options); ASSERT_TRUE(listed); ASSERT_EQ(listed.value().size(), 1);
+    EXPECT_EQ(listed.value()[0].filename, "a.txt"); EXPECT_EQ(listed.value()[0].size, 5);
 }
 
 TEST_F(FileListIntegrationTest, ListFilesWithPagination) {
     ASSERT_TRUE(connect_client());
-
-    list_options options;
-    options.offset = 10;
-    options.limit = 5;
-
-    auto result = client_->list_files(options);
-    EXPECT_TRUE(result.has_value());
+    for (auto name : {"a.txt", "b.txt", "c.txt"}) std::ofstream(storage_dir_ / name) << name;
+    list_options options; options.offset = 1; options.limit = 1;
+    auto listed = client_->list_files(options); ASSERT_TRUE(listed); ASSERT_EQ(listed.value().size(), 1);
+    EXPECT_EQ(listed.value()[0].filename, "b.txt");
 }
 
 // =============================================================================

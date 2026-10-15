@@ -24,6 +24,14 @@
 #include <gtest/gtest.h>
 
 #include "kcenon/file_transfer/cloud/s3_storage.h"
+#include "protocol_peer.h"
+#include <kcenon/file_transfer/server/file_transfer_server.h>
+#include <kcenon/file_transfer/client/file_transfer_client.h>
+#include <kcenon/file_transfer/server/storage_manager.h>
+#include "kcenon/file_transfer/core/checksum.h"
+#if defined(__APPLE__) || defined(__linux__)
+#include <sys/resource.h>
+#endif
 
 #include <chrono>
 #include <cstdlib>
@@ -226,6 +234,24 @@ TEST_F(MinIOIntegrationTest, UploadSmallData) {
     EXPECT_EQ(result.value().key, key);
     EXPECT_EQ(result.value().bytes_uploaded, 1024);
     EXPECT_FALSE(result.value().etag.empty());
+}
+
+TEST_F(MinIOIntegrationTest, PresignedIndependentHttpReadVerifiesPersistedUpload) {
+    const auto key = test_key("independent read.bin");
+    auto bytes = create_test_data(100001);
+    auto uploaded = storage_->upload(key, bytes); ASSERT_TRUE(uploaded) << uploaded.error().message;
+    track_upload(key);
+    presigned_url_options options; options.method = "GET";
+    auto url = storage_->generate_presigned_url(key, options); ASSERT_TRUE(url);
+    cloud_http_request request; request.method = "GET"; request.url = url.value();
+    // This HTTP client knows neither s3_storage nor the signing credentials.
+    auto response = make_default_cloud_http_transport()(request); ASSERT_TRUE(response) << response.error().message;
+    ASSERT_EQ(response.value().status_code, 200) << response.value().get_body_string();
+    ASSERT_EQ(response.value().body.size(), bytes.size());
+    EXPECT_TRUE(std::equal(bytes.begin(), bytes.end(), response.value().body.begin(),
+        [](std::byte expected, uint8_t actual) { return std::to_integer<uint8_t>(expected) == actual; }));
+    auto metadata = storage_->get_metadata(key); ASSERT_TRUE(metadata); EXPECT_EQ(metadata.value().size, bytes.size());
+    EXPECT_EQ(metadata.value().etag, uploaded.value().etag);
 }
 
 TEST_F(MinIOIntegrationTest, UploadMediumData) {
@@ -740,6 +766,122 @@ TEST_F(MinIOIntegrationTest, LargeFileUploadDownload) {
 
     EXPECT_EQ(download_result.value().size(), file_size);
     EXPECT_EQ(download_result.value(), data);
+}
+
+TEST_F(MinIOIntegrationTest, BoundedStreamingFileRoundTrip) {
+    auto config = storage_->get_s3_config(); config.multipart.threshold = 1024 * 1024;
+    config.multipart.part_size = 5 * 1024 * 1024; config.multipart.max_concurrent_parts = 2;
+    config.download_range_size = 1024 * 1024; config.file_io_buffer_size = 65536;
+    storage_ = s3_storage::create(config, provider_); ASSERT_TRUE(storage_->connect());
+    const auto key = test_key("bounded-stream.bin");
+    constexpr std::size_t file_size = 256 * 1024 * 1024 + 123;
+    auto source = temp_dir_ / "large-source", destination = temp_dir_ / "large-destination";
+    { std::ofstream file(source, std::ios::binary); std::array<char, 65536> block;
+      for (std::size_t i = 0; i < block.size(); ++i) block[i] = static_cast<char>((i * 29 + 7) % 251);
+      for (std::size_t offset = 0; offset < file_size; offset += block.size())
+          file.write(block.data(), std::min(block.size(), file_size - offset)); }
+#if defined(__APPLE__) || defined(__linux__)
+    auto peak_rss = [] {
+        rusage value{}; getrusage(RUSAGE_SELF, &value);
+#ifdef __APPLE__
+        return static_cast<uint64_t>(value.ru_maxrss);
+#else
+        return static_cast<uint64_t>(value.ru_maxrss) * 1024;
+#endif
+    };
+    auto before = peak_rss();
+#endif
+    auto uploaded = storage_->upload_file(source, key); ASSERT_TRUE(uploaded) << uploaded.error().message; track_upload(key);
+    EXPECT_EQ(uploaded.value().bytes_uploaded, file_size);
+    auto downloaded = storage_->download_file(key, destination); ASSERT_TRUE(downloaded) << downloaded.error().message;
+    EXPECT_EQ(downloaded.value().bytes_downloaded, file_size);
+    EXPECT_EQ(checksum::sha256_file(source).value(), checksum::sha256_file(destination).value());
+#if defined(__APPLE__) || defined(__linux__)
+    auto growth = peak_rss() - before;
+    RecordProperty("file_bytes", file_size); RecordProperty("peak_rss_growth_bytes", growth);
+    std::cout << "Bounded S3 file: " << file_size << " bytes; peak RSS growth: " << growth << " bytes\n";
+    // Budget includes allocator, TLS, hashing, and request overhead, as well as
+    // two 5 MiB in-flight parts, the accumulating part, and 1 MiB range reads.
+    EXPECT_LT(growth, 64 * 1024 * 1024);
+#endif
+}
+
+TEST_F(MinIOIntegrationTest, RangedStreamRejectsObjectReplacement) {
+    const auto key = test_key("replaced-object");
+    auto bytes = create_test_data(2 * 1024 * 1024 + 13);
+    ASSERT_TRUE(storage_->upload(key, bytes)); track_upload(key);
+    auto stream = storage_->create_download_stream(key); ASSERT_TRUE(stream);
+    std::vector<std::byte> buffer(1024 * 1024);
+    auto read = stream->read(buffer); ASSERT_TRUE(read); ASSERT_EQ(read.value(), buffer.size());
+    bytes[0] ^= std::byte{1}; ASSERT_TRUE(storage_->upload(key, bytes));
+    auto next = stream->read(buffer); EXPECT_FALSE(next);
+    EXPECT_EQ(stream->bytes_read(), buffer.size()); EXPECT_FALSE(stream->read(buffer));
+}
+
+TEST_F(MinIOIntegrationTest, PublicCloudAndHybridServersPersistAndRecoverExactObjectBytes) {
+    auto shared = std::shared_ptr<cloud_storage_interface>(storage_.get(), [](auto*) {});
+    auto source = create_test_file("public-source", 200123);
+    auto expected = checksum::sha256_file(source); ASSERT_TRUE(expected);
+    for (auto mode : {storage_mode::cloud_only, storage_mode::hybrid}) {
+        auto prefix = test_key(std::string(to_string(mode)) + "/");
+        auto local = temp_dir_ / to_string(mode);
+        auto built = file_transfer_server::builder().with_storage_directory(local)
+            .with_storage_mode(mode).with_cloud_storage(shared)
+            .with_cloud_key_prefix(prefix).with_cloud_cache(false).build();
+        ASSERT_TRUE(built) << built.error().message; auto& server = built.value();
+        auto port = test::available_port(); ASSERT_TRUE(server.start({"127.0.0.1", port}));
+        auto client_result = file_transfer_client::builder().build(); ASSERT_TRUE(client_result);
+        auto& client = client_result.value(); ASSERT_TRUE(client.connect({"127.0.0.1", port}));
+        auto up = client.upload_file(source, "object"); ASSERT_TRUE(up);
+        auto uploaded = up.value().wait_for(std::chrono::seconds(10));
+        ASSERT_TRUE(uploaded); ASSERT_TRUE(uploaded.value().success) << uploaded.value().error_message.value_or("");
+        track_upload(prefix + "object");
+        auto remote = storage_->download(prefix + "object"); ASSERT_TRUE(remote);
+        EXPECT_EQ(checksum::sha256(remote.value()), expected.value());
+        if (mode == storage_mode::hybrid) ASSERT_TRUE(std::filesystem::remove(local / "object"));
+        auto listing = client.list_files(); ASSERT_TRUE(listing); ASSERT_EQ(listing.value().size(), 1);
+        EXPECT_EQ(listing.value()[0].filename, "object"); EXPECT_EQ(listing.value()[0].size, 200123);
+        auto destination = temp_dir_ / (std::string(to_string(mode)) + "-download");
+        auto down = client.download_file("object", destination); ASSERT_TRUE(down);
+        auto downloaded = down.value().wait_for(std::chrono::seconds(10));
+        ASSERT_TRUE(downloaded); ASSERT_TRUE(downloaded.value().success);
+        EXPECT_EQ(checksum::sha256_file(destination).value(), expected.value());
+        EXPECT_EQ(server.get_quota_usage().used_bytes, 200123);
+        EXPECT_TRUE(client.disconnect()); EXPECT_TRUE(server.stop());
+    }
+    ASSERT_TRUE(storage_->connect());
+}
+
+TEST_F(MinIOIntegrationTest, CloudBackendAsyncFilesMetadataAndPrefixPaginationUseRealS3) {
+    auto shared = std::shared_ptr<cloud_storage_interface>(storage_.get(), [](auto*) {});
+    auto backend = cloud_storage_backend::create_shared(shared, storage_backend_type::cloud_s3, test_prefix_);
+    ASSERT_TRUE(backend); ASSERT_TRUE(backend->connect()); EXPECT_TRUE(backend->is_available());
+    EXPECT_EQ(backend->name(), "cloud_s3");
+    auto data = create_test_data(8193); auto source = create_test_file("backend-source", 20001);
+    store_options options; options.content_type = "application/octet-stream";
+    options.custom_metadata = {{"purpose", "backend-regression"}};
+    std::atomic<unsigned> progress{}; backend->on_progress([&](const auto&) { ++progress; });
+    ASSERT_TRUE(backend->store_async("a", data, options).get()); track_upload(test_key("a"));
+    ASSERT_TRUE(backend->store_file_async("b", source, options).get()); track_upload(test_key("b"));
+    auto fetched = backend->retrieve_async("a").get(); ASSERT_TRUE(fetched); EXPECT_EQ(fetched.value(), data);
+    auto destination = temp_dir_ / "backend-download";
+    auto file = backend->retrieve_file_async("b", destination).get(); ASSERT_TRUE(file);
+    EXPECT_EQ(file.value().bytes_retrieved, 20001);
+    EXPECT_EQ(checksum::sha256_file(source).value(), checksum::sha256_file(destination).value());
+    auto metadata = backend->get_metadata("b"); ASSERT_TRUE(metadata);
+    EXPECT_EQ(metadata.value().key, "b"); EXPECT_EQ(metadata.value().size, 20001);
+    EXPECT_EQ(metadata.value().content_type, "application/octet-stream");
+    list_storage_options page; page.max_results = 1;
+    auto first = backend->list(page); ASSERT_TRUE(first); ASSERT_EQ(first.value().objects.size(), 1);
+    EXPECT_EQ(first.value().objects[0].key, "a"); ASSERT_TRUE(first.value().continuation_token);
+    page.continuation_token = first.value().continuation_token;
+    auto second = backend->list(page); ASSERT_TRUE(second); ASSERT_EQ(second.value().objects.size(), 1);
+    EXPECT_EQ(second.value().objects[0].key, "b"); EXPECT_FALSE(second.value().is_truncated);
+    EXPECT_TRUE(backend->exists("a").value()); EXPECT_TRUE(backend->remove("a")); EXPECT_FALSE(backend->exists("a").value());
+    EXPECT_FALSE(backend->retrieve("a")); EXPECT_FALSE(backend->get_metadata("a"));
+    EXPECT_FALSE(backend->store_file("missing", temp_dir_ / "absent"));
+    EXPECT_TRUE(backend->remove("b")); EXPECT_GT(progress.load(), 0);
+    EXPECT_TRUE(backend->disconnect()); EXPECT_FALSE(backend->is_available());
 }
 
 }  // namespace

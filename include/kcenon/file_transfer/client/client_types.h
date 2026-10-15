@@ -6,6 +6,7 @@
 #ifndef KCENON_FILE_TRANSFER_CLIENT_CLIENT_TYPES_H
 #define KCENON_FILE_TRANSFER_CLIENT_CLIENT_TYPES_H
 
+#include "kcenon/file_transfer/transport/transport_config.h"
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -13,6 +14,8 @@
 #include <string>
 
 #include "kcenon/file_transfer/core/types.h"
+#include "kcenon/file_transfer/core/compression_types.h"
+#include "kcenon/file_transfer/core/protocol_types.h"
 
 namespace kcenon::file_transfer {
 
@@ -55,20 +58,10 @@ struct reconnect_policy {
 /**
  * @brief Compression mode for transfers
  */
-enum class compression_mode {
-    none,
-    always,
-    adaptive
-};
 
 /**
  * @brief Compression level
  */
-enum class compression_level {
-    fast,
-    balanced,
-    best
-};
 
 /**
  * @brief Progress callback configuration
@@ -86,6 +79,8 @@ struct progress_config {
  * @brief Client configuration
  */
 struct client_config {
+    std::filesystem::path checkpoint_directory;
+    transfer_transport_config transport = tcp_transport_config{};
     compression_mode compression = compression_mode::adaptive;
     compression_level comp_level = compression_level::fast;
     std::size_t chunk_size = 256 * 1024;  // 256KB
@@ -94,6 +89,7 @@ struct client_config {
     std::optional<std::size_t> upload_bandwidth_limit;
     std::optional<std::size_t> download_bandwidth_limit;
     std::chrono::milliseconds connect_timeout{30000};
+    std::chrono::milliseconds transfer_timeout{30000}; ///< Deadline for each protocol response
     progress_config progress;              ///< Progress callback configuration
 
     // Encryption settings
@@ -106,6 +102,8 @@ struct client_config {
  * @brief Upload options
  */
 struct upload_options {
+    bool resumable = false;
+    std::optional<transfer_id> resume_id; ///< Recover this durable transfer, including after restart
     std::optional<compression_mode> compression;
     bool overwrite = false;
     std::optional<bool> encrypt;  ///< Override encryption setting for this transfer
@@ -115,6 +113,9 @@ struct upload_options {
  * @brief Download options
  */
 struct download_options {
+    std::optional<compression_mode> compression; ///< Override client compression preference
+    bool resumable = false;
+    std::optional<transfer_id> resume_id; ///< Recover this durable transfer, including after restart
     bool overwrite = false;
     bool verify_hash = true;
     std::optional<bool> encrypt;  ///< Override encryption setting for this transfer
@@ -124,9 +125,13 @@ struct download_options {
  * @brief List options
  */
 struct list_options {
+    // Glob matching is case-sensitive (* and ?). Pages use a stable filename
+    // tie-breaker. Zero limit selects 1000; the maximum page size is 10000.
     std::string pattern = "*";
     std::size_t offset = 0;
     std::size_t limit = 1000;
+    list_sort_field sort_by = list_sort_field::name;
+    list_sort_order sort_order = list_sort_order::ascending;
 };
 
 /**
@@ -481,7 +486,7 @@ struct batch_result {
  * @brief Options for batch transfers
  */
 struct batch_options {
-    std::size_t max_concurrent = 4;     ///< Maximum concurrent transfers
+    std::size_t max_concurrent = 4;     ///< Maximum concurrent transfers, inclusive range [1, 256]
     bool continue_on_error = true;      ///< Continue if individual files fail
     bool overwrite = false;             ///< Overwrite existing files
     std::optional<compression_mode> compression;  ///< Compression mode override

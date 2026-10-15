@@ -1,0 +1,503 @@
+{
+  "base": "bec276c095e1138c6eb082f49d8bab6ec60e393b",
+  "branch": "implement/issues-176-190-followup",
+  "issues": {
+    "176": {
+      "status": "verified_existing",
+      "validation": [
+        {
+          "build": "build",
+          "suite": "integration",
+          "tests": 8,
+          "failures": 0,
+          "skips": 0,
+          "exit_code": 0,
+          "log": "logs/176-build-integration.log"
+        },
+        {
+          "build": "cmake-build-tsan",
+          "suite": "integration",
+          "tests": 8,
+          "failures": 0,
+          "skips": 0,
+          "exit_code": 0,
+          "log": "logs/176-cmake-build-tsan-integration.log"
+        },
+        {
+          "build": "cmake-build-ubsan",
+          "suite": "integration",
+          "tests": 8,
+          "failures": 0,
+          "skips": 0,
+          "exit_code": 0,
+          "log": "logs/176-cmake-build-ubsan-integration.log"
+        }
+      ]
+    },
+    "177": {
+      "status": "verified_existing",
+      "validation": [
+        {
+          "build": "build",
+          "suite": "integration",
+          "tests": 5,
+          "failures": 0,
+          "skips": 0,
+          "exit_code": 0,
+          "log": "logs/177-build-integration.log"
+        }
+      ]
+    },
+    "178": {
+      "status": "verified_existing",
+      "validation": [
+        {
+          "build": "build",
+          "suite": "integration",
+          "tests": 8,
+          "failures": 0,
+          "skips": 0,
+          "exit_code": 0,
+          "log": "logs/178-build-integration.log"
+        }
+      ]
+    },
+    "179": {
+      "status": "verified_existing",
+      "validation": [
+        {
+          "build": "build",
+          "suite": "integration",
+          "tests": 4,
+          "failures": 0,
+          "skips": 0,
+          "exit_code": 0,
+          "log": "logs/179-build-integration.log"
+        }
+      ]
+    },
+    "180": {
+      "status": "verified_existing",
+      "validation": [
+        {
+          "build": "build",
+          "suite": "unit",
+          "tests": 52,
+          "failures": 0,
+          "skips": 0,
+          "exit_code": 0,
+          "log": "logs/180-build-unit.log"
+        }
+      ],
+      "real_service": "32 MinIO tests passed; logs/minio/minio-summary.json"
+    },
+    "181": {
+      "status": "verified_existing",
+      "validation": [
+        {
+          "build": "build",
+          "suite": "unit",
+          "tests": 11,
+          "failures": 0,
+          "skips": 0,
+          "exit_code": 0,
+          "log": "logs/181-build-unit.log"
+        }
+      ],
+      "real_service": "32 MinIO tests passed; logs/minio/minio-summary.json"
+    },
+    "182": {
+      "status": "verified_existing",
+      "validation": [
+        {
+          "build": "build",
+          "suite": "unit",
+          "tests": 12,
+          "failures": 0,
+          "skips": 0,
+          "exit_code": 0,
+          "log": "logs/182-build-unit.log"
+        }
+      ],
+      "remaining": "Live GCS signed-URL requests unavailable: service account, bucket and object environment variables absent"
+    },
+    "183": {
+      "status": "implemented_and_verified",
+      "validation": [
+        {
+          "build": "build",
+          "suite": "integration",
+          "tests": 6,
+          "failures": 0,
+          "skips": 0,
+          "exit_code": 0,
+          "log": "logs/183-build-integration.log"
+        },
+        {
+          "build": "build",
+          "suite": "unit",
+          "tests": 1,
+          "failures": 0,
+          "skips": 0,
+          "exit_code": 0,
+          "log": "logs/183-build-unit.log"
+        },
+        {
+          "log": "logs/183-enabled.log",
+          "tests": 6,
+          "failures": 0,
+          "skips": 0
+        },
+        {
+          "log": "logs/183-disabled.log",
+          "tests": 2,
+          "failures": 0,
+          "skips": 0
+        },
+        {
+          "log": "logs/183-disabled-pipeline.log",
+          "tests": 2,
+          "failures": 0,
+          "skips": 0
+        }
+      ],
+      "commit": "c17d26b"
+    },
+    "184": {
+      "status": "partial_dependency_blocker",
+      "validation": {
+        "tests": 4,
+        "failed": 1,
+        "exit_code": 1
+      },
+      "fixed": "QUIC timeout cleanup crash and duplicate receive initiation",
+      "remaining": "TLS traffic-secret installation, CA/verification propagation, same-port UDP session routing; mandatory real QUIC transfer still fails handshake",
+      "commit": "a61e208"
+    },
+    "185": {
+      "status": "verified_existing",
+      "validation": [
+        {
+          "suite": "unit",
+          "tests": 0,
+          "failed": 0,
+          "skipped": 0,
+          "exit_code": 0,
+          "selection_valid": false,
+          "note": "Historical wrong-binary filter; not counted as passing validation. Correct integration selection executed ten cases."
+        },
+        {
+          "suite": "integration",
+          "tests": 10,
+          "failed": 0,
+          "skipped": 0,
+          "exit_code": 0
+        }
+      ]
+    },
+    "186": {
+      "status": "verified_existing",
+      "validation": [
+        {
+          "suite": "unit",
+          "tests": 31,
+          "failed": 0,
+          "skipped": 0,
+          "exit_code": 0
+        },
+        {
+          "suite": "integration",
+          "tests": 8,
+          "failed": 0,
+          "skipped": 0,
+          "exit_code": 0
+        }
+      ]
+    },
+    "187": {
+      "status": "verified_existing",
+      "validation": [
+        {
+          "suite": "unit",
+          "tests": 33,
+          "failed": 0,
+          "skipped": 0,
+          "exit_code": 0
+        },
+        {
+          "suite": "integration",
+          "tests": 9,
+          "failed": 0,
+          "skipped": 0,
+          "exit_code": 0
+        }
+      ]
+    },
+    "188": {
+      "status": "implemented_and_verified",
+      "validation": [
+        {
+          "suite": "188-runtime",
+          "tests": 6,
+          "failed": 0
+        },
+        {
+          "suite": "188-pipeline",
+          "tests": 67,
+          "failed": 0
+        }
+      ],
+      "full_debug": "1048 unit, 158 integration, four process restart scenarios passed",
+      "tsan": "6 focused receive admission/100-client integration tests passed with fully instrumented thread/logger/network dependencies",
+      "before": "32/100 uploads succeeded in new regression; after:100/100",
+      "commit": "b7d3e61"
+    },
+    "189": {
+      "status": "implemented_with_remaining_quality_gates",
+      "fixes": [
+        "adapter task state lifetime",
+        "configured network worker count",
+        "statistics timing synchronization",
+        "live runtime quota/monitoring",
+        "hybrid listing pagination",
+        "cloud completion progress",
+        "Azure existence failure propagation",
+        "cross-instance logger console formatting",
+        "reconnect test shutdown ordering"
+      ],
+      "asan": "1064 unit + 160 integration + process restart pass; corrected logger/observability focused checks pass after final dependency patch; leak detection disabled",
+      "ubsan": "1064 unit + 160 integration + process restart pass; corrected logger/observability focused checks pass after final dependency patch",
+      "validation": {
+        "debug": [
+          {
+            "suite": "unit",
+            "tests": 1064,
+            "exit_code": 0,
+            "timeout_seconds": 300,
+            "skipped": 0,
+            "failed": 0
+          },
+          {
+            "suite": "integration",
+            "tests": 160,
+            "exit_code": 0,
+            "timeout_seconds": 300,
+            "skipped": 0,
+            "failed": 0
+          },
+          {
+            "suite": "process-restart-resume",
+            "exit_code": 0
+          }
+        ],
+        "crypto_off": [
+          {
+            "suite": "unit",
+            "tests": 831,
+            "exit_code": 0,
+            "timeout_seconds": 300,
+            "skipped": 0,
+            "failed": 0
+          },
+          {
+            "suite": "integration",
+            "tests": 146,
+            "exit_code": 0,
+            "timeout_seconds": 300,
+            "skipped": 0,
+            "failed": 0
+          },
+          {
+            "suite": "process-restart-resume",
+            "exit_code": 0
+          }
+        ],
+        "asan": [
+          {
+            "suite": "unit",
+            "tests": 1064,
+            "exit_code": 0,
+            "skipped": 0,
+            "failed": 0
+          },
+          {
+            "suite": "integration",
+            "tests": 160,
+            "exit_code": 0,
+            "skipped": 0,
+            "failed": 0
+          },
+          {
+            "suite": "process-restart-resume",
+            "exit_code": 0
+          }
+        ],
+        "ubsan": [
+          {
+            "suite": "unit",
+            "tests": 1064,
+            "exit_code": 0,
+            "skipped": 0,
+            "failed": 0
+          },
+          {
+            "suite": "integration",
+            "tests": 160,
+            "exit_code": 0,
+            "skipped": 0,
+            "failed": 0
+          },
+          {
+            "suite": "process-restart-resume",
+            "exit_code": 0
+          }
+        ],
+        "tsan": [
+          {
+            "suite": "unit",
+            "tests": 1064,
+            "exit_code": 0,
+            "timeout_seconds": 600,
+            "skipped": 0,
+            "failed": 0
+          },
+          {
+            "suite": "integration",
+            "tests": 160,
+            "exit_code": -6,
+            "timeout_seconds": 600,
+            "skipped": 0,
+            "failed": 0
+          },
+          {
+            "suite": "process-restart-resume",
+            "exit_code": 0
+          }
+        ],
+        "coverage_tests": [
+          {
+            "suite": "unit",
+            "tests": 1064,
+            "exit_code": 0,
+            "timeout_seconds": 300,
+            "skipped": 0,
+            "failed": 0
+          },
+          {
+            "suite": "integration",
+            "tests": 160,
+            "exit_code": 0,
+            "timeout_seconds": 300,
+            "skipped": 0,
+            "failed": 0
+          },
+          {
+            "suite": "process-restart-resume",
+            "exit_code": 0
+          }
+        ]
+      },
+      "minio": {
+        "minio_revision": "07c3a429bfed433e49018cb0f78a52145d4bedeb",
+        "endpoint": "http://127.0.0.1:52496",
+        "tests": 34,
+        "skipped": 0,
+        "exit_code": 0,
+        "binary": "/private/tmp/fts-minio-validation/minio",
+        "binary_sha256": "c8ab3f23094133ae395d08c1311d91c4dc4639d5f26d3dd60b46c39171dc44b3"
+      },
+      "coverage": {
+        "denominator": "All emitted executable lines in src/ and include/, across the complete production archive and all test binaries; no project path exclusions",
+        "configuration": "Clang source coverage; encryption/LZ4 enabled; QUIC dependency path disabled",
+        "minimum_percent": 80.0,
+        "covered_lines": 14697,
+        "executable_lines": 20419,
+        "line_coverage_percent": 71.9770801704295,
+        "passed": false,
+        "missing_production_translation_units": [],
+        "profiles": 7,
+        "invalid_profile_records": [],
+        "exit_code": 1
+      },
+      "logger_patch_validation": [
+        {
+          "mode": "asan",
+          "exit_code": 0
+        },
+        {
+          "mode": "ubsan",
+          "exit_code": 0
+        },
+        {
+          "mode": "tsan",
+          "exit_code": 0
+        }
+      ],
+      "mutations": [
+        {
+          "mutation": "noop-upload",
+          "exit_code": 1,
+          "failed_tests": [
+            "FileUploadIntegrationTest.UploadSmallFile",
+            "FileListIntegrationTest.ListFilesDefault",
+            "ConcurrentStressTest.NoDataCorruptionUnderConcurrency"
+          ]
+        },
+        {
+          "mutation": "empty-listing",
+          "exit_code": 1,
+          "failed_tests": [
+            "FileListIntegrationTest.ListFilesDefault",
+            "FileListIntegrationTest.ListFilesWithOptions",
+            "FileListIntegrationTest.ListFilesWithPagination"
+          ]
+        },
+        {
+          "mutation": "missing-download-output",
+          "exit_code": 1,
+          "failed_tests": [
+            "FileDownloadIntegrationTest.DownloadToValidPath",
+            "FileDownloadIntegrationTest.DownloadWithOptions",
+            "ConcurrentStressTest.NoDataCorruptionUnderConcurrency"
+          ]
+        }
+      ],
+      "restoration": {
+        "exit_code": 0,
+        "before_sha256": "69fe0af5fea6a82777c16d3025a0d80649ec64e51245af460a945a0b5f5a7f1e",
+        "after_sha256": "69fe0af5fea6a82777c16d3025a0d80649ec64e51245af460a945a0b5f5a7f1e",
+        "restored": true
+      },
+      "remaining": "Coverage 71.98% below 80%; full TSAN still exits -6 on three errno address-reuse warnings matching standalone runtime reproduction; leak freedom, Windows and remote CI unverified",
+      "commit": "2664418"
+    },
+    "190": {
+      "status": "implemented_measurements_with_environment_gaps",
+      "exit_code": 0,
+      "runs": 44,
+      "passed_runs": 44,
+      "verified_files": 848,
+      "workloads_unchanged": true,
+      "harness_and_runner_unchanged": true,
+      "warmups": 1,
+      "repeats": 3,
+      "hundred_upload_successes": [
+        100,
+        100,
+        100,
+        100
+      ],
+      "historical_hundred_upload_successes": [
+        31,
+        31,
+        31,
+        31
+      ],
+      "raw_results": "docs/validation/public-api-20261015.json",
+      "remaining": "Dedicated LAN, per-core CPU, chunk-processing latency and controlled successful regression baseline unavailable"
+    }
+  },
+  "artifact_root": "/Users/dongcheolshin/Sources/file-trans-system-followup-20261015",
+  "production_revision": "266441887f74086e675437fcf29bdb6a36d3cdf1",
+  "date": "2026-10-15"
+}

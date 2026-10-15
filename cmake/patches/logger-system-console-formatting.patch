@@ -1,0 +1,39 @@
+diff --git a/src/impl/writers/console_writer.cpp b/src/impl/writers/console_writer.cpp
+index 84c2b06..7eaface 100644
+--- a/src/impl/writers/console_writer.cpp
++++ b/src/impl/writers/console_writer.cpp
+@@ -37,3 +37,3 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ #include <kcenon/logger/utils/error_handling_utils.h>
+-#include <iostream>
++#include <cstdio>
+ #include <iomanip>
+@@ -69,4 +69,8 @@ common::VoidResult console_writer::write_entry_impl(const log_entry& entry) {
+
+-        auto& stream = (use_stderr_ || level <= common::interfaces::log_level::error)
+-                       ? std::cerr : std::cout;
++        // Each writer has its own mutex; global iostream formatting state is
++        // shared across all writers. Format locally and atomically emit one
++        // record through the C stream's internal lock.
++        auto* output = (use_stderr_ || level <= common::interfaces::log_level::error)
++                       ? stderr : stdout;
++        std::ostringstream stream;
+
+@@ -105,4 +109,6 @@ common::VoidResult console_writer::write_entry_impl(const log_entry& entry) {
+
+-        // Verify stream state
+-        return utils::check_stream_state(stream, "console write");
++        auto formatted = stream.str();
++        if (std::fwrite(formatted.data(), 1, formatted.size(), output) != formatted.size())
++            return make_logger_void_result(logger_error_code::processing_failed, "Console write failed");
++        return common::ok();
+     }, logger_error_code::processing_failed);
+@@ -113,6 +119,5 @@ common::VoidResult console_writer::flush_impl() {
+     return utils::try_write_operation([&]() -> common::VoidResult {
+-        std::cout.flush();
+-        std::cerr.flush();
+-
+-        if (std::cout.fail() || std::cerr.fail()) {
++        const auto out = std::fflush(stdout);
++        const auto err = std::fflush(stderr);
++        if (out != 0 || err != 0) {
+             return make_logger_void_result(logger_error_code::flush_timeout, "Console flush failed");

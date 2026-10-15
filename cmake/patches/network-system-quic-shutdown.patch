@@ -1,0 +1,106 @@
+diff --git a/src/experimental/quic_client.cpp b/src/experimental/quic_client.cpp
+index 82433fe..fb76538 100644
+--- a/src/experimental/quic_client.cpp
++++ b/src/experimental/quic_client.cpp
+@@ -213,34 +213,20 @@ auto messaging_quic_client::do_stop_impl() -> VoidResult
+ {
+ 	try
+ 	{
++		// Quiesce the executor before touching its sockets and timers. A resolver
++		// completion may still publish socket_ until the runner has returned.
++		if (io_context_) io_context_->stop();
++		if (io_context_future_.valid()) io_context_future_.wait();
++		work_guard_.reset();
+ 		std::shared_ptr<internal::quic_socket> local_socket;
+ 		{
+ 			std::lock_guard<std::mutex> lock(socket_mutex_);
+ 			local_socket = std::move(socket_);
+ 		}
+-		if (local_socket)
+-		{
+-			local_socket->stop_receive();
+-			auto close_result = local_socket->close();
+-			if (close_result.is_err())
+-			{
+-				NETWORK_LOG_WARN("[messaging_quic_client] Close error: " +
+-				                 close_result.error().message);
+-			}
+-		}
+-
+-		if (work_guard_)
+-		{
+-			work_guard_.reset();
+-		}
+-		if (io_context_)
+-		{
+-			io_context_->stop();
+-		}
+-		if (io_context_future_.valid())
+-		{
+-			io_context_future_.wait();
+-		}
++		if (local_socket) local_socket->abort();
++		// Release completion-owned socket references while timer services live.
++		if (io_context_) { io_context_->restart(); io_context_->poll(); }
++		local_socket.reset();
+ 		thread_pool_.reset();
+ 		io_context_.reset();
+ 
+@@ -515,6 +501,7 @@ auto messaging_quic_client::do_connect(std::string_view host,
+ 		[this, self, resolver, host_str = std::string(host)](
+ 			std::error_code ec,
+ 			asio::ip::udp::resolver::results_type results) {
++			if (!work_guard_) return; // cancellation drain must not open a new socket
+ 			NETWORK_LOG_INFO("[messaging_quic_client] Resolve callback invoked");
+ 			if (ec)
+ 			{
+@@ -582,8 +569,7 @@ auto messaging_quic_client::do_connect(std::string_view host,
+ 					return;
+ 				}
+ 
+-				// Start receive loop
+-				quic_sock->start_receive();
++				// connect() already started the receive loop.
+ 
+ 				NETWORK_LOG_INFO("[messaging_quic_client] Connection initiated");
+ 			}
+diff --git a/src/internal/quic_socket.cpp b/src/internal/quic_socket.cpp
+index 2d11354..837bc52 100644
+--- a/src/internal/quic_socket.cpp
++++ b/src/internal/quic_socket.cpp
+@@ -340,6 +340,20 @@ auto quic_socket::stop_receive() -> void
+ 	is_receiving_.store(false);
+ }
+ 
++auto quic_socket::abort() -> void
++{
++	is_receiving_.store(false);
++	handshake_complete_.store(false);
++	state_.store(quic_connection_state::closed);
++	std::error_code ignored;
++	udp_socket_.cancel(ignored);
++	udp_socket_.close(ignored);
++	retransmit_timer_.cancel();
++	idle_timer_.cancel();
++	std::lock_guard<std::mutex> lock(callback_mutex_);
++	stream_data_cb_ = {}; connected_cb_ = {}; error_cb_ = {}; close_cb_ = {};
++}
++
+ auto quic_socket::send_stream_data(uint64_t stream_id,
+                                    std::vector<uint8_t>&& data,
+                                    bool fin) -> VoidResult
+diff --git a/src/internal/quic_socket.h b/src/internal/quic_socket.h
+index 320be14..1a073dd 100644
+--- a/src/internal/quic_socket.h
++++ b/src/internal/quic_socket.h
+@@ -225,6 +225,10 @@ namespace kcenon::network::internal
+ 		 */
+ 		auto stop_receive() -> void;
+ 
++		// Hard shutdown after the owning executor is quiescent. The owner must
++		// drain cancelled handlers before destroying its io_context.
++		auto abort() -> void;
++
+ 		/*!
+ 		 * \brief Send data on a stream
+ 		 * \param stream_id Target stream ID

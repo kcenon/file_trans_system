@@ -1,3 +1,6 @@
+> Historical plan/specification: checkboxes, matrices and targets below are not current execution results.
+> See [implementation status](IMPLEMENTATION_STATUS.md), [executed gates](validation/REGRESSION_GATES.md) and [measurements](validation/PUBLIC_API_BENCHMARKS.md) for the 2026-10-13 audit implementation evidence. The repository remains archived.
+
 # 파일 전송 시스템 - 소프트웨어 유효성 검증 명세서
 
 ## 문서 정보

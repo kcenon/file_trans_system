@@ -1,0 +1,679 @@
+{
+  "denominator": "All emitted executable lines in src/ and include/, across the complete production archive and all test binaries; no project path exclusions",
+  "configuration": "Clang source coverage; encryption/LZ4 enabled; QUIC dependency path disabled",
+  "minimum_percent": 80.0,
+  "covered_lines": 15057,
+  "executable_lines": 20479,
+  "line_coverage_percent": 73.52409785634065,
+  "passed": false,
+  "missing_production_translation_units": [],
+  "files": [
+    {
+      "path": "include/kcenon/file_transfer/adapters/logger_adapter.h",
+      "count": 10,
+      "covered": 10,
+      "percent": 100,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/adapters/monitorable_adapter.h",
+      "count": 0,
+      "covered": 0,
+      "percent": 0,
+      "mapping": "no executable mapping in this build"
+    },
+    {
+      "path": "include/kcenon/file_transfer/adapters/monitoring_adapter.h",
+      "count": 0,
+      "covered": 0,
+      "percent": 0,
+      "mapping": "no executable mapping in this build"
+    },
+    {
+      "path": "include/kcenon/file_transfer/adapters/thread_pool_adapter.h",
+      "count": 15,
+      "covered": 1,
+      "percent": 6.666666666666667,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/client/client_types.h",
+      "count": 67,
+      "covered": 41,
+      "percent": 61.19402985074627,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/client/detail/reconnect_sequence.h",
+      "count": 14,
+      "covered": 14,
+      "percent": 100,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/client/file_transfer_client.h",
+      "count": 0,
+      "covered": 0,
+      "percent": 0,
+      "mapping": "no executable mapping in this build"
+    },
+    {
+      "path": "include/kcenon/file_transfer/cloud/azure_blob_storage.h",
+      "count": 11,
+      "covered": 11,
+      "percent": 100,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/cloud/cloud_config.h",
+      "count": 183,
+      "covered": 76,
+      "percent": 41.53005464480874,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/cloud/cloud_credentials.h",
+      "count": 73,
+      "covered": 44,
+      "percent": 60.273972602739725,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/cloud/cloud_error.h",
+      "count": 192,
+      "covered": 35,
+      "percent": 18.229166666666664,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/cloud/cloud_http_client.h",
+      "count": 15,
+      "covered": 13,
+      "percent": 86.66666666666667,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/cloud/cloud_storage_interface.h",
+      "count": 25,
+      "covered": 14,
+      "percent": 56.00000000000001,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/cloud/cloud_stream_base.h",
+      "count": 50,
+      "covered": 1,
+      "percent": 2,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/cloud/cloud_utils.h",
+      "count": 0,
+      "covered": 0,
+      "percent": 0,
+      "mapping": "no executable mapping in this build"
+    },
+    {
+      "path": "include/kcenon/file_transfer/cloud/gcs_storage.h",
+      "count": 4,
+      "covered": 4,
+      "percent": 100,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/cloud/http_transport.h",
+      "count": 13,
+      "covered": 13,
+      "percent": 100,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/cloud/s3_storage.h",
+      "count": 0,
+      "covered": 0,
+      "percent": 0,
+      "mapping": "no executable mapping in this build"
+    },
+    {
+      "path": "include/kcenon/file_transfer/config/feature_flags.h",
+      "count": 0,
+      "covered": 0,
+      "percent": 0,
+      "mapping": "no executable mapping in this build"
+    },
+    {
+      "path": "include/kcenon/file_transfer/core/bandwidth_limiter.h",
+      "count": 0,
+      "covered": 0,
+      "percent": 0,
+      "mapping": "no executable mapping in this build"
+    },
+    {
+      "path": "include/kcenon/file_transfer/core/checksum.h",
+      "count": 0,
+      "covered": 0,
+      "percent": 0,
+      "mapping": "no executable mapping in this build"
+    },
+    {
+      "path": "include/kcenon/file_transfer/core/chunk_assembler.h",
+      "count": 1,
+      "covered": 1,
+      "percent": 100,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/core/chunk_config.h",
+      "count": 19,
+      "covered": 19,
+      "percent": 100,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/core/chunk_splitter.h",
+      "count": 0,
+      "covered": 0,
+      "percent": 0,
+      "mapping": "no executable mapping in this build"
+    },
+    {
+      "path": "include/kcenon/file_transfer/core/chunk_types.h",
+      "count": 99,
+      "covered": 87,
+      "percent": 87.87878787878788,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/core/compression_engine.h",
+      "count": 17,
+      "covered": 17,
+      "percent": 100,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/core/compression_types.h",
+      "count": 0,
+      "covered": 0,
+      "percent": 0,
+      "mapping": "no executable mapping in this build"
+    },
+    {
+      "path": "include/kcenon/file_transfer/core/error_codes.h",
+      "count": 169,
+      "covered": 41,
+      "percent": 24.2603550295858,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/core/file_commit.h",
+      "count": 0,
+      "covered": 0,
+      "percent": 0,
+      "mapping": "no executable mapping in this build"
+    },
+    {
+      "path": "include/kcenon/file_transfer/core/logging.h",
+      "count": 844,
+      "covered": 654,
+      "percent": 77.48815165876776,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/core/protocol_codec.h",
+      "count": 226,
+      "covered": 210,
+      "percent": 92.92035398230088,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/core/protocol_types.h",
+      "count": 104,
+      "covered": 36,
+      "percent": 34.61538461538461,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/core/resume_handler.h",
+      "count": 1,
+      "covered": 1,
+      "percent": 100,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/core/statistics_collector.h",
+      "count": 0,
+      "covered": 0,
+      "percent": 0,
+      "mapping": "no executable mapping in this build"
+    },
+    {
+      "path": "include/kcenon/file_transfer/core/transfer_checkpoint.h",
+      "count": 57,
+      "covered": 55,
+      "percent": 96.49122807017544,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/core/transfer_types.h",
+      "count": 113,
+      "covered": 69,
+      "percent": 61.06194690265486,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/core/types.h",
+      "count": 99,
+      "covered": 33,
+      "percent": 33.33333333333333,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/encryption/aes_gcm_engine.h",
+      "count": 0,
+      "covered": 0,
+      "percent": 0,
+      "mapping": "no executable mapping in this build"
+    },
+    {
+      "path": "include/kcenon/file_transfer/encryption/encryption_config.h",
+      "count": 133,
+      "covered": 73,
+      "percent": 54.88721804511278,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/encryption/encryption_interface.h",
+      "count": 9,
+      "covered": 7,
+      "percent": 77.77777777777779,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/encryption/key_derivation.h",
+      "count": 99,
+      "covered": 74,
+      "percent": 74.74747474747475,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/encryption/key_manager.h",
+      "count": 4,
+      "covered": 2,
+      "percent": 50,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/encryption/transfer_crypto.h",
+      "count": 15,
+      "covered": 15,
+      "percent": 100,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/file_transfer.h",
+      "count": 5,
+      "covered": 5,
+      "percent": 100,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/server/detail/pipeline_admission.h",
+      "count": 62,
+      "covered": 60,
+      "percent": 96.7741935483871,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/server/file_transfer_server.h",
+      "count": 0,
+      "covered": 0,
+      "percent": 0,
+      "mapping": "no executable mapping in this build"
+    },
+    {
+      "path": "include/kcenon/file_transfer/server/pipeline_jobs.h",
+      "count": 13,
+      "covered": 13,
+      "percent": 100,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/server/quota_manager.h",
+      "count": 7,
+      "covered": 7,
+      "percent": 100,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/server/server_pipeline.h",
+      "count": 16,
+      "covered": 15,
+      "percent": 93.75,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/server/server_types.h",
+      "count": 48,
+      "covered": 22,
+      "percent": 45.83333333333333,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/server/storage_manager.h",
+      "count": 30,
+      "covered": 5,
+      "percent": 16.666666666666664,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/server/storage_policy.h",
+      "count": 18,
+      "covered": 0,
+      "percent": 0,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/transport/connection_migration.h",
+      "count": 54,
+      "covered": 51,
+      "percent": 94.44444444444444,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/transport/quic_transport.h",
+      "count": 0,
+      "covered": 0,
+      "percent": 0,
+      "mapping": "no executable mapping in this build"
+    },
+    {
+      "path": "include/kcenon/file_transfer/transport/session_resumption.h",
+      "count": 15,
+      "covered": 15,
+      "percent": 100,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/transport/tcp_transport.h",
+      "count": 0,
+      "covered": 0,
+      "percent": 0,
+      "mapping": "no executable mapping in this build"
+    },
+    {
+      "path": "include/kcenon/file_transfer/transport/transfer_listener.h",
+      "count": 2,
+      "covered": 2,
+      "percent": 100,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/transport/transport_config.h",
+      "count": 140,
+      "covered": 86,
+      "percent": 61.42857142857143,
+      "mapping": "emitted"
+    },
+    {
+      "path": "include/kcenon/file_transfer/transport/transport_interface.h",
+      "count": 22,
+      "covered": 3,
+      "percent": 13.636363636363635,
+      "mapping": "emitted"
+    },
+    {
+      "path": "src/adapters/logger_adapter.cpp",
+      "count": 274,
+      "covered": 176,
+      "percent": 64.23357664233576,
+      "mapping": "emitted"
+    },
+    {
+      "path": "src/adapters/monitorable_adapter.cpp",
+      "count": 268,
+      "covered": 243,
+      "percent": 90.67164179104478,
+      "mapping": "emitted"
+    },
+    {
+      "path": "src/adapters/monitoring_adapter.cpp",
+      "count": 185,
+      "covered": 166,
+      "percent": 89.72972972972974,
+      "mapping": "emitted"
+    },
+    {
+      "path": "src/adapters/thread_pool_adapter.cpp",
+      "count": 309,
+      "covered": 293,
+      "percent": 94.8220064724919,
+      "mapping": "emitted"
+    },
+    {
+      "path": "src/client/file_transfer_client.cpp",
+      "count": 2193,
+      "covered": 1991,
+      "percent": 90.78887368901049,
+      "mapping": "emitted"
+    },
+    {
+      "path": "src/cloud/azure_blob_storage.cpp",
+      "count": 1474,
+      "covered": 911,
+      "percent": 61.80461329715061,
+      "mapping": "emitted"
+    },
+    {
+      "path": "src/cloud/cloud_http_client.cpp",
+      "count": 107,
+      "covered": 87,
+      "percent": 81.30841121495327,
+      "mapping": "emitted"
+    },
+    {
+      "path": "src/cloud/cloud_utils.cpp",
+      "count": 291,
+      "covered": 257,
+      "percent": 88.31615120274914,
+      "mapping": "emitted"
+    },
+    {
+      "path": "src/cloud/gcs_storage.cpp",
+      "count": 1547,
+      "covered": 1033,
+      "percent": 66.7744020685197,
+      "mapping": "emitted"
+    },
+    {
+      "path": "src/cloud/http_transport.cpp",
+      "count": 196,
+      "covered": 195,
+      "percent": 99.48979591836735,
+      "mapping": "emitted"
+    },
+    {
+      "path": "src/cloud/s3_storage.cpp",
+      "count": 1362,
+      "covered": 1023,
+      "percent": 75.1101321585903,
+      "mapping": "emitted"
+    },
+    {
+      "path": "src/core/bandwidth_limiter.cpp",
+      "count": 173,
+      "covered": 162,
+      "percent": 93.64161849710982,
+      "mapping": "emitted"
+    },
+    {
+      "path": "src/core/checksum.cpp",
+      "count": 178,
+      "covered": 161,
+      "percent": 90.4494382022472,
+      "mapping": "emitted"
+    },
+    {
+      "path": "src/core/chunk_assembler.cpp",
+      "count": 200,
+      "covered": 186,
+      "percent": 93,
+      "mapping": "emitted"
+    },
+    {
+      "path": "src/core/chunk_splitter.cpp",
+      "count": 142,
+      "covered": 108,
+      "percent": 76.05633802816901,
+      "mapping": "emitted"
+    },
+    {
+      "path": "src/core/compression_engine.cpp",
+      "count": 243,
+      "covered": 217,
+      "percent": 89.30041152263375,
+      "mapping": "emitted"
+    },
+    {
+      "path": "src/core/file_commit.cpp",
+      "count": 44,
+      "covered": 44,
+      "percent": 100,
+      "mapping": "emitted"
+    },
+    {
+      "path": "src/core/resume_handler.cpp",
+      "count": 581,
+      "covered": 465,
+      "percent": 80.03442340791739,
+      "mapping": "emitted"
+    },
+    {
+      "path": "src/core/statistics_collector.cpp",
+      "count": 190,
+      "covered": 190,
+      "percent": 100,
+      "mapping": "emitted"
+    },
+    {
+      "path": "src/core/transfer_crypto.cpp",
+      "count": 91,
+      "covered": 87,
+      "percent": 95.6043956043956,
+      "mapping": "emitted"
+    },
+    {
+      "path": "src/core/transfer_id.cpp",
+      "count": 59,
+      "covered": 59,
+      "percent": 100,
+      "mapping": "emitted"
+    },
+    {
+      "path": "src/encryption/aes_gcm_engine.cpp",
+      "count": 592,
+      "covered": 412,
+      "percent": 69.5945945945946,
+      "mapping": "emitted"
+    },
+    {
+      "path": "src/encryption/key_manager.cpp",
+      "count": 622,
+      "covered": 468,
+      "percent": 75.2411575562701,
+      "mapping": "emitted"
+    },
+    {
+      "path": "src/file_transfer.cpp",
+      "count": 0,
+      "covered": 0,
+      "percent": 0,
+      "mapping": "no executable mapping in this build"
+    },
+    {
+      "path": "src/server/file_transfer_server.cpp",
+      "count": 370,
+      "covered": 231,
+      "percent": 62.43243243243243,
+      "mapping": "emitted"
+    },
+    {
+      "path": "src/server/pipeline_jobs.cpp",
+      "count": 376,
+      "covered": 258,
+      "percent": 68.61702127659575,
+      "mapping": "emitted"
+    },
+    {
+      "path": "src/server/quota_manager.cpp",
+      "count": 360,
+      "covered": 339,
+      "percent": 94.16666666666667,
+      "mapping": "emitted"
+    },
+    {
+      "path": "src/server/server_pipeline.cpp",
+      "count": 330,
+      "covered": 247,
+      "percent": 74.84848484848486,
+      "mapping": "emitted"
+    },
+    {
+      "path": "src/server/server_runtime.h",
+      "count": 810,
+      "covered": 757,
+      "percent": 93.45679012345678,
+      "mapping": "emitted"
+    },
+    {
+      "path": "src/server/storage_manager.cpp",
+      "count": 1097,
+      "covered": 697,
+      "percent": 63.53691886964449,
+      "mapping": "emitted"
+    },
+    {
+      "path": "src/server/storage_policy.cpp",
+      "count": 575,
+      "covered": 455,
+      "percent": 79.13043478260869,
+      "mapping": "emitted"
+    },
+    {
+      "path": "src/transport/connection_migration.cpp",
+      "count": 463,
+      "covered": 299,
+      "percent": 64.57883369330453,
+      "mapping": "emitted"
+    },
+    {
+      "path": "src/transport/quic_transport.cpp",
+      "count": 818,
+      "covered": 215,
+      "percent": 26.283618581907092,
+      "mapping": "emitted"
+    },
+    {
+      "path": "src/transport/session_resumption.cpp",
+      "count": 453,
+      "covered": 403,
+      "percent": 88.96247240618102,
+      "mapping": "emitted"
+    },
+    {
+      "path": "src/transport/tcp_transport.cpp",
+      "count": 325,
+      "covered": 220,
+      "percent": 67.6923076923077,
+      "mapping": "emitted"
+    },
+    {
+      "path": "src/transport/transfer_listener.cpp",
+      "count": 68,
+      "covered": 47,
+      "percent": 69.11764705882352,
+      "mapping": "emitted"
+    }
+  ],
+  "profiles": 7,
+  "invalid_profile_records": []
+}

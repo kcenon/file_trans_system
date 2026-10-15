@@ -9,6 +9,22 @@
 
 namespace kcenon::file_transfer {
 namespace {
+// Explicit fixture transport: no production backend simulates persistence.
+auto fixture_transport() -> cloud_http_transport {
+    return [](const cloud_http_request& request) -> result<cloud_http_response> {
+        cloud_http_response response; response.status_code = 200;
+        response.headers["ETag"] = "\"fixture-etag\"";
+        std::string xml;
+        if (request.method == "POST" && request.url.find("uploads=") != std::string::npos)
+            xml = "<InitiateMultipartUploadResult><UploadId>fixture-upload</UploadId></InitiateMultipartUploadResult>";
+        else if (request.method == "POST")
+            xml = "<CompleteMultipartUploadResult><ETag>fixture-etag</ETag></CompleteMultipartUploadResult>";
+        else if (request.method == "DELETE") response.status_code = 204;
+        else if (request.method == "GET") response.status_code = 404;
+        response.body.assign(xml.begin(), xml.end()); return response;
+    };
+}
+
 
 // ============================================================================
 // S3 Credential Provider Tests
@@ -173,7 +189,7 @@ protected:
             .with_region("us-east-1")
             .build_s3();
 
-        storage_ = s3_storage::create(config, provider_);
+        storage_ = s3_storage::create(config, provider_, fixture_transport());
     }
 
     std::shared_ptr<credential_provider> provider_;
@@ -235,7 +251,7 @@ protected:
             .with_region("us-east-1")
             .build_s3();
 
-        storage_ = s3_storage::create(config, provider_);
+        storage_ = s3_storage::create(config, provider_, fixture_transport());
         storage_->connect();
     }
 
@@ -317,7 +333,7 @@ protected:
             .with_region("us-east-1")
             .build_s3();
 
-        storage_ = s3_storage::create(config, provider_);
+        storage_ = s3_storage::create(config, provider_, fixture_transport());
         storage_->connect();
     }
 
@@ -379,7 +395,7 @@ protected:
             .with_region("us-east-1")
             .build_s3();
 
-        storage_ = s3_storage::create(config, provider_);
+        storage_ = s3_storage::create(config, provider_, fixture_transport());
         storage_->connect();
     }
 
@@ -462,7 +478,7 @@ protected:
             .with_region("us-east-1")
             .build_s3();
 
-        storage_ = s3_storage::create(config, provider_);
+        storage_ = s3_storage::create(config, provider_, fixture_transport());
     }
 
     std::shared_ptr<credential_provider> provider_;
@@ -673,7 +689,7 @@ protected:
             .with_region("us-east-1")
             .build_s3();
 
-        storage_ = s3_storage::create(config, provider_);
+        storage_ = s3_storage::create(config, provider_, fixture_transport());
         storage_->connect();
     }
 
@@ -734,7 +750,7 @@ protected:
             .with_region("us-east-1")
             .build_s3();
 
-        storage_ = s3_storage::create(config, provider_);
+        storage_ = s3_storage::create(config, provider_, fixture_transport());
         storage_->connect();
     }
 

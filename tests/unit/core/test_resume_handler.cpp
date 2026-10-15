@@ -10,6 +10,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <fstream>
 #include <thread>
 #include <vector>
 
@@ -495,4 +496,24 @@ TEST_F(ResumeHandlerTest, Handler_ConcurrentMarkChunks) {
     EXPECT_TRUE(missing.value().empty());
 }
 
+
+TEST_F(ResumeHandlerTest, CorruptDurableRecordIsRejectedByFreshHandler) {
+    resume_handler handler(resume_handler_config{test_dir_});
+    auto state=create_test_state(); ASSERT_TRUE(handler.save_state(state));
+    auto path=test_dir_/(state.id.to_string()+".json");
+    { std::fstream file(path,std::ios::in|std::ios::out|std::ios::binary); file.seekp(30); file.put('X'); }
+    resume_handler restarted(resume_handler_config{test_dir_});
+    EXPECT_FALSE(restarted.load_state(state.id));
+}
+TEST_F(ResumeHandlerTest, FailedDurableWriteDoesNotPublishAnUnsavedCacheEntry) {
+    resume_handler handler(resume_handler_config{test_dir_});
+    auto state=create_test_state();
+    std::filesystem::create_directory(test_dir_/(state.id.to_string()+".json"));
+    EXPECT_FALSE(handler.save_state(state)); EXPECT_FALSE(handler.load_state(state.id));
+}
+TEST_F(ResumeHandlerTest, OversizedCheckpointFailsExplicitly) {
+    resume_handler handler(resume_handler_config{test_dir_}); auto state=create_test_state();
+    state.filename=std::string(1024*1024,'x');
+    EXPECT_FALSE(handler.save_state(state));
+}
 }  // namespace kcenon::file_transfer::test

@@ -174,6 +174,12 @@ struct s3_config : cloud_storage_config {
         provider = cloud_provider::aws_s3;
     }
 
+    /// Maximum buffered ranged response (independent of object size).
+    std::size_t download_range_size = 1024 * 1024;
+
+    /// Local file read buffer used to feed multipart uploads.
+    std::size_t file_io_buffer_size = 64 * 1024;
+
     /// Enable S3 Transfer Acceleration
     bool use_transfer_acceleration = false;
 
