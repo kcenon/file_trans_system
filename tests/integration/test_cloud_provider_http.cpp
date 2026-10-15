@@ -52,6 +52,43 @@ TEST(CloudProviderHttpTest, AzureSmallUploadsRequireServiceAcknowledgement) {
     }
 }
 
+TEST(CloudProviderHttpTest, AzureListingPreservesMetadataPrefixesAndContinuationAcrossPages) {
+    scripted_http_peer peer({{200,
+        "<EnumerationResults><Blobs><Blob><Name>dir/first.txt</Name><Properties>"
+        "<Content-Length>17</Content-Length><Content-Type>text/plain</Content-Type>"
+        "<Etag>first-etag</Etag><Last-Modified>Thu, 02 Jan 2025 03:04:05 GMT</Last-Modified>"
+        "</Properties></Blob><BlobPrefix><Name>dir/sub/</Name></BlobPrefix></Blobs>"
+        "<NextMarker>next page+</NextMarker></EnumerationResults>", {}},
+        {200, "<EnumerationResults><Blobs><Blob><Name>dir/last.txt</Name></Blob></Blobs>"
+              "<NextMarker></NextMarker></EnumerationResults>", {}}});
+    auto config = cloud_config_builder::azure_blob().with_account_name("fixture")
+        .with_bucket("container").with_endpoint(peer.endpoint()).build_azure_blob();
+    auto storage = azure_blob_storage::create(config, azure_credentials_for_test());
+    ASSERT_TRUE(storage->connect());
+    list_objects_options options; options.prefix = "dir/"; options.delimiter = "/"; options.max_keys = 1;
+    auto first = storage->list_objects(options); ASSERT_TRUE(first);
+    ASSERT_EQ(first.value().objects.size(), 1);
+    EXPECT_EQ(first.value().objects[0].key, "dir/first.txt");
+    EXPECT_EQ(first.value().objects[0].size, 17);
+    EXPECT_EQ(first.value().objects[0].content_type, "text/plain");
+    EXPECT_EQ(first.value().objects[0].etag, "first-etag");
+    EXPECT_GT(first.value().objects[0].last_modified.time_since_epoch().count(), 0);
+    EXPECT_EQ(first.value().common_prefixes, (std::vector<std::string>{"dir/sub/"}));
+    EXPECT_TRUE(first.value().is_truncated);
+    ASSERT_EQ(first.value().continuation_token, "next page+");
+    options.continuation_token = first.value().continuation_token;
+    auto last = storage->list_objects(options); ASSERT_TRUE(last);
+    ASSERT_EQ(last.value().objects.size(), 1);
+    EXPECT_EQ(last.value().objects[0].key, "dir/last.txt");
+    EXPECT_FALSE(last.value().is_truncated);
+    ASSERT_EQ(peer.received().wait_for(std::chrono::seconds(2)), std::future_status::ready);
+    auto requests = peer.received().get(); ASSERT_EQ(requests.size(), 2);
+    EXPECT_NE(requests[0].headers.find("prefix=dir%2F"), std::string::npos);
+    EXPECT_NE(requests[0].headers.find("delimiter=%2F"), std::string::npos);
+    EXPECT_NE(requests[0].headers.find("maxresults=1"), std::string::npos);
+    EXPECT_NE(requests[1].headers.find("marker=next%20page%2B"), std::string::npos);
+}
+
 TEST(CloudProviderHttpTest, AzureDownloadStreamUsesRangesAndAuthenticatesMetadata) {
     scripted_http_peer peer({{200, "", {{"Content-Length", "5"}, {"Content-Type", "application/octet-stream"},
         {"ETag", "etag"}, {"Last-Modified", "Thu, 02 Jan 2025 03:04:05 GMT"}}},
