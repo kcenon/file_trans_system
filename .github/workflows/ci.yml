@@ -12,7 +12,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-14]
+        # The cancellation API requires libc++ with C++20 stop_token support.
+        os: [ubuntu-24.04, macos-26]
         encryption: ['ON', 'OFF']
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30

@@ -142,7 +142,11 @@ function(check_std_jthread_support)
         add_definitions(-DUSE_STD_JTHREAD)
         message(STATUS "✅ Using std::jthread (matches thread_system ABI)")
     else()
-        message(STATUS "Using std::thread fallback (matches thread_system ABI)")
+        message(FATAL_ERROR
+            "file_trans_system requires C++20 std::jthread and std::stop_token. "
+            "Use a compiler and standard library providing these APIs (on macOS, "
+            "Apple Clang 21 / Xcode 26 is validated). Rebuild the pinned sibling "
+            "dependencies with the same toolchain to preserve thread_system ABI.")
     endif()
 endfunction()
 

@@ -334,7 +334,10 @@ python3 tools/check_quick_start.py --build build --artifacts build/quick-start-r
 Linux requires CMake, Ninja, a C++20 compiler, OpenSSL, LZ4 and libcurl development
 packages. macOS requires the corresponding Homebrew tools/libraries and
 CMAKE_PREFIX_PATH set to the Homebrew prefix. Local validation used Apple Clang
-21; CI configures Clang 18 on Ubuntu and Apple Clang on macOS. Windows is unverified.
+21; CI configures Clang 18 on Ubuntu 24.04 and Apple Clang 21 on macOS 26.
+The compiler's standard library must implement C++20 `std::jthread` and
+`std::stop_token`; CMake checks this requirement before compiling the project.
+Build all pinned sibling dependencies with the same toolchain. Windows is unverified.
 
 
 ### 요구사항

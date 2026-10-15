@@ -4,6 +4,7 @@
 #include "protocol_types.h"
 #include "types.h"
 
+#include <algorithm>
 #include <bit>
 #include <limits>
 #include <stdexcept>
