@@ -5,6 +5,7 @@
 set(INTEGRATION_TEST_SOURCES
     test_server_protocol.cpp
     test_download_control.cpp
+    test_encryption_policy.cpp
     test_public_upload.cpp
     test_public_download.cpp
     test_public_listing.cpp

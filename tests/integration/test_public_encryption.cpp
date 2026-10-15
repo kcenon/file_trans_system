@@ -120,11 +120,5 @@ TEST_F(PublicEncryptionTest, TamperedUploadNeverCommitsOutput) {
         EXPECT_FALSE(std::filesystem::exists(root / "server" / request.filename));
     }
 }
-TEST(EncryptionPolicyTest, InvalidOrMissingSecretsFailBeforeTransfer) {
-    EXPECT_FALSE(file_transfer_client::builder().with_encryption(true).build());
-    EXPECT_FALSE(file_transfer_client::builder().with_encryption_key(std::vector<std::byte>(31)).build());
-    EXPECT_FALSE(file_transfer_server::builder().with_storage_directory(std::filesystem::temp_directory_path()).with_required_encryption().build());
-    pipeline_config config; config.enable_encryption = true;
-    auto pipeline = server_pipeline::create(config); ASSERT_TRUE(pipeline); EXPECT_FALSE(pipeline.value().start());
-}
+
 } // namespace kcenon::file_transfer::test
