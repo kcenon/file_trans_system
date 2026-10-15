@@ -5,6 +5,8 @@
 
 #include <gtest/gtest.h>
 #include <fstream>
+#include <condition_variable>
+#include <set>
 
 #include "kcenon/file_transfer/cloud/azure_blob_storage.h"
 
@@ -103,6 +105,81 @@ public:
 // ============================================================================
 // Azure Blob Credential Provider Tests
 // ============================================================================
+
+class gated_azure_client : public mock_azure_http_client {
+public:
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool released = false;
+    int active = 0, peak = 0, commits = 0;
+    std::multiset<std::string> block_bodies;
+    std::string commit_body;
+    auto put(const std::string& url, const std::string& body,
+             const std::map<std::string, std::string>& headers) -> result<azure_http_response> override {
+        std::unique_lock lock(mutex);
+        if (url.find("comp=blocklist") != std::string::npos) {
+            ++commits; commit_body = body;
+        } else {
+            block_bodies.insert(body); ++active; peak = std::max(peak, active); changed.notify_all();
+            if (!changed.wait_for(lock, std::chrono::seconds(3), [&] { return released; })) {
+                --active;
+                return unexpected{error{error_code::connection_timeout, "Fixture release deadline"}};
+            }
+            --active;
+        }
+        lock.unlock();
+        return mock_azure_http_client::put(url, body, headers);
+    }
+};
+
+TEST(AzureMultipartContractTest, ConcurrencyBoundAndCommitPreserveEveryBlock) {
+    azure_credentials credentials; credentials.account_name = "fixture"; credentials.account_key = "dGVzdA==";
+    auto config = cloud_config_builder::azure_blob().with_account_name("fixture").with_bucket("container").build_azure_blob();
+    config.multipart.part_size = 4; config.multipart.threshold = 1; config.multipart.max_concurrent_parts = 2;
+    auto client = std::make_shared<gated_azure_client>();
+    auto storage = azure_blob_storage::create(config, azure_blob_credential_provider::create(credentials), client);
+    ASSERT_TRUE(storage->connect());
+    auto stream = storage->create_upload_stream("object"); ASSERT_TRUE(stream);
+    const std::string data = "abcdefghijklm";
+    auto write = std::async(std::launch::async, [&] { return stream->write(std::as_bytes(std::span(data))); });
+    {
+        std::unique_lock lock(client->mutex);
+        EXPECT_TRUE(client->changed.wait_for(lock, std::chrono::seconds(2), [&] { return client->active == 2; }));
+        EXPECT_EQ(client->peak, 2); EXPECT_EQ(client->commits, 0);
+        client->released = true; client->changed.notify_all();
+    }
+    auto written = write.get(); ASSERT_TRUE(written); EXPECT_EQ(written.value(), data.size());
+    auto result = stream->finalize(); ASSERT_TRUE(result) << result.error().message;
+    EXPECT_EQ(result.value().bytes_uploaded, data.size()); EXPECT_EQ(result.value().etag, "\"test-etag\"");
+    EXPECT_EQ(client->block_bodies, (std::multiset<std::string>{"abcd", "efgh", "ijkl", "m"}));
+    EXPECT_LE(client->peak, 2); EXPECT_EQ(client->commits, 1);
+    EXPECT_NE(client->commit_body.find("<BlockList>"), std::string::npos);
+    EXPECT_FALSE(stream->finalize()); EXPECT_FALSE(stream->write(std::as_bytes(std::span(data))));
+}
+
+TEST(AzureMultipartContractTest, FailedBlocksOrCommitCannotProduceUploadSuccess) {
+    azure_credentials credentials; credentials.account_name = "fixture"; credentials.account_key = "dGVzdA==";
+    auto config = cloud_config_builder::azure_blob().with_account_name("fixture").with_bucket("container").build_azure_blob();
+    config.multipart.part_size = 4; config.multipart.threshold = 1; config.multipart.max_concurrent_parts = 1;
+    const std::string data = "abcdefghijklm";
+    for (int failure = 0; failure < 3; ++failure) {
+        auto client = std::make_shared<mock_azure_http_client>();
+        if (failure == 0) client->put_block_response.status_code = 503;
+        if (failure == 1) client->commit_response.status_code = 403;
+        if (failure == 2) client->fail_transport = true;
+        auto storage = azure_blob_storage::create(config, azure_blob_credential_provider::create(credentials), client);
+        ASSERT_TRUE(storage->connect());
+        EXPECT_FALSE(storage->upload("object", std::as_bytes(std::span(data))));
+        EXPECT_EQ(storage->get_statistics().bytes_uploaded, 0);
+    }
+    auto client = std::make_shared<mock_azure_http_client>(); client->commit_response.headers.clear();
+    auto storage = azure_blob_storage::create(config, azure_blob_credential_provider::create(credentials), client);
+    ASSERT_TRUE(storage->connect()); auto stream = storage->create_upload_stream("object");
+    ASSERT_TRUE(stream->write(std::as_bytes(std::span(data))));
+    auto result = stream->finalize(); ASSERT_TRUE(result); EXPECT_FALSE(result.value().etag.empty());
+    auto aborted = storage->create_upload_stream("aborted"); ASSERT_TRUE(aborted->abort());
+    EXPECT_FALSE(aborted->write(std::as_bytes(std::span(data)))); EXPECT_FALSE(aborted->finalize());
+}
 
 class AzureBlobCredentialProviderTest : public ::testing::Test {
 protected:

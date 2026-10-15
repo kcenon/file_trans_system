@@ -7,6 +7,7 @@
 #include <fstream>
 
 #include "kcenon/file_transfer/cloud/gcs_storage.h"
+#include "kcenon/file_transfer/cloud/s3_storage.h"
 
 namespace kcenon::file_transfer {
 namespace {
@@ -898,6 +899,51 @@ TEST_F(GcsStorageOperationTest, AsyncDownloadFilesPreserveBinaryBodyAndSurfaceDe
     EXPECT_FALSE(storage_->exists("object")); EXPECT_FALSE(storage_->get_metadata("object"));
     EXPECT_FALSE(storage_->download_file("object", path)); EXPECT_FALSE(storage_->upload_file(path, "object"));
     EXPECT_FALSE(storage_->create_upload_stream("object")); EXPECT_FALSE(storage_->create_download_stream("object"));
+}
+
+TEST(GcsAuthenticationFailureTest, TokenAndCredentialErrorsPreventEveryObjectOperation) {
+    auto config = cloud_config_builder::gcs().with_project_id("fixture").with_bucket("bucket").build_gcs();
+    for (int failure = 0; failure < 5; ++failure) {
+        SCOPED_TRACE(failure);
+        auto client = std::make_shared<mock_gcs_http_client>();
+        gcs_credentials credentials;
+        credentials.service_account_json = failure == 0 ? "{}" : create_test_service_account_json();
+        if (failure == 1) client->token_response.status_code = 401;
+        if (failure == 2) client->token_response.body = R"({"expires_in":3600})";
+        if (failure == 3) client->fail_transport = true;
+        std::shared_ptr<credential_provider> provider = gcs_credential_provider::create(credentials);
+        if (failure == 4) {
+            static_credentials wrong_type; wrong_type.access_key_id = "fixture"; wrong_type.secret_access_key = "fixture";
+            provider = s3_credential_provider::create(wrong_type);
+        }
+        auto storage = gcs_storage::create(config, provider, client); ASSERT_TRUE(storage->connect());
+        EXPECT_FALSE(storage->upload("object", std::vector<std::byte>{std::byte{1}}));
+        EXPECT_FALSE(storage->download("object")); EXPECT_FALSE(storage->delete_object("object"));
+        EXPECT_FALSE(storage->get_metadata("object")); EXPECT_FALSE(storage->exists("object"));
+        EXPECT_FALSE(storage->list_objects()); EXPECT_FALSE(storage->copy_object("object", "copy"));
+        EXPECT_FALSE(storage->compose_objects({"first", "second"}, "object"));
+        EXPECT_EQ(storage->get_statistics().bytes_uploaded, 0);
+        EXPECT_EQ(storage->get_statistics().bytes_downloaded, 0);
+    }
+}
+
+TEST_F(GcsSpecificFeatureTest, ComposeAndDeleteErrorsRetainServiceDiagnostics) {
+    mock_http_client_->compose_response = {503, R"({"message":"fixture compose unavailable"})"};
+    auto composed = storage_->compose_objects({"one", "two"}, "combined"); ASSERT_FALSE(composed);
+    EXPECT_NE(composed.error().message.find("fixture compose unavailable"), std::string::npos);
+    mock_http_client_->delete_response = {403, R"({"message":"fixture delete denied"})"};
+    auto deleted = storage_->delete_object("object"); ASSERT_FALSE(deleted);
+    EXPECT_NE(deleted.error().message.find("fixture delete denied"), std::string::npos);
+    ASSERT_TRUE(storage_->disconnect()); EXPECT_FALSE(storage_->compose_objects({"one"}, "combined"));
+}
+
+TEST_F(GcsStorageOperationTest, ExpiredCachedTokenIsRefreshedAndFailureDoesNotUseTheOldToken) {
+    mock_http_client_->token_response = {200, R"({"access_token":"expired-fixture","expires_in":0})"};
+    ASSERT_TRUE(storage_->get_metadata("object"));
+    mock_http_client_->token_response.status_code = 403;
+    EXPECT_FALSE(storage_->get_metadata("object"));
+    mock_http_client_->token_response = {200, R"({"access_token":"new-fixture","expires_in":"invalid"})"};
+    EXPECT_TRUE(storage_->get_metadata("object"));
 }
 
 }  // namespace

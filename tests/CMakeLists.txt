@@ -97,6 +97,7 @@ if(FILE_TRANS_ENABLE_ENCRYPTION AND OpenSSL_FOUND)
         unit/cloud/test_azure_blob_storage.cpp
         unit/cloud/test_gcs_storage.cpp
         unit/cloud/test_gcs_signing.cpp
+        unit/cloud/test_credential_sources.cpp
     )
 endif()
 

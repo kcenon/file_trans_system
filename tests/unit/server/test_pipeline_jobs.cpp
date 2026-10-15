@@ -6,6 +6,9 @@
 #include "kcenon/file_transfer/server/pipeline_jobs.h"
 #include "kcenon/file_transfer/core/checksum.h"
 #include "kcenon/file_transfer/core/compression_engine.h"
+#ifdef FILE_TRANS_ENABLE_ENCRYPTION
+#include "kcenon/file_transfer/encryption/aes_gcm_engine.h"
+#endif
 
 #include <gtest/gtest.h>
 
@@ -572,6 +575,54 @@ TEST_F(PipelineJobsTest, AllJobsInheritFromJobBase) {
     EXPECT_FALSE(compress->get_name().empty());
     EXPECT_FALSE(send->get_name().empty());
 }
+
+TEST_F(PipelineJobsTest, CryptoJobsRejectMissingKeysAndInterruptedWork) {
+    int errors = 0;
+    context_->on_error_cb = [&](auto, const auto&) { ++errors; };
+    encrypt_job encrypt(context_, create_test_chunk(), 0);
+    decrypt_job decrypt(context_, create_test_chunk(), 0);
+    EXPECT_TRUE(encrypt.do_work().is_err()); EXPECT_TRUE(decrypt.do_work().is_err());
+    running_ = false;
+    encrypt_job stopped_encrypt(context_, create_test_chunk(), 0);
+    decrypt_job stopped_decrypt(context_, create_test_chunk(), 0);
+    EXPECT_TRUE(stopped_encrypt.do_work().is_err()); EXPECT_TRUE(stopped_decrypt.do_work().is_err());
+    EXPECT_EQ(errors, 4); EXPECT_EQ(stats_.chunks_encrypted, 0); EXPECT_EQ(stats_.chunks_decrypted, 0);
+}
+
+#ifdef FILE_TRANS_ENABLE_ENCRYPTION
+TEST_F(PipelineJobsTest, CryptoJobsAuthenticateTransferIdentityPositionChecksumAndCompression) {
+    auto chunk = create_test_chunk(); const auto plaintext = chunk.data;
+    std::shared_ptr<encryption_interface> engine = aes_gcm_engine::create();
+    const std::vector<std::byte> key(32, std::byte{0x42}); ASSERT_TRUE(engine->set_key(key));
+    const auto id = chunk.id;
+    context_->encryption_provider = [=](const transfer_id& requested) {
+        return requested == id ? engine : std::shared_ptr<encryption_interface>{};
+    };
+    std::vector<pipeline_stage> completed;
+    context_->on_stage_complete_cb = [&](auto stage, const auto&) { completed.push_back(stage); };
+    encrypt_job encrypt(context_, chunk, 0); ASSERT_TRUE(encrypt.do_work().is_ok());
+    EXPECT_TRUE(encrypt.get_chunk().is_encrypted); EXPECT_NE(encrypt.get_chunk().data, plaintext);
+    ASSERT_TRUE(encrypt.get_chunk().enc_metadata);
+    for (int mutation = 0; mutation < 6; ++mutation) {
+        SCOPED_TRACE(mutation);
+        auto tampered = encrypt.get_chunk();
+        if (mutation == 0) ++tampered.chunk_index;
+        if (mutation == 1) ++tampered.checksum;
+        if (mutation == 2) ++tampered.original_size;
+        if (mutation == 3) tampered.is_compressed = !tampered.is_compressed;
+        if (mutation == 4) tampered.data[0] ^= std::byte{1};
+        if (mutation == 5) tampered.enc_metadata.reset();
+        decrypt_job reject(context_, std::move(tampered), 0);
+        EXPECT_TRUE(reject.do_work().is_err());
+    }
+    decrypt_job decrypt(context_, encrypt.get_chunk(), 0); ASSERT_TRUE(decrypt.do_work().is_ok());
+    EXPECT_EQ(decrypt.get_chunk().data, plaintext); EXPECT_FALSE(decrypt.get_chunk().is_encrypted);
+    EXPECT_FALSE(decrypt.get_chunk().enc_metadata);
+    EXPECT_EQ(completed, (std::vector<pipeline_stage>{pipeline_stage::encrypt, pipeline_stage::decrypt}));
+    EXPECT_EQ(stats_.chunks_encrypted, 1); EXPECT_EQ(stats_.chunks_decrypted, 1);
+    EXPECT_EQ(stats_.encryption_bytes, plaintext.size());
+}
+#endif
 
 }  // namespace
 }  // namespace kcenon::file_transfer

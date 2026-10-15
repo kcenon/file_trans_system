@@ -10,6 +10,8 @@
 #include "kcenon/file_transfer/transport/transport_interface.h"
 #include "kcenon/file_transfer/transport/transport_config.h"
 #include "kcenon/file_transfer/transport/quic_transport.h"
+#include "kcenon/file_transfer/transport/session_resumption.h"
+#include "kcenon/file_transfer/transport/connection_migration.h"
 
 namespace kcenon::file_transfer {
 namespace {
@@ -332,6 +334,57 @@ TEST_F(QuicTransportAsyncTest, ReceiveAsyncWithoutConnection) {
 // Note: ConnectAsyncToInvalidEndpoint test disabled due to network timeout
 // causing test instability. The synchronous connect tests cover the
 // error handling scenarios adequately.
+
+TEST(QuicTransportControlTest, FailedResumptionNeverReportsAnAcceptedConnection) {
+    quic_transport_config config; config.connect_timeout = std::chrono::milliseconds(50);
+    config.enable_0rtt = true; config.cert_path = "missing-test-cert";
+    config.key_path = "missing-test-key"; config.ca_path = "missing-test-ca";
+    auto transport = quic_transport::create(config);
+    EXPECT_FALSE(transport->is_0rtt_available()); EXPECT_FALSE(transport->used_0rtt());
+    const endpoint invalid{"", 0};
+    const std::vector<std::byte> early_data{std::byte{1}};
+    auto fallback = transport->connect_with_0rtt(invalid, early_data);
+    EXPECT_TRUE(!fallback || !fallback.value().success); EXPECT_FALSE(transport->is_connected());
+    std::shared_ptr<session_resumption_manager> sessions = session_resumption_manager::create();
+    ASSERT_TRUE(sessions->store_ticket("", 0, {1,2,3}, std::chrono::hours(1), 1024));
+    transport->set_session_manager(sessions); EXPECT_EQ(transport->session_manager(), sessions);
+    auto resumed = transport->connect_with_0rtt(invalid, early_data);
+    EXPECT_TRUE(!resumed || !resumed.value().success);
+    EXPECT_FALSE(transport->is_0rtt_accepted()); EXPECT_FALSE(transport->is_0rtt_available());
+    EXPECT_FALSE(transport->is_connected()); EXPECT_FALSE(transport->is_handshake_complete());
+    auto ordinary = transport->connect_async(invalid).get(); EXPECT_FALSE(ordinary);
+    EXPECT_TRUE(transport->disconnect());
+}
+
+TEST(QuicTransportControlTest, MigrationFacadeExposesLocalStateWithoutClaimingConnectivity) {
+    auto transport = quic_transport::create();
+    EXPECT_FALSE(transport->migration_manager()); EXPECT_FALSE(transport->current_network_path());
+    EXPECT_EQ(transport->get_migration_state(), migration_state::idle);
+    EXPECT_EQ(transport->get_migration_statistics().total_migrations, 0);
+    transport->stop_network_monitoring();
+    std::shared_ptr<connection_migration_manager> manager = connection_migration_manager::create();
+    transport->set_migration_manager(manager); EXPECT_EQ(transport->migration_manager(), manager);
+    network_path original; original.local_address = "192.0.2.1"; original.remote_address = "192.0.2.2";
+    manager->set_current_path(original); ASSERT_TRUE(transport->current_network_path());
+    EXPECT_EQ(transport->current_network_path()->local_address, original.local_address);
+    std::vector<migration_event> events;
+    transport->on_migration_event([&](const auto& event) { events.push_back(event.event); });
+    EXPECT_FALSE(transport->is_migration_available()); EXPECT_FALSE(transport->migrate_to(original));
+    network_path missing; missing.local_address = "192.0.2.254";
+    auto failed = manager->migrate_to_path(missing); ASSERT_TRUE(failed); EXPECT_FALSE(failed.value().success);
+    EXPECT_FALSE(events.empty()); EXPECT_EQ(transport->get_migration_state(), migration_state::failed);
+    EXPECT_EQ(transport->get_migration_statistics().failed_migrations, 1);
+    transport->stop_network_monitoring(); transport->set_migration_manager(nullptr);
+    EXPECT_EQ(transport->get_migration_state(), migration_state::idle);
+}
+
+TEST(QuicTransportControlTest, BaseConfigurationKeepsTheCallerTimeoutThroughFactoryCreation) {
+    transport_config config; config.type = transport_type::quic;
+    config.connect_timeout = std::chrono::milliseconds(50);
+    quic_transport_factory factory; auto transport = factory.create(config); ASSERT_TRUE(transport);
+    EXPECT_EQ(transport->config().connect_timeout, config.connect_timeout);
+    EXPECT_FALSE(transport->connect({"", 0}));
+}
 
 }  // namespace
 }  // namespace kcenon::file_transfer

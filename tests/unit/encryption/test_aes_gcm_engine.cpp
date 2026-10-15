@@ -617,6 +617,35 @@ TEST_F(AesGcmEngineTest, MoveConstruction) {
     EXPECT_EQ(decrypt_result.value().plaintext, plaintext);
 }
 
+TEST_F(AesGcmEngineTest, StreamingAuthenticationAndFinalizationRejectInvalidMetadata) {
+    const std::vector<std::byte> data{std::byte{1}, std::byte{0}, std::byte{255}};
+    const std::vector<std::byte> aad{std::byte{7}, std::byte{8}};
+    auto encrypt = engine_->create_encrypt_stream(data.size(), aad); ASSERT_TRUE(encrypt);
+    auto encrypted = encrypt->process_chunk(data); ASSERT_TRUE(encrypted);
+    ASSERT_TRUE(encrypt->finalize());
+    EXPECT_FALSE(encrypt->finalize()); EXPECT_FALSE(encrypt->process_chunk(data));
+    auto metadata = encrypt->get_metadata(); EXPECT_EQ(metadata.aad, aad);
+    auto decrypt = engine_->create_decrypt_stream(metadata); ASSERT_TRUE(decrypt);
+    auto decrypted = decrypt->process_chunk(encrypted.value()); ASSERT_TRUE(decrypted);
+    ASSERT_TRUE(decrypt->finalize()); EXPECT_EQ(decrypted.value(), data);
+    EXPECT_FALSE(decrypt->finalize()); EXPECT_FALSE(decrypt->process_chunk(encrypted.value()));
+    for (int mutation = 0; mutation < 4; ++mutation) {
+        auto invalid = metadata;
+        if (mutation == 0) invalid.iv.clear();
+        if (mutation == 1) invalid.auth_tag.resize(17);
+        if (mutation == 2) invalid.auth_tag.clear();
+        if (mutation == 3) invalid.aad[0] ^= std::byte{1};
+        EXPECT_FALSE(engine_->decrypt(encrypted.value(), invalid));
+        auto stream = engine_->create_decrypt_stream(invalid); ASSERT_TRUE(stream);
+        auto chunk = stream->process_chunk(encrypted.value());
+        EXPECT_FALSE(stream->finalize());
+    }
+    engine_->clear_key();
+    EXPECT_FALSE(engine_->create_encrypt_stream(data.size()));
+    EXPECT_FALSE(engine_->create_decrypt_stream(metadata));
+    EXPECT_FALSE(engine_->decrypt(encrypted.value(), metadata));
+}
+
 }  // namespace
 }  // namespace kcenon::file_transfer
 
