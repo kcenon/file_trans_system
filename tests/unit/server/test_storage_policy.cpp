@@ -515,4 +515,176 @@ TEST_F(StoragePolicyTest, DryRunModeToggle) {
     EXPECT_FALSE(policy->is_dry_run());
 }
 
-}  // namespace kcenon::file_transfer::test
+TEST_F(StoragePolicyTest, DirectDeletionRechecksRetentionAndPreservesExactBytes) {
+    auto policy = storage_policy::builder().build();
+    policy->attach(*manager_);
+    auto data = create_test_data(123);
+    for (int mode = 0; mode != 3; ++mode) {
+        ASSERT_TRUE(manager_->store("held", data, store_options{.overwrite = true}));
+        retention_policy retention;
+        retention.legal_hold = mode == 0;
+        retention.compliance_mode = mode == 1;
+        if (mode == 2)
+            retention.min_retention = std::chrono::hours(24);
+        policy->set_retention(retention);
+        auto deleted =
+            policy->execute_action("held", storage_tier::hot, tiering_action::delete_obj);
+        EXPECT_FALSE(deleted);
+        auto retrieved = manager_->retrieve("held");
+        ASSERT_TRUE(retrieved);
+        EXPECT_EQ(retrieved.value(), data);
+    }
+    EXPECT_EQ(policy->get_statistics().objects_deleted, 0);
+    policy->set_retention({});
+    ASSERT_TRUE(policy->execute_action("held", storage_tier::hot, tiering_action::delete_obj));
+    EXPECT_FALSE(std::filesystem::exists(test_dir_ / "held"));
+    EXPECT_EQ(policy->get_statistics().objects_deleted, 1);
+}
+
+TEST_F(StoragePolicyTest, SameTierDeleteRulesExecuteAndPendingActionsAreDeduplicated) {
+    tiering_rule rule;
+    rule.name = "expire";
+    rule.trigger = tiering_trigger::size;
+    rule.min_size = 1;
+    rule.action = tiering_action::delete_obj;
+    rule.target_tier = storage_tier::hot;
+    auto policy = storage_policy::builder().with_rule(rule).build();
+    policy->attach(*manager_);
+    ASSERT_TRUE(manager_->store("once", create_test_data(8)));
+    ASSERT_TRUE(policy->evaluate("once"));
+    ASSERT_TRUE(policy->evaluate("once"));
+    auto pending = policy->execute_pending();
+    ASSERT_TRUE(pending);
+    EXPECT_EQ(pending.value(), 1);
+    EXPECT_FALSE(std::filesystem::exists(test_dir_ / "once"));
+    EXPECT_EQ(policy->get_statistics().errors, 0);
+    ASSERT_TRUE(manager_->store("direct", create_test_data(8)));
+    ASSERT_TRUE(policy->execute("direct"));
+    EXPECT_FALSE(std::filesystem::exists(test_dir_ / "direct"));
+    auto pending_result = policy->execute_pending();
+    ASSERT_TRUE(pending_result);
+    EXPECT_EQ(pending_result.value(), 0);
+    EXPECT_EQ(policy->get_statistics().objects_deleted, 2);
+}
+
+TEST_F(StoragePolicyTest, PendingDeletionHonorsANewHoldAndDryRunNeverDeletes) {
+    tiering_rule rule;
+    rule.name = "expire";
+    rule.trigger = tiering_trigger::size;
+    rule.min_size = 1;
+    rule.action = tiering_action::delete_obj;
+    auto policy = storage_policy::builder().with_rule(rule).build();
+    policy->attach(*manager_);
+    auto bytes = create_test_data(41);
+    ASSERT_TRUE(manager_->store("protected", bytes));
+    ASSERT_TRUE(policy->evaluate("protected"));
+    retention_policy held;
+    held.legal_hold = true;
+    policy->set_retention(held);
+    auto pending_result = policy->execute_pending();
+    ASSERT_TRUE(pending_result);
+    EXPECT_EQ(pending_result.value(), 0);
+    auto retrieved = manager_->retrieve("protected");
+    ASSERT_TRUE(retrieved);
+    EXPECT_EQ(retrieved.value(), bytes);
+    EXPECT_FALSE(policy->execute("protected"));
+    policy->set_retention({});
+    policy->set_dry_run(true);
+    int callbacks = 0;
+    policy->on_action([&](const auto& key, auto action, auto, auto) {
+        EXPECT_EQ(key, "protected");
+        EXPECT_EQ(action, tiering_action::delete_obj);
+        ++callbacks;
+    });
+    ASSERT_TRUE(policy->execute("protected"));
+    EXPECT_EQ(callbacks, 1);
+    retrieved = manager_->retrieve("protected");
+    ASSERT_TRUE(retrieved);
+    EXPECT_EQ(retrieved.value(), bytes);
+    EXPECT_EQ(policy->get_statistics().objects_deleted, 0);
+}
+
+TEST_F(StoragePolicyTest, EvaluatesEveryListingPageAndPreservesPrefixSelection) {
+    auto policy = storage_policy::builder().build();
+    policy->attach(*manager_);
+    for (int i = 0; i < 1003; ++i)
+        ASSERT_TRUE(manager_->store("prefix/" + std::to_string(i), create_test_data(1)));
+    ASSERT_TRUE(manager_->store("outside", create_test_data(2)));
+    auto all = policy->evaluate_all();
+    ASSERT_TRUE(all);
+    EXPECT_EQ(all.value().size(), 1004);
+    auto prefix = policy->evaluate_prefix("prefix/");
+    ASSERT_TRUE(prefix);
+    EXPECT_EQ(prefix.value().size(), 1003);
+    for (const auto& evaluation : prefix.value())
+        EXPECT_TRUE(evaluation.key.starts_with("prefix/"));
+}
+
+TEST_F(StoragePolicyTest, CallbacksMayReplaceThemselvesAndQueryState) {
+    auto policy = storage_policy::builder().build();
+    policy->attach(*manager_);
+    ASSERT_TRUE(manager_->store("object", create_test_data(31)));
+    int evaluated = 0, actions = 0, errors = 0;
+    policy->on_evaluation([&](const auto&) {
+        ++evaluated;
+        policy->on_evaluation({});
+        (void)policy->get_statistics();
+    });
+    ASSERT_TRUE(policy->evaluate("object"));
+    ASSERT_TRUE(policy->evaluate("object"));
+    EXPECT_EQ(evaluated, 1);
+    policy->on_action([&](const auto&, auto, auto, auto) {
+        ++actions;
+        policy->on_action({});
+    });
+    ASSERT_TRUE(policy->execute_action("object", storage_tier::hot, tiering_action::delete_obj));
+    EXPECT_EQ(actions, 1);
+    policy->on_error([&](const auto&, const auto&) {
+        ++errors;
+        policy->on_error({});
+    });
+    EXPECT_FALSE(policy->execute_action("missing", storage_tier::cold, tiering_action::move));
+    EXPECT_EQ(errors, 1);
+}
+
+TEST_F(StoragePolicyTest, RetentionExclusionAndMissingMetadataHaveConsistentOutcomes) {
+    retention_policy held;
+    held.legal_hold = true;
+    held.exclusions = {"allowed?.[bin]"};
+    tiering_rule rule;
+    rule.name = "delete";
+    rule.trigger = tiering_trigger::size;
+    rule.min_size = 1;
+    rule.action = tiering_action::delete_obj;
+    auto policy = storage_policy::builder().with_rule(rule).with_retention(held).build();
+    policy->attach(*manager_);
+    ASSERT_TRUE(manager_->store("allowed1.[bin]", create_test_data(10)));
+    ASSERT_TRUE(manager_->store("blocked", create_test_data(11)));
+    auto can_modify = policy->can_modify("allowed1.[bin]");
+    ASSERT_TRUE(can_modify);
+    EXPECT_TRUE(can_modify.value());
+    can_modify = policy->can_modify("blocked");
+    ASSERT_TRUE(can_modify);
+    EXPECT_FALSE(can_modify.value());
+    auto evaluation = policy->evaluate("allowed1.[bin]");
+    ASSERT_TRUE(evaluation);
+    EXPECT_FALSE(evaluation.value().blocked_by_retention);
+    ASSERT_TRUE(policy->execute("allowed1.[bin]"));
+    EXPECT_FALSE(std::filesystem::exists(test_dir_ / "allowed1.[bin]"));
+    EXPECT_FALSE(policy->execute("blocked"));
+    auto retrieved = manager_->retrieve("blocked");
+    ASSERT_TRUE(retrieved);
+    EXPECT_EQ(retrieved.value(), create_test_data(11));
+    held = {};
+    held.min_retention = std::chrono::hours(1);
+    policy->set_retention(held);
+    EXPECT_FALSE(policy->can_delete("missing"));
+    policy->detach();
+    EXPECT_FALSE(policy->evaluate("blocked"));
+    EXPECT_FALSE(policy->evaluate_all());
+    EXPECT_FALSE(policy->evaluate_prefix("prefix/"));
+    EXPECT_FALSE(policy->execute_pending());
+    EXPECT_FALSE(policy->execute_action("blocked", storage_tier::hot, tiering_action::delete_obj));
+}
+
+} // namespace kcenon::file_transfer::test

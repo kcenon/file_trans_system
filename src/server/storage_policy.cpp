@@ -9,6 +9,7 @@
 #include <mutex>
 #include <regex>
 #include <shared_mutex>
+#include <unordered_set>
 
 namespace kcenon::file_transfer {
 
@@ -58,6 +59,11 @@ auto matches_glob_pattern(const std::string& pattern, const std::string& key) ->
     } catch (...) {
         return false;
     }
+}
+
+auto needs_action(const policy_evaluation_result& evaluation) -> bool {
+    return evaluation.recommended_action == tiering_action::delete_obj ||
+           evaluation.target_tier != evaluation.current_tier;
 }
 
 }  // namespace
@@ -110,24 +116,43 @@ struct storage_policy::impl {
     std::vector<policy_evaluation_result> pending_actions;
 
     void report_eval(const policy_evaluation_result& result) {
-        std::lock_guard lock(callbacks_mutex);
-        if (eval_callback) {
-            eval_callback(result);
+        decltype(eval_callback) callback;
+        {
+            std::lock_guard lock(callbacks_mutex);
+            callback = eval_callback;
         }
+        if (callback) callback(result);
     }
 
     void report_action(const std::string& key, tiering_action action,
                       storage_tier from, storage_tier to) {
-        std::lock_guard lock(callbacks_mutex);
-        if (action_callback) {
-            action_callback(key, action, from, to);
+        decltype(action_callback) callback;
+        {
+            std::lock_guard lock(callbacks_mutex);
+            callback = action_callback;
         }
+        if (callback) callback(key, action, from, to);
     }
 
     void report_error(const std::string& key, const error& err) {
-        std::lock_guard lock(callbacks_mutex);
-        if (error_callback) {
-            error_callback(key, err);
+        decltype(error_callback) callback;
+        {
+            std::lock_guard lock(callbacks_mutex);
+            callback = error_callback;
+        }
+        if (callback) callback(key, err);
+    }
+
+    void forget_pending(const std::string& key) {
+        std::lock_guard lock(pending_mutex);
+        std::erase_if(pending_actions, [&](const auto& pending) { return pending.key == key; });
+    }
+
+    void remember_evaluation(const policy_evaluation_result& evaluation) {
+        std::lock_guard lock(pending_mutex);
+        std::erase_if(pending_actions, [&](const auto& pending) { return pending.key == evaluation.key; });
+        if (needs_action(evaluation) && !evaluation.blocked_by_retention) {
+            pending_actions.push_back(evaluation);
         }
     }
 
@@ -292,7 +317,10 @@ struct storage_policy::impl {
 
         // Check retention
         std::lock_guard ret_lock(retention_mutex);
-        if (result.recommended_action == tiering_action::delete_obj) {
+        const bool excluded = std::any_of(
+            retention_policy_.exclusions.begin(), retention_policy_.exclusions.end(),
+            [&](const auto& pattern) { return matches_glob_pattern(pattern, metadata.key); });
+        if (result.recommended_action == tiering_action::delete_obj && !excluded) {
             if (retention_policy_.legal_hold ||
                 retention_policy_.compliance_mode) {
                 result.blocked_by_retention = true;
@@ -423,14 +451,8 @@ auto storage_policy::evaluate(const std::string& key)
 
     impl_->record_evaluation();
     auto eval_result = impl_->evaluate_object(metadata_result.value());
+    impl_->remember_evaluation(eval_result);
     impl_->report_eval(eval_result);
-
-    // Store for pending execution if action needed
-    if (eval_result.target_tier != eval_result.current_tier &&
-        !eval_result.blocked_by_retention) {
-        std::lock_guard lock(impl_->pending_mutex);
-        impl_->pending_actions.push_back(eval_result);
-    }
 
     return result<policy_evaluation_result>(std::move(eval_result));
 }
@@ -438,35 +460,7 @@ auto storage_policy::evaluate(const std::string& key)
 auto storage_policy::evaluate_all()
     -> result<std::vector<policy_evaluation_result>> {
 
-    if (!impl_->manager) {
-        return unexpected{error{
-            error_code::not_initialized,
-            "Storage policy not attached to a storage manager"
-        }};
-    }
-
-    std::vector<policy_evaluation_result> results;
-
-    auto list_result = impl_->manager->list();
-    if (!list_result.has_value()) {
-        return unexpected{list_result.error()};
-    }
-
-    for (const auto& obj : list_result.value().objects) {
-        impl_->record_evaluation();
-        auto eval_result = impl_->evaluate_object(obj);
-        impl_->report_eval(eval_result);
-
-        if (eval_result.target_tier != eval_result.current_tier &&
-            !eval_result.blocked_by_retention) {
-            std::lock_guard lock(impl_->pending_mutex);
-            impl_->pending_actions.push_back(eval_result);
-        }
-
-        results.push_back(std::move(eval_result));
-    }
-
-    return result<std::vector<policy_evaluation_result>>(std::move(results));
+    return evaluate_prefix("");
 }
 
 auto storage_policy::evaluate_prefix(const std::string& prefix)
@@ -484,23 +478,29 @@ auto storage_policy::evaluate_prefix(const std::string& prefix)
     list_storage_options options;
     options.prefix = prefix;
 
-    auto list_result = impl_->manager->list(options);
-    if (!list_result.has_value()) {
-        return unexpected{list_result.error()};
-    }
-
-    for (const auto& obj : list_result.value().objects) {
-        impl_->record_evaluation();
-        auto eval_result = impl_->evaluate_object(obj);
-        impl_->report_eval(eval_result);
-
-        if (eval_result.target_tier != eval_result.current_tier &&
-            !eval_result.blocked_by_retention) {
-            std::lock_guard lock(impl_->pending_mutex);
-            impl_->pending_actions.push_back(eval_result);
+    std::unordered_set<std::string> seen_tokens;
+    for (;;) {
+        auto list_result = impl_->manager->list(options);
+        if (!list_result.has_value()) {
+            return unexpected{list_result.error()};
         }
 
-        results.push_back(std::move(eval_result));
+        const auto& page = list_result.value();
+        for (const auto& obj : page.objects) {
+            impl_->record_evaluation();
+            auto evaluation = impl_->evaluate_object(obj);
+            impl_->remember_evaluation(evaluation);
+            impl_->report_eval(evaluation);
+            results.push_back(std::move(evaluation));
+        }
+
+        if (!page.is_truncated) break;
+        if (!page.continuation_token || page.continuation_token->empty() ||
+            !seen_tokens.insert(*page.continuation_token).second) {
+            return unexpected{error{error_code::invalid_configuration,
+                "Storage listing did not provide a progressing continuation token"}};
+        }
+        options.continuation_token = page.continuation_token;
     }
 
     return result<std::vector<policy_evaluation_result>>(std::move(results));
@@ -513,7 +513,7 @@ auto storage_policy::execute(const std::string& key) -> result<void> {
     }
 
     const auto& eval = eval_result.value();
-    if (eval.target_tier == eval.current_tier) {
+    if (!needs_action(eval)) {
         return {};  // No action needed
     }
 
@@ -545,7 +545,7 @@ auto storage_policy::execute_pending() -> result<std::size_t> {
     std::size_t executed = 0;
     for (const auto& action : actions) {
         if (action.blocked_by_retention) continue;
-        if (action.target_tier == action.current_tier) continue;
+        if (!needs_action(action)) continue;
 
         auto result = execute_action(
             action.key, action.target_tier, action.recommended_action);
@@ -581,8 +581,21 @@ auto storage_policy::execute_action(
     storage_tier current_tier = metadata_result.value().tier;
     uint64_t size = metadata_result.value().size;
 
+    // Recheck retention at execution time, including direct and previously queued actions.
+    if (action == tiering_action::delete_obj) {
+        auto allowed = can_delete(key);
+        if (!allowed || !allowed.value()) {
+            auto failure = allowed ? error{error_code::file_access_denied,
+                "Action blocked by retention policy"} : allowed.error();
+            impl_->record_error();
+            impl_->report_error(key, failure);
+            return unexpected{failure};
+        }
+    }
+
     // Dry run mode - just report
     if (impl_->dry_run) {
+        impl_->forget_pending(key);
         impl_->report_action(key, action, current_tier, target_tier);
         return result<void>();
     }
@@ -602,6 +615,7 @@ auto storage_policy::execute_action(
     }
 
     if (action_result.has_value()) {
+        impl_->forget_pending(key);
         impl_->record_action(action, size);
         impl_->report_action(key, action, current_tier, target_tier);
     } else {
@@ -679,7 +693,10 @@ auto storage_policy::can_delete(const std::string& key) -> result<bool> {
     // Check minimum retention
     if (impl_->retention_policy_.min_retention.count() > 0) {
         auto metadata_result = impl_->manager->get_metadata(key);
-        if (metadata_result.has_value()) {
+        if (!metadata_result.has_value()) {
+            return unexpected{metadata_result.error()};
+        }
+        {
             auto now = std::chrono::system_clock::now();
             auto age = std::chrono::duration_cast<std::chrono::hours>(
                 now - metadata_result.value().last_modified);
