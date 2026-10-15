@@ -903,4 +903,60 @@ TEST_F(ConfigurationApiTest, FileOutputConfigDefaults) {
     EXPECT_FALSE(config.rotate_on_size);
 }
 
+TEST(FileLogPersistenceTest, RapidRotationPreservesEveryRecordAcrossLoggerInstances) {
+    auto root = std::filesystem::temp_directory_path() /
+        ("fts-log-rotation-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root);
+    struct cleanup { std::filesystem::path root; ~cleanup() { std::error_code ec; std::filesystem::remove_all(root, ec); } } cleanup{root};
+    for (int instance = 0; instance < 2; ++instance) {
+        file_transfer_logger logger;
+        log_config config; config.destination = log_output_destination::file;
+        config.file_config = {(root / "output.log").string(), true, 1, true};
+        ASSERT_TRUE(logger.configure(config));
+        for (int index = 0; index < 10; ++index) {
+            structured_log_entry entry; entry.message = "record-" + std::to_string(instance * 10 + index) + "!";
+            logger.log(entry);
+        }
+        logger.disable_file_output();
+    }
+    std::string contents;
+    std::size_t segments = 0;
+    for (const auto& file : std::filesystem::directory_iterator(root)) {
+        std::ifstream input(file.path()); contents.append(std::istreambuf_iterator<char>(input), {}); ++segments;
+    }
+    EXPECT_EQ(segments, 21); // Twenty rotated segments and the current file.
+    for (int index = 0; index < 20; ++index) {
+        const auto marker = "record-" + std::to_string(index) + "!";
+        auto first = contents.find(marker); ASSERT_NE(first, std::string::npos) << marker;
+        EXPECT_EQ(contents.find(marker, first + marker.size()), std::string::npos);
+    }
+}
+
+TEST(FileLogPersistenceTest, JsonAndTextOutputApplyFilteringAndMaskingBeforePersistence) {
+    auto file = std::filesystem::temp_directory_path() /
+        ("fts-log-format-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    struct cleanup { std::filesystem::path file; ~cleanup() { std::error_code ec; std::filesystem::remove(file, ec); } } cleanup{file};
+    file_transfer_logger logger; logger.initialize();
+    log_config config; config.destination = log_output_destination::file; config.global_level = log_level::trace;
+    config.category_levels["hidden"] = log_level::fatal; config.masking = masking_config::all_masked();
+    config.file_config.file_path = file.string(); config.file_config.append = false;
+    ASSERT_TRUE(logger.configure(config));
+    transfer_log_context context; context.server_address = "192.168.1.77"; context.filename = "/private/fixture/data.txt";
+    for (auto format : {log_output_format::text, log_output_format::json}) {
+        logger.set_output_format(format);
+        logger.log(log_level::info, "hidden", "filtered-marker");
+        logger.log(log_level::warn, "visible", "visible-marker at 192.168.1.77", &context);
+    }
+    auto structured = log_entry_builder().with_level(log_level::error).with_category("visible")
+        .with_message("structured-marker").with_context(context).with_source_location("fixture.cpp", 12, "test").build();
+    logger.log(structured); logger.flush(); logger.disable_file_output();
+    std::ifstream input(file); std::string contents{std::istreambuf_iterator<char>(input), {}};
+    EXPECT_EQ(contents.find("filtered-marker"), std::string::npos);
+    EXPECT_EQ(contents.find("192.168.1.77"), std::string::npos);
+    EXPECT_NE(contents.find("visible-marker"), std::string::npos);
+    EXPECT_NE(contents.find("structured-marker"), std::string::npos);
+    EXPECT_FALSE(logger.set_file_output(""));
+    EXPECT_FALSE(logger.set_file_output(std::filesystem::temp_directory_path().string()));
+}
+
 } // namespace kcenon::file_transfer::test

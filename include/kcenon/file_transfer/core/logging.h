@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <unordered_map>
 #include <fstream>
+#include <filesystem>
 
 // Include unified feature flags for file_trans_system
 // This provides FILE_TRANS_HAS_* and KCENON_WITH_* macros
@@ -1474,16 +1475,20 @@ private:
             return;
         }
 
+        // Multiple rotations may occur in the same second. Never overwrite an
+        // earlier segment, including one left by a previous logger instance.
+        const auto base = file_config_.file_path + "." + get_rotation_timestamp();
+        std::string rotated_path = base;
+        std::error_code ec;
+        for (std::size_t suffix = 1; std::filesystem::exists(rotated_path, ec); ++suffix)
+            rotated_path = base + "." + std::to_string(suffix);
+        if (ec) return;
+
         log_file_.close();
-
-        // Create rotated filename with timestamp
-        std::string rotated_path = file_config_.file_path + "." + get_rotation_timestamp();
-
-        // Rename current file
-        std::rename(file_config_.file_path.c_str(), rotated_path.c_str());
-
-        // Reopen the log file
-        log_file_.open(file_config_.file_path, std::ios::out | std::ios::trunc);
+        const bool renamed = std::rename(file_config_.file_path.c_str(), rotated_path.c_str()) == 0;
+        // If rotation fails, retain the existing file instead of truncating it.
+        log_file_.open(file_config_.file_path,
+            std::ios::out | (renamed ? std::ios::trunc : std::ios::app));
     }
 
     static auto get_rotation_timestamp() -> std::string {
