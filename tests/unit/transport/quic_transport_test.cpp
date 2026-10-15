@@ -368,7 +368,14 @@ TEST(QuicTransportControlTest, MigrationFacadeExposesLocalStateWithoutClaimingCo
     manager->set_current_path(original); ASSERT_TRUE(transport->current_network_path());
     EXPECT_EQ(transport->current_network_path()->local_address, original.local_address);
     std::vector<migration_event> events;
-    transport->on_migration_event([&](const auto& event) { events.push_back(event.event); });
+    transport->on_migration_event([&](const auto& event) {
+        events.push_back(event.event);
+        // Both forwarding layers must release their locks before user code.
+        EXPECT_EQ(transport->migration_manager(), manager);
+        (void)transport->get_migration_statistics();
+        transport->on_migration_event({});
+        manager->on_migration_event({});
+    });
     EXPECT_FALSE(transport->is_migration_available()); EXPECT_FALSE(transport->migrate_to(original));
     network_path missing; missing.local_address = "192.0.2.254";
     auto failed = manager->migrate_to_path(missing); ASSERT_TRUE(failed); EXPECT_FALSE(failed.value().success);

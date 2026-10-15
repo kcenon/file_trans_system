@@ -871,10 +871,9 @@ void quic_transport::set_migration_manager(
     if (impl_->migration_manager_) {
         impl_->migration_manager_->on_migration_event(
             [this](const migration_event_data& event) {
-                std::lock_guard lock(impl_->migration_mutex);
-                if (impl_->migration_callback) {
-                    impl_->migration_callback(event);
-                }
+                std::function<void(const migration_event_data&)> callback;
+                { std::lock_guard lock(impl_->migration_mutex); callback = impl_->migration_callback; }
+                if (callback) callback(event);
             });
     }
 }
@@ -928,8 +927,8 @@ auto quic_transport::migrate_to(const network_path& new_path)
             "Transport is not connected"}};
     }
 
-    std::lock_guard lock(impl_->migration_mutex);
-    if (!impl_->migration_manager_) {
+    auto manager = migration_manager();
+    if (!manager) {
         return unexpected{error{error_code::not_initialized,
             "Migration manager not configured"}};
     }
@@ -937,7 +936,7 @@ auto quic_transport::migrate_to(const network_path& new_path)
     FT_LOG_INFO(log_category::transfer,
         "Initiating migration to: " + new_path.to_string());
 
-    auto result = impl_->migration_manager_->migrate_to_path(new_path);
+    auto result = manager->migrate_to_path(new_path);
     if (!result.has_value()) {
         FT_LOG_ERROR(log_category::transfer,
             "Migration failed: " + result.error().message);
@@ -947,6 +946,7 @@ auto quic_transport::migrate_to(const network_path& new_path)
     if (result.value().success) {
         // Update local endpoint if migration succeeded
         if (!new_path.local_address.empty()) {
+            std::lock_guard lock(impl_->migration_mutex);
             endpoint new_local;
             new_local.host = new_path.local_address;
             new_local.port = new_path.local_port;
@@ -985,7 +985,7 @@ auto quic_transport::get_migration_statistics() const -> migration_statistics {
 }
 
 auto quic_transport::start_network_monitoring() -> result<void> {
-    std::lock_guard lock(impl_->migration_mutex);
+    std::unique_lock lock(impl_->migration_mutex);
     if (!impl_->migration_manager_) {
         // Create a default migration manager if not set
         impl_->migration_manager_ = connection_migration_manager::create();
@@ -993,10 +993,9 @@ auto quic_transport::start_network_monitoring() -> result<void> {
         // Set up event forwarding
         impl_->migration_manager_->on_migration_event(
             [this](const migration_event_data& event) {
-                std::lock_guard lock(impl_->migration_mutex);
-                if (impl_->migration_callback) {
-                    impl_->migration_callback(event);
-                }
+                std::function<void(const migration_event_data&)> callback;
+                { std::lock_guard lock(impl_->migration_mutex); callback = impl_->migration_callback; }
+                if (callback) callback(event);
             });
     }
 
@@ -1014,14 +1013,14 @@ auto quic_transport::start_network_monitoring() -> result<void> {
         impl_->migration_manager_->set_current_path(current_path);
     }
 
-    return impl_->migration_manager_->start_monitoring();
+    auto manager = impl_->migration_manager_;
+    lock.unlock();
+    return manager->start_monitoring();
 }
 
 void quic_transport::stop_network_monitoring() {
-    std::lock_guard lock(impl_->migration_mutex);
-    if (impl_->migration_manager_) {
-        impl_->migration_manager_->stop_monitoring();
-    }
+    auto manager = migration_manager();
+    if (manager) manager->stop_monitoring();
 }
 
 }  // namespace kcenon::file_transfer
