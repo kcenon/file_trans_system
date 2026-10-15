@@ -27,6 +27,33 @@ def free_port():
         return connection.getsockname()[1]
 
 
+def start_server(binary, root, port, mode, log, *, retry_port_conflicts=False):
+    # An unused port selected by the parent can be claimed before the child
+    # binds it. Retry only that initial fixture allocation, never a restart:
+    # restart recovery must retain the exact endpoint in its checkpoint.
+    attempts = 5 if retry_port_conflicts else 1
+    for attempt in range(attempts):
+        (root / "server-ready").unlink(missing_ok=True)
+        log.flush()
+        offset = log.tell()
+        process = subprocess.Popen([binary, "server", str(root), str(port), "new", "0", mode],
+                                   stdout=log, stderr=subprocess.STDOUT)
+        try:
+            wait_for(lambda: (root / "server-ready").exists() or process.poll() is not None)
+        except BaseException:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=5)
+            raise
+        if process.poll() is None:
+            return process, port
+        output = Path(log.name).read_bytes()[offset:].decode("utf-8", errors="replace")
+        if "address already in use" not in output.lower() or attempt + 1 == attempts:
+            raise AssertionError(f"Server failed to start on port {port}: {output}")
+        port = free_port()
+    raise AssertionError("Initial server port allocation exhausted")
+
+
 class Proxy:
     def __init__(self, target):
         self.target = target
@@ -114,16 +141,9 @@ def scenario(binary, direction, encrypted, artifacts):
         log_path = artifacts / f"186-process-{direction}-{mode}.log"
         server = None
         with log_path.open("w") as log:
-            def start_server():
-                (root / "server-ready").unlink(missing_ok=True)
-                process = subprocess.Popen([binary, "server", str(root), str(port), "new", "0", mode],
-                                           stdout=log, stderr=subprocess.STDOUT)
-                wait_for(lambda: (root / "server-ready").exists() or process.poll() is not None)
-                assert process.poll() is None, "Server failed to start"
-                return process
-
             try:
-                server = start_server()
+                server, port = start_server(binary, root, port, mode, log, retry_port_conflicts=True)
+                proxy.target = port
                 first = subprocess.run([binary, direction, str(root), str(proxy.port), "new", "2", mode],
                                        stdout=log, stderr=subprocess.STDOUT, timeout=15)
                 assert first.returncode == 41, f"Crash checkpoint not reached: {first.returncode}"
@@ -135,7 +155,7 @@ def scenario(binary, direction, encrypted, artifacts):
                 server.wait(timeout=5)
                 wait_for(lambda: all(not worker.is_alive() for worker in proxy.workers))
                 before = len(proxy.trace)
-                server = start_server()
+                server, _ = start_server(binary, root, port, mode, log)
                 resumed = subprocess.run([binary, direction, str(root), str(proxy.port), transfer_id, "0", mode],
                                          stdout=log, stderr=subprocess.STDOUT, timeout=15)
                 assert resumed.returncode == 0, f"Resumed process failed: {resumed.returncode}"
