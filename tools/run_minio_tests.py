@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 import time
 import urllib.request
+import urllib.error
 import xml.etree.ElementTree as ET
 
 REVISION = "07c3a429bfed433e49018cb0f78a52145d4bedeb"
@@ -47,6 +48,29 @@ def create_bucket(endpoint):
             raise RuntimeError(f"Bucket creation failed: {response.status}")
 
 
+def wait_for_storage(server, endpoint, timeout=30):
+    """Require write readiness and a successful signed bucket operation."""
+    deadline = time.monotonic() + timeout
+    while True:
+        if server.poll() is not None:
+            raise RuntimeError("MinIO exited before readiness")
+        try:
+            with urllib.request.urlopen(endpoint + "/minio/health/cluster", timeout=1) as response:
+                if response.status == 200:
+                    # The listener can become live before IAM/storage finishes
+                    # initialization. A 503 here is still a readiness failure.
+                    create_bucket(endpoint)
+                    return
+        except urllib.error.HTTPError as error:
+            if error.code != 503:
+                raise
+        except OSError:
+            pass
+        if time.monotonic() >= deadline:
+            raise RuntimeError("MinIO storage readiness deadline exceeded")
+        time.sleep(0.05)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path)
@@ -75,20 +99,7 @@ def main():
                                        "--console-address", f"127.0.0.1:{port()}"],
                                       stdout=log, stderr=subprocess.STDOUT, env=environment)
             try:
-                deadline = time.monotonic() + 30
-                while True:
-                    if server.poll() is not None:
-                        raise RuntimeError("MinIO exited before readiness")
-                    try:
-                        with urllib.request.urlopen(endpoint + "/minio/health/live", timeout=1) as response:
-                            if response.status == 200:
-                                break
-                    except OSError:
-                        pass
-                    if time.monotonic() >= deadline:
-                        raise RuntimeError("MinIO readiness deadline exceeded")
-                    time.sleep(0.05)
-                create_bucket(endpoint)
+                wait_for_storage(server, endpoint)
                 report = artifacts / "minio-tests.xml"
                 with (artifacts / "minio-tests.log").open("w") as log_tests:
                     result = subprocess.run([str(args.test_binary.resolve()), "--gtest_filter=MinIOIntegrationTest.*",
