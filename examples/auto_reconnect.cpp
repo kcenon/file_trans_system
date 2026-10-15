@@ -14,6 +14,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <csignal>
 #include <cstring>
 #include <filesystem>
