@@ -36,6 +36,24 @@ TEST_P(PublicTransportTest, UploadListDownloadUsesSelectedTransportAndPersistsEx
 INSTANTIATE_TEST_SUITE_P(Tcp,PublicTransportTest,::testing::Values(false));
 #ifdef FILE_TRANS_ENABLE_QUIC
 INSTANTIATE_TEST_SUITE_P(Quic,PublicTransportTest,::testing::Values(true));
+TEST(PublicTransportPolicyTest, QuicHandshakeTimeoutCanBeRepeatedAndDestroyedSafely) {
+    // A bound UDP endpoint that never answers makes the deadline deterministic.
+    asio::io_context context;
+    asio::ip::udp::socket silent_peer(context, {asio::ip::udp::v4(), 0});
+    auto port = silent_peer.local_endpoint().port();
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        quic_transport_config config; config.enable_0rtt = false;
+        auto built = file_transfer_client::builder().with_transport(config)
+            .with_connect_timeout(100ms).build();
+        ASSERT_TRUE(built);
+        auto start = std::chrono::steady_clock::now();
+        EXPECT_FALSE(built.value().connect({"127.0.0.1", port}));
+        EXPECT_FALSE(built.value().is_connected());
+        EXPECT_LT(std::chrono::steady_clock::now() - start, 2s);
+        EXPECT_TRUE(built.value().disconnect());
+    }
+}
+
 #else
 TEST(PublicTransportPolicyTest, DisabledQuicCannotSilentlyOpenTcp) {
     EXPECT_FALSE(file_transfer_client::builder().with_transport(quic_transport_config{}).build());

@@ -33,12 +33,30 @@ prerequisites, not evidence of working QUIC file transfer. Issue #184 remains op
 for QUIC qualification and dependency repair. Do not treat standalone QUIC unit
 checks or skipped dependency handshake tests as end-to-end validation.
 
-Reproduce (the enabled experiment may crash):
+On 2026-10-15 the same enabled experiment reproduced SIGSEGV before the
+checked-in `network-system-quic-shutdown.patch`. The patch quiesces the client
+executor, cancels the socket and timers, drains cancellation handlers, and
+releases socket ownership before the I/O context. It also removes a duplicate
+receive start and prevents resolver completions from reopening a socket during
+shutdown. The enabled suite now exits normally with a failed handshake assertion;
+three repeated silent-peer deadlines return errors and permit destruction.
+This repairs the observed client cleanup defect, not QUIC interoperability.
+
+The pinned TLS implementation uses memory BIOs and ignores the encryption level
+in `quic_crypto::process_crypto_data`; it does not install the negotiated
+handshake/application traffic secrets in the QUIC packet keys. Together with
+missing client CA/verification application and the server's per-session UDP port,
+this requires a compatible QUIC dependency implementation before certificate,
+ALPN, transfer, cancellation or migration correctness can be qualified. These
+cases remain unpassed; TLS verification has not been bypassed.
+
+Reproduce in an isolated enabled build:
 
 ```sh
-cmake -S . -B build -DFILE_TRANS_ENABLE_QUIC=ON
-cmake --build build
-build/bin/file_trans_integration_tests --gtest_filter='*PublicTransport*'
+python3 tools/ci_build.py --build build-quic-review
+cmake -S . -B build-quic-review -DFILE_TRANS_ENABLE_QUIC=ON
+cmake --build build-quic-review
+build-quic-review/bin/file_trans_integration_tests --gtest_filter='*PublicTransport*'
 ```
 
 Default TCP validation uses the identical upload/list/download hash test,
