@@ -31,6 +31,8 @@ if(FILE_TRANS_ENABLE_ENCRYPTION AND OpenSSL_FOUND)
 endif()
 
 add_executable(file_trans_integration_tests ${INTEGRATION_TEST_SOURCES})
+target_compile_definitions(file_trans_integration_tests PRIVATE
+    FILE_TRANS_TEST_DATA_DIR="${FILE_TRANS_TEST_DATA_DIR}")
 
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 add_executable(file_trans_resume_process resume_process.cpp)

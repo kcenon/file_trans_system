@@ -10,7 +10,7 @@ TEST_P(PublicTransportTest, UploadListDownloadUsesSelectedTransportAndPersistsEx
     auto server_builder = file_transfer_server::builder().with_storage_directory(root / "server");
     auto client_builder = file_transfer_client::builder().with_connect_timeout(1500ms).with_transfer_timeout(3s);
     if (GetParam()) {
-        auto data = std::filesystem::path(__FILE__).parent_path().parent_path() / "test_data/quic";
+        auto data = std::filesystem::path(FILE_TRANS_TEST_DATA_DIR) / "quic";
         quic_transport_config server_config; server_config.enable_0rtt=false;
         server_config.cert_path=(data / "server-cert.pem").string(); server_config.key_path=(data / "server-key.pem").string();
         server_builder.with_transport(server_config);

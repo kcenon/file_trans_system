@@ -99,9 +99,32 @@ if(FILE_TRANS_ENABLE_ENCRYPTION AND OpenSSL_FOUND)
     )
 endif()
 
+# Generate private keys only in the build tree. The Python/OpenSSL signer is
+# independent of the implementation and verifies the fixed canonical vectors.
+set(FILE_TRANS_TEST_DATA_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated-test-data")
+if((FILE_TRANS_ENABLE_ENCRYPTION AND OpenSSL_FOUND) OR FILE_TRANS_ENABLE_QUIC)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    find_program(FILE_TRANS_OPENSSL_EXECUTABLE openssl
+        HINTS "${OPENSSL_ROOT_DIR}/bin" REQUIRED)
+    if(FILE_TRANS_ENABLE_ENCRYPTION AND OpenSSL_FOUND)
+        execute_process(COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_data/gcs_signing/generate_reference.py
+            --output ${FILE_TRANS_TEST_DATA_DIR}/gcs_signing
+            --openssl ${FILE_TRANS_OPENSSL_EXECUTABLE}
+            COMMAND_ERROR_IS_FATAL ANY)
+    endif()
+    if(FILE_TRANS_ENABLE_QUIC)
+        execute_process(COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_data/generate_quic_identity.py
+            --output ${FILE_TRANS_TEST_DATA_DIR}/quic
+            --openssl ${FILE_TRANS_OPENSSL_EXECUTABLE}
+            COMMAND_ERROR_IS_FATAL ANY)
+    endif()
+endif()
+
 add_executable(file_trans_unit_tests ${UNIT_TEST_SOURCES})
 target_compile_definitions(file_trans_unit_tests PRIVATE
-    FILE_TRANS_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test_data")
+    FILE_TRANS_TEST_DATA_DIR="${FILE_TRANS_TEST_DATA_DIR}")
 
 # On Windows MSVC, static library transitive dependencies are not automatically
 # propagated to executables, and the linker may not include unreferenced symbols

@@ -190,9 +190,10 @@ The timestamp overload of `generate_signed_url` accepts an explicit signing time
 for deterministic checks. The implementation follows Google's
 [V4 signing process](https://cloud.google.com/storage/docs/access-control/signing-urls-manually)
 and [canonical request specification](https://cloud.google.com/storage/docs/authentication/canonical-requests).
-The public fixture key under `tests/test_data/gcs_signing` is only for tests.
-`generate_reference.py` independently regenerates the GET/PUT reference signatures
-using Python and the OpenSSL CLI.
+During test configuration, `tests/test_data/gcs_signing/generate_reference.py`
+generates an ephemeral RSA key in the build tree and independently generates the
+GET/PUT reference signatures using Python and the OpenSSL CLI. Fixed canonical
+requests and strings to sign remain checked in; private keys do not.
 
 An optional live URL/tampering test reads an existing object when
 `GCS_SIGNING_TEST_SERVICE_ACCOUNT_FILE`, `GCS_SIGNING_TEST_BUCKET`, and
