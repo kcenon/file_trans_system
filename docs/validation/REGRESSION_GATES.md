@@ -1,5 +1,11 @@
 # Regression gates — issue #189
 
+The tables below preserve the 2026-10-13 evidence. Current follow-up results,
+including fully instrumented sanitizer dependencies and new cloud/adapter
+regressions, are in the [2026-10-15 report](FOLLOWUP_176_190.md). The former
+unresolved errno pattern now has a [standalone reproducer](TSAN_ERRNO_REPRODUCER.md);
+the full unsuppressed TSAN outcome is reported separately.
+
 The audit baseline is 0608737c65ca2a270d9b27e1dcacbf43aff8168d. Results below
 were executed locally on macOS arm64 with Apple Clang 21 on 2026-10-13.
 Workflow definitions are configured, not evidence of a completed GitHub run.
@@ -20,7 +26,7 @@ cmake/dependency-revisions.json. Checked-in patches fix TCP close draining,
 long-lived I/O jobs starving the fixed worker pool (100 connections), and a
 shared stream formatting race. The bootstrap checks patches before applying.
 
-## Executed evidence
+## Executed evidence (2026-10-13)
 
 | Check | Result |
 |---|---|
@@ -47,8 +53,8 @@ an address-safety check, not proof of leak freedom.
 
 The fully instrumented macOS integration run reports two races with Asio
 socket_ops::clear_last_error / get_last_error and config_get stacks during
-ConcurrentStressTest.RapidConnectDisconnectConcurrent. Their root cause is
-unresolved; they are not classified as false positives and no race suppression
+ConcurrentStressTest.RapidConnectDisconnectConcurrent. At that pass their root cause was
+unresolved; they were not classified as false positives and no race suppression
 is installed. Keep the sanitizer acceptance item open. Reproduce with:
 
 ```sh

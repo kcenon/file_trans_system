@@ -1,5 +1,9 @@
 # Public API benchmark — issue #190
 
+The [2026-10-15 full-profile rerun](#follow-up-measured-results-2026-10-15) passes
+44/44 runs, including all 100 simultaneous uploads and downloads. Earlier failed
+measurements remain below and in their original raw artifact.
+
 The executable uses the public client/server APIs over real TCP with separate
 server and client-driver processes. Local splitting/assembly and compression
 microbenchmarks in the other benchmark directories remain **component
@@ -107,7 +111,7 @@ for this implementation. CI runs verified loopback workloads and uploads raw
 results, with read-only repository permissions; it does not publish empty
 latency/memory/scalability arrays or assert absolute LAN targets.
 
-## Local measured results
+## Historical measured results (2026-10-13)
 
 The checked-in raw artifact and measured table below record the executed full
 profile on 2026-10-13. All throughput units are decimal MB/s; RSS is bytes in
@@ -134,12 +138,12 @@ three repetitions). Forty runs passed exact-byte/SHA-256 verification. The four
 “Server receive budget exhausted.” No throughput summary is calculated for that
 failed workload. The four 100-client download runs each verified **100/100**.
 
-The server runtime receive executor uses an 8 MiB queue and rejects a frame when
-that budget is full (src/server/server_runtime.h, post/connect). A 256 KiB
+At that revision, the server runtime receive executor used an 8 MiB queue and rejected a frame when
+that budget was full (src/server/server_runtime.h, post/connect). A 256 KiB
 uncompressed frame plus headers across 100 simultaneous upload clients exceeds
 that budget. The workload exposes rejection instead of waiting for capacity.
-This is a measured remaining scalability/backpressure gap under issues #188/#190;
-the 100-connection small-RPC test from #189 does not establish 100 simultaneous
+This was the measured scalability/backpressure gap under issues #188/#190;
+the earlier 100-connection small-RPC test from #189 did not establish 100 simultaneous
 upload success. The benchmark does not relax the queue budget or change file
 sizes to manufacture a passing result.
 
@@ -155,3 +159,51 @@ build and dependency manifests are implemented and executed. The 1 GB workload
 passed in both directions. The 100-client workload was executed and exposes
 the upload failure above. Dedicated LAN targets and a controlled regression
 baseline remain unmeasured. Full-profile failure is returned as exit code 1.
+
+## Follow-up measured results (2026-10-15)
+
+**Full profile: PASS**, exit code 0. All **44/44 runs** and **848 persisted
+files** passed independent byte/SHA-256 verification. This repeats the same 11
+workloads, one warmup and three measured repetitions. The harness and runner
+SHA-256 are identical to the historical run; clients, datasets and file sizes
+were not reduced. Project production revision:
+`266441887f74086e675437fcf29bdb6a36d3cdf1`; pending changes at measurement start
+were documentation only. Project and dependency builds use Release (`-O3
+-DNDEBUG`) on the Apple M4 Max / macOS 27.2 ARM64 loopback environment described
+in the [new complete raw artifact](public-api-20261015.json).
+
+| Direction | File bytes | Clients | Compression / limit | Mean ± sample SD MB/s | Server peak MB (max) | Driver peak MB (max) |
+|---|---:|---:|---|---:|---:|---:|
+| upload | 1,048,576 | 1 | none | 17.91 ± 1.06 | 9.57 | 9.72 |
+| download | 1,048,576 | 1 | none | 62.63 ± 2.46 | 9.70 | 8.80 |
+| upload | 67,108,864 | 1 | none | 20.65 ± 2.10 | 9.80 | 9.95 |
+| download | 67,108,864 | 1 | none | 74.29 ± 1.08 | 11.52 | 9.80 |
+| upload | 1,000,000,000 | 1 | none | 19.45 ± 0.25 | 11.40 | 11.85 |
+| download | 1,000,000,000 | 1 | none | 75.01 ± 0.34 | 11.71 | 10.08 |
+| upload | 1,048,576 | 100 | none | 23.55 ± 1.61 | 67.96 | 93.31 |
+| download | 1,048,576 | 100 | none | 161.08 ± 0.78 | 13.19 | 25.46 |
+| download | 4,194,304 | 4 | none / 1 MiB/s each | 5.47 ± 0.00 | 11.55 | 13.57 |
+| upload | 8,388,608 | 1 | adaptive | 27.72 ± 0.91 | 9.55 | 8.70 |
+| download | 8,388,608 | 1 | adaptive | 107.87 ± 0.61 | 9.47 | 8.36 |
+
+Every one of the four 100-client upload runs now verifies **100/100 files**,
+compared with **31/100** and 69 receive-budget failures in each historical run.
+The four 100-client download runs still verify **100/100**. Runtime receive
+admission now waits for capacity within the original 8 MiB queue budget;
+[reservation, decoder and shutdown bounds](../protocol/PIPELINE_CAPACITY.md)
+explain the additional memory outside that queue.
+
+At 100 uploads, maximum measured server RSS is 67.96 MB and the aggregate
+100-client driver RSS is 93.31 MB. The queue budget is not an RSS ceiling, and
+driver RSS at N>1 is not per-client RSS. All measured server cases fall within
+the numeric NFR-04 budget; all single-client idle observations fall within
+NFR-05. File-size growth through 1 GB remains streaming in these scoped runs.
+These observations do not establish leak freedom or arbitrary-workload bounds.
+
+The decimal 1 GB means are **19.45 ± 0.25 MB/s upload** and **75.01 ± 0.34 MB/s
+download**. Dedicated LAN throughput, NFR-03 chunk-processing latency, per-core
+CPU and a controlled successful regression baseline remain **unmeasured**.
+The former failed baseline cannot qualify a regression comparison. PERF-024's
+100-connected-client completion check passes locally; “without degradation” and
+bandwidth-tolerance qualification are not inferred. Historical raw failures
+remain in `public-api-20261013.json`.

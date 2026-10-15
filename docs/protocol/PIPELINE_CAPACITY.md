@@ -61,3 +61,6 @@ disconnect while saturated, stop wakeup before consumer completion, impossible
 and reentrant submission, oversized stream headers, coalesced delivery, and 100
 simultaneous public uploads of 1 MiB uncompressed files with independent hashes.
 The last test failed before the receive-admission fix and now passes.
+
+The [2026-10-15 follow-up report](../validation/FOLLOWUP_176_190.md) records the
+subsequent full sanitizer/coverage matrix and unchanged Release remeasurement.
