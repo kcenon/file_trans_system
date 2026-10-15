@@ -27,6 +27,7 @@ if(FILE_TRANS_ENABLE_ENCRYPTION AND OpenSSL_FOUND)
         test_encrypted_transfer.cpp
         test_public_encryption.cpp
         test_cloud_http_client.cpp
+        test_cloud_provider_http.cpp
     )
 endif()
 

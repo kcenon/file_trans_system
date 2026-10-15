@@ -28,7 +28,7 @@ public:
         std::map<std::string, std::string> headers;
     };
 
-    mock_response put_block_response{201, ""};
+    mock_response put_block_response{201, "", {{"ETag", "\"uploaded-etag\""}}};
     mock_response commit_response{201, "", {{"ETag", "\"test-etag\""}}};
     mock_response delete_response{202, ""};
     mock_response head_response{200, "", {{"Content-Length", "100"}, {"Content-Type", "text/plain"}, {"ETag", "\"abc123\""}}};
@@ -369,7 +369,7 @@ protected:
             .with_bucket("test-container")
             .build_azure_blob();
 
-        storage_ = azure_blob_storage::create(config, provider_);
+        storage_ = azure_blob_storage::create(config, provider_, std::make_shared<mock_azure_http_client>());
         storage_->connect();
     }
 
@@ -451,7 +451,7 @@ protected:
             .with_bucket("test-container")
             .build_azure_blob();
 
-        storage_ = azure_blob_storage::create(config, provider_);
+        storage_ = azure_blob_storage::create(config, provider_, std::make_shared<mock_azure_http_client>());
         storage_->connect();
     }
 
