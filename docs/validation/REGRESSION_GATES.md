@@ -2,7 +2,8 @@
 
 The tables below preserve the 2026-10-13 evidence. Current follow-up results,
 including fully instrumented sanitizer dependencies and new cloud/adapter
-regressions, are in the [2026-10-15 report](FOLLOWUP_176_190.md). The former
+regressions, are in the [2026-10-15 report](FOLLOWUP_176_190.md) and the
+[latest policy/cache/HTTP continuation](CONTINUATION_176_190.md). The former
 unresolved errno pattern now has a [standalone reproducer](TSAN_ERRNO_REPRODUCER.md);
 the full unsuppressed TSAN outcome is reported separately.
 

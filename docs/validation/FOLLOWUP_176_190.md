@@ -8,6 +8,11 @@ The [2026-10-13 report](ISSUES_175_191.md) remains historical evidence.
 [Machine-readable per-issue results](followup-results-20261015.json) retain exact
 counts, commands, failures, restoration hashes and local artifact references.
 
+A [subsequent continuation](CONTINUATION_176_190.md) adds storage-policy and
+session-cache repairs plus real HTTP adapter coverage. It reruns the full
+validation matrix and measures 73.52% coverage. The results below retain this
+earlier pass's provenance.
+
 ## Issue-by-issue results
 
 | Issue | Work and acceptance evidence from this pass | Remaining boundary |

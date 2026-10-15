@@ -1,0 +1,29 @@
+[
+  {
+    "mutation": "noop-upload",
+    "exit_code": 1,
+    "failed_tests": [
+      "FileUploadIntegrationTest.UploadSmallFile",
+      "FileListIntegrationTest.ListFilesDefault",
+      "ConcurrentStressTest.NoDataCorruptionUnderConcurrency"
+    ]
+  },
+  {
+    "mutation": "empty-listing",
+    "exit_code": 1,
+    "failed_tests": [
+      "FileListIntegrationTest.ListFilesDefault",
+      "FileListIntegrationTest.ListFilesWithOptions",
+      "FileListIntegrationTest.ListFilesWithPagination"
+    ]
+  },
+  {
+    "mutation": "missing-download-output",
+    "exit_code": 1,
+    "failed_tests": [
+      "FileDownloadIntegrationTest.DownloadToValidPath",
+      "FileDownloadIntegrationTest.DownloadWithOptions",
+      "ConcurrentStressTest.NoDataCorruptionUnderConcurrency"
+    ]
+  }
+]

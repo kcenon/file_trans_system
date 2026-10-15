@@ -18,7 +18,7 @@ phase. No whole phase is marked complete.
 | 3. Client foundation | FR-02/03/05/07, NFR-13 | Validated (scoped): TCP transfers, failure handling and reconnect [#176–#179, #185](protocol/RECONNECTION.md) | Optional authentication and TLS 1.3 NFR-16/17 remain open; reconnect does not imply resume |
 | 4. Compression and resume | FR-09/11/14/15 | Validated (scoped): plain/encrypted process crash recovery and compression [#183, #186](protocol/RESUME.md) | Subsecond recovery only measured on a small loopback fixture; large-prefix validation remains linear |
 | 5. Advanced features | FR-04/06/10/12/13/16/18 | Validated (scoped): batch, progress, throttling, quotas and admission [#187–#188](protocol/BATCH_TRANSFERS.md) | “Without degradation” and 5% bandwidth tolerance need qualification; 100-client uploads and downloads now all pass [#190](validation/PUBLIC_API_BENCHMARKS.md) |
-| 6. Integration and polish | PRD §10, NFR-01–10/22 | Validated (scoped): public monitoring/quota, logger, cloud/hybrid persistence and compiled examples [#189–#191](validation/FOLLOWUP_176_190.md) | Coverage 71.98% <80%; full macOS TSAN fails on reproduced errno runtime reports; leak freedom, Windows and dedicated LAN unverified |
+| 6. Integration and polish | PRD §10, NFR-01–10/22 | Validated (scoped): public monitoring/quota, logger, cloud/hybrid persistence and compiled examples [#189–#191](validation/CONTINUATION_176_190.md) | Coverage 73.52% <80%; full macOS TSAN fails on reproduced errno runtime reports; leak freedom, Windows and dedicated LAN unverified |
 | 7. QUIC (optional) | PRD §9 phase 7, NFR-16 | Component: public transport selection and repaired QUIC timeout cleanup [#184](protocol/TRANSPORTS.md) | QUIC handshake/key installation and certificate/UDP routing remain blocked in pinned dependency; 0-RTT/migration unvalidated |
 <!-- roadmap:end -->
 
@@ -52,7 +52,8 @@ The generated README tables use the same statuses, requirements and evidence.
 ## Scope of issues #175–#191
 
 Issues #175–#183 and #185–#188 have implemented behavior with scoped local
-validation; follow-up details are in the [2026-10-15 report](validation/FOLLOWUP_176_190.md).
+validation; follow-up details are in the [2026-10-15 report](validation/FOLLOWUP_176_190.md)
+and the [additional policy/cache/HTTP validation](validation/CONTINUATION_176_190.md).
 #184 retains a QUIC dependency blocker. #189 supplies real regression
 and quality gates but does not yet meet coverage/TSAN acceptance. #190 supplies
 reproducible measurements; dedicated LAN and stable dedicated-host regression
